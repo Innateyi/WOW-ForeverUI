@@ -871,11 +871,36 @@ local UTIL_DEFS = {
     },
 }
 
+-- 只认常驻聊天窗口 1~10 的输入框（11+ 的临时密语窗口带保密 tellTarget，EUI 也明确不碰）
+local function IsPermanentEditBox(eb)
+    if not (eb and type(eb.GetName) == "function") then return false end
+    local n = F.PlainString(eb:GetName(), nil)
+    local i = n and tonumber(n:match("^ChatFrame(%d+)EditBox$"))
+    return i ~= nil and i <= 10
+end
+
+-- 最近一次真正被聊天使用的输入框（焦点回调 / 频道按钮切换时记录）
+local lastEditBox = nil
+
+-- 当前频道判断必须读「正在用的那个输入框」：IM 聊天风格下每个标签页各有自己的输入框，
+-- 选中「世界」等其它标签时回车打开的是该标签自己的框；写死读 ChatFrame1EditBox 会读到
+-- 一个没在用、仍是默认「说」的框，导致竖栏高亮跳回「说」
+local function GetActiveEditBox()
+    for i = 1, 10 do
+        local eb = _G["ChatFrame" .. i .. "EditBox"]
+        if eb and eb.HasFocus and eb:HasFocus() then
+            return eb, true
+        end
+    end
+    if lastEditBox then return lastEditBox, false end
+    local eb = GetPrimaryEditBox()
+    return eb or _G.ChatFrame1EditBox, false
+end
+
 local function DetectActiveChannelKey()
-    local eb = _G.ChatFrame1EditBox
+    local eb, focused = GetActiveEditBox()
     if not eb then return nil end
 
-    local focused = eb.HasFocus and eb:HasFocus()
     local chatType = nil
     if focused then
         if eb.GetChatType then
@@ -911,12 +936,15 @@ local function DetectActiveChannelKey()
     elseif chatType == "WHISPER" or chatType == "BN_WHISPER" then return "WHISPER"
     elseif chatType == "CHANNEL" then
         local cid = 0
+        local okC, target
         if eb.GetChannelTarget then
-            local okC, target = pcall(eb.GetChannelTarget, eb)
-            cid = okC and F.PlainNumber(target, 0) or 0
+            okC, target = pcall(eb.GetChannelTarget, eb)
         elseif eb.GetAttribute then
-            local okC, target = pcall(eb.GetAttribute, eb, "channelTarget")
-            cid = okC and F.PlainNumber(target, 0) or 0
+            okC, target = pcall(eb.GetAttribute, eb, "channelTarget")
+        end
+        if okC then
+            -- 频道目标可能是数字，也可能是字符串形式的编号
+            cid = F.PlainNumber(target, nil) or tonumber(F.PlainString(target, "")) or 0
         end
         if cid > 0 then
             local genId = FindChannelID("综合", { "综合", "general" })
@@ -1658,14 +1686,20 @@ local function HookChatFrameInteractions()
 
     if not registryRegistered and _G.EventRegistry and _G.EventRegistry.RegisterCallback then
         registryRegistered = true
-        _G.EventRegistry:RegisterCallback("ChatFrame.OnEditBoxFocusGained", function()
+        _G.EventRegistry:RegisterCallback("ChatFrame.OnEditBoxFocusGained", function(_, eb)
             editBoxActive = true
+            if IsPermanentEditBox(eb) then lastEditBox = eb end
             if not mod._active then return end
             RefreshActiveChannel()
+            -- 暴雪在 SetFocus 之后才 UpdateHeader（可能把粘滞的团队/小队切成副本频道）：下一帧再对一次
+            C_Timer.After(0, function()
+                if mod._active and editBoxActive then RefreshActiveChannel() end
+            end)
             SyncAlpha(true)
         end, "ForeverUI_ChatBar_FocusIn")
-        _G.EventRegistry:RegisterCallback("ChatFrame.OnEditBoxFocusLost", function()
+        _G.EventRegistry:RegisterCallback("ChatFrame.OnEditBoxFocusLost", function(_, eb)
             editBoxActive = false
+            if IsPermanentEditBox(eb) then lastEditBox = eb end
             if not mod._active then return end
             local _, cf1, bg1 = GetEUIChatContext()
             isHovered = (barFrame and barFrame:IsMouseOver())
