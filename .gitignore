@@ -1,0 +1,6 @@
+node_modules/
+Upstream/reports/
+Tools/_preview/
+*.zip
+*.bak
+__pycache__/
