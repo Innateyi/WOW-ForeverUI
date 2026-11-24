@@ -139,16 +139,13 @@ local function IsEUIQuestItemButton(f)
     return okAttr and attr == "item"
 end
 
-local itemLayerLastScan = -10
-
 local function FindEUIItemLayer()
     if itemLayerRef then
         return itemLayerRef
     end
-    -- 没有任务道具时 EUI 道具层可能不存在：失败后 1 秒内不再重复扫描整个 UIParent
-    local now = _G.GetTime and _G.GetTime() or 0
-    if now - itemLayerLastScan < 1 then return nil end
-    itemLayerLastScan = now
+    -- 不做时间节流：登录时追踪器会在 1 秒内连续重绘多次，第一次扫描时道具按钮往往还没建好，
+    -- 节流会让后面几次被跳过，道具图标就一直压在经验数字上（直到下次任务日志变化）。
+    -- 调用方 ScheduleItemSync 已按帧合并，找到后缓存 itemLayerRef，不会反复扫描。
     local uiParent = _G.UIParent
     if not (uiParent and uiParent.GetChildren) then return nil end
     local children = { uiParent:GetChildren() }

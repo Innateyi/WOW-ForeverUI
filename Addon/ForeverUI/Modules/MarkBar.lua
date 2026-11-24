@@ -69,6 +69,51 @@ local function InstallGlobalRaidIconHook()
     end)
 end
 
+-- EUI 姓名板在文件加载时就把 SetRaidTargetIconTexture 存成了本地变量（早于本插件挂钩），
+-- 上面的全局钩子对姓名板标记无效：直接给 EUI 姓名板的标记贴图换上同为 4x4 布局的现代图集，
+-- 之后 EUI 只改 TexCoord，图标就会一直是新样式。
+-- （人物头顶的 3D 世界标记由游戏引擎绘制，插件无法替换。）
+local function RetextureRaidTex(tex, wantModern)
+    if not tex or type(tex.SetTexture) ~= "function" then return end
+    if tex.IsForbidden and tex:IsForbidden() then return end
+    if wantModern then
+        pcall(tex.SetTexture, tex, RAID_ATLAS, nil, nil, "TRILINEAR")
+        replacedRaidTex[tex] = true
+    elseif replacedRaidTex[tex] then
+        pcall(tex.SetTexture, tex, "Interface\\TargetingFrame\\UI-RaidTargetingIcons")
+        replacedRaidTex[tex] = nil
+    end
+end
+
+local function GetEUINameplateNS()
+    local EUI = _G.EllesmereUI
+    local ns = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUINameplates
+    return type(ns) == "table" and ns or nil
+end
+
+local function RetexturePlate(plate, wantModern)
+    if type(plate) ~= "table" then return end
+    RetextureRaidTex(plate.raid, wantModern)
+    RetextureRaidTex(plate.nameRaid, wantModern)
+end
+
+local function SyncEUIPlateRaidIcons(unit)
+    local ns = GetEUINameplateNS()
+    if not ns then return end
+    local wantModern = mod._active and (mod:GetDB().iconPack or "modern") ~= "blizzard"
+    if unit then
+        if type(ns.plates) == "table" then RetexturePlate(ns.plates[unit], wantModern) end
+        if type(ns.friendlyPlates) == "table" then RetexturePlate(ns.friendlyPlates[unit], wantModern) end
+        return
+    end
+    if type(ns.plates) == "table" then
+        for _, plate in pairs(ns.plates) do RetexturePlate(plate, wantModern) end
+    end
+    if type(ns.friendlyPlates) == "table" then
+        for _, plate in pairs(ns.friendlyPlates) do RetexturePlate(plate, wantModern) end
+    end
+end
+
 local MARK_SPECS = {
     { index = 8, name = "骷髅", file = "Mark8.tga", color = { 0.96, 0.97, 1.00 } },
     { index = 7, name = "红叉", file = "Mark7.tga", color = { 0.96, 0.34, 0.38 } },
@@ -487,7 +532,16 @@ function mod:OnEnable()
     self:RegisterEvent("GROUP_ROSTER_UPDATE", UpdateVisibility)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", UpdateVisibility)
     self:RegisterEvent("PLAYER_TARGET_CHANGED", RefreshTargetMarkHighlight)
-    self:RegisterEvent("RAID_TARGET_UPDATE", RefreshTargetMarkHighlight)
+    self:RegisterEvent("RAID_TARGET_UPDATE", function()
+        RefreshTargetMarkHighlight()
+        -- 晚一帧，等 EUI 姓名板自己的标记刷新先跑完
+        C_Timer.After(0, function() if mod._active then SyncEUIPlateRaidIcons() end end)
+    end)
+    self:RegisterEvent("NAME_PLATE_UNIT_ADDED", function(_, _, unit)
+        if type(unit) ~= "string" then return end
+        C_Timer.After(0, function() if mod._active then SyncEUIPlateRaidIcons(unit) end end)
+    end)
+    SyncEUIPlateRaidIcons()
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
         -- 条上挂着安全按钮：拖动中进战必须在本事件内（受保护调用仍合法）结束移动，否则松手时 StopMovingOrSizing 会被拦截
         if isDraggingBar and barFrame then
@@ -504,6 +558,8 @@ function mod:OnEnable()
 end
 
 function mod:OnDisable()
+    -- 停用后把已换掉的 EUI 姓名板标记还原成暴雪原版
+    SyncEUIPlateRaidIcons()
     if barFrame then
         if _G.InCombatLockdown and _G.InCombatLockdown() then
             F.RunOutOfCombat("FUI_MarkBarVis", function()
@@ -532,7 +588,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         },
         order = { "modern", "blizzard" },
         getValue = function() return db.iconPack or "modern" end,
-        setValue = function(v) db.iconPack = v; LayoutAndStyle() end,
+        setValue = function(v) db.iconPack = v; LayoutAndStyle(); SyncEUIPlateRaidIcons() end,
     })
     y = y - h
 

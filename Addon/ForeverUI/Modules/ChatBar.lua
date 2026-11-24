@@ -342,6 +342,8 @@ local function SyncEUIChatSidebar()
                 if sbd.scrollBtn then sbd.scrollBtn:SetShown(ecfg.showScroll ~= false) end
                 if sbd.friendsBtn then sbd.friendsBtn:SetShown(ecfg.showFriends ~= false) end
             end
+            -- 「回到底部」按钮随 scrollButtonOnChat 切换座位：EUI 提供的单按钮重挂函数（只动它自己的按钮，不走整条布局链）
+            if echat.ApplyScrollButtonPosition then pcall(echat.ApplyScrollButtonPosition) end
             if echat.ApplyBorders then pcall(echat.ApplyBorders) end
             if echat.ApplyExtendedBackground then pcall(echat.ApplyExtendedBackground) end
         end)

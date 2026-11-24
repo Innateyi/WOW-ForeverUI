@@ -306,7 +306,6 @@ local function UpdateSession(cur, max)
         s.lastXP = cur
         s.maxXP = max
         s.lastLevel = level
-        s.levelStartTime = now
     else
         local delta = 0
         local leveled = (s.lastLevel ~= nil and level > s.lastLevel)
@@ -330,7 +329,11 @@ local function UpdateSession(cur, max)
     local sessionSec = math_max(1, now - s.startTime)
     local levelSec = math_max(1, now - s.levelStartTime)
     local perHour = (s.gainedXP or 0) / sessionSec * 3600
-    return s.gainedXP or 0, perHour, sessionSec, levelSec
+    -- 记住本次在线满 2 分钟后的可靠速率：下次登录在拿到第一笔经验之前，用它给出参考预计，而不是一直「计算中」
+    if (s.gainedXP or 0) > 0 and sessionSec >= 120 then
+        s.refPerHour = perHour
+    end
+    return s.gainedXP or 0, perHour, sessionSec, levelSec, F.PlainNumber(s.refPerHour, nil)
 end
 
 local function CreateFlatBorder(frame, r, g, b, a)
@@ -630,7 +633,12 @@ local function UpdateXP()
     local rem = math_max(0, max - cur)
     local rested = F.PlainNumber(_G.GetXPExhaustion and _G.GetXPExhaustion(), 0)
     local questXP = db.showQuestXP and GetCompletedQuestXP() or 0
-    local _, perHour, sessionSec, levelSec = UpdateSession(cur, max)
+    local _, perHour, sessionSec, levelSec, refPerHour = UpdateSession(cur, max)
+    -- 本次还没获得经验时沿用上次速率估算（文字标注「参考」）
+    local etaRate, etaIsRef = perHour, false
+    if perHour <= 1 and refPerHour and refPerHour > 1 then
+        etaRate, etaIsRef = refPerHour, true
+    end
 
     if lastRenderedXP ~= nil and lastRenderedLevel ~= nil then
         if level > lastRenderedLevel or (level == lastRenderedLevel and cur > lastRenderedXP) then
@@ -690,9 +698,9 @@ local function UpdateXP()
 
     -- 上排右侧（关闭条下统计且启用左侧徽标时，直接切换图2极简风格：右显「预计 XX分」）
     if showEmblem and not showBottom then
-        if perHour > 1 then
-            local etaSec = rem / perHour * 3600
-            xpTexts.xp:SetText("预计 " .. FormatDuration(etaSec))
+        if etaRate > 1 then
+            local etaSec = rem / etaRate * 3600
+            xpTexts.xp:SetText((etaIsRef and "参考预计 " or "预计 ") .. FormatDuration(etaSec))
         else
             xpTexts.xp:SetText(string_format("%s / %s", FormatComma(cur), FormatComma(max)))
         end
@@ -713,9 +721,11 @@ local function UpdateXP()
     end
 
     if showBottom then
-        if perHour > 1 then
-            local etaSec = rem / perHour * 3600
-            xpTexts.rate:SetText(string_format("预计 %s |cff8f9bae· %s/时|r", FormatDuration(etaSec), F.FormatShortNumber(perHour)))
+        if etaRate > 1 then
+            local etaSec = rem / etaRate * 3600
+            xpTexts.rate:SetText(string_format("%s %s |cff8f9bae· %s/时%s|r",
+                etaIsRef and "参考预计" or "预计", FormatDuration(etaSec), F.FormatShortNumber(etaRate),
+                etaIsRef and "（上次）" or ""))
         else
             xpTexts.rate:SetText("|cff8f9bae预计升级 · 计算中...|r")
         end

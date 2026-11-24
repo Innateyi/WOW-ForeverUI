@@ -1498,11 +1498,11 @@ local function FindAndHookEUIFlightBar(onChange)
         return euiFlightBarRef
     end
     if not F.IsAddOnLoaded("EllesmereUIForeverEssentials") then return nil end
-    -- EUI 飞行条在本次登录第一次飞行时才懒创建：未找到前，战斗中不扫，同一帧内的连发调用只扫一次整个 UIParent
-    -- （起飞时 PLAYER_CONTROL_LOST 会在 0/0.15/0.55 秒补扫，节流必须短于这些间隔）
+    -- EUI 飞行条在本次登录第一次飞行时才懒创建：未找到前，战斗中不扫，同一帧内的连发调用只扫一次整个 UIParent。
+    -- 只按「同一帧」去重（GetTime 在一帧内不变）：起飞时下一帧的补扫正是消除重复退出按钮的关键，不能被跳过
     if _G.InCombatLockdown and _G.InCombatLockdown() then return nil end
     local now = _G.GetTime and _G.GetTime() or 0
-    if now - flightBarLastScan < 0.1 then return nil end
+    if now == flightBarLastScan then return nil end
     flightBarLastScan = now
     local ui = _G.UIParent
     if not (ui and ui.GetChildren) then return nil end
@@ -3468,15 +3468,17 @@ function mod:OnEnable()
         pcall(ApplyUnifiedResourceBars, false)
         RefreshAllModernHUD()
         ScheduleBootRefresh(true)
-        -- 冲突诊断弹窗与 Questie 城镇 NPC 全量去重只在登录/重载时跑一次，过传送门、副本读条不再重复
+        -- 冲突诊断弹窗只在登录/重载时检查一次，过传送门、副本读条不再重复弹出
         if isInitialLogin or isReloadingUi then
             C_Timer.After(4, function()
                 if mod._active then RunConflictDiagnostics() end
             end)
-            C_Timer.After(5.5, function()
-                if mod._active then pcall(ApplyQuestieTownsfolkDedup, true) end
-            end)
         end
+        -- Questie 城镇 NPC 去重每次读条后都要强制重扫：Questie 会按「已学专业」重新加回训练师图标，
+        -- 只在登录时扫一次的话，过一次传送门小地图 NPC 又会和 Polestar 重复
+        C_Timer.After(5.5, function()
+            if mod._active then pcall(ApplyQuestieTownsfolkDedup, true) end
+        end)
     end)
     self:RegisterEvent("PLAYER_CONTROL_LOST", function()
         SkinVehicleLeaveButton()
