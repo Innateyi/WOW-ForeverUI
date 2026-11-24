@@ -48,6 +48,7 @@ local mod = F.RegisterModule("chatBar", {
         whisperSound = true,
         keywordAlert = false,
         keywords = "",
+        worldChannelName = "大脚世界频道", -- 「世」按钮右键加入/离开的自定义频道名（无限服玩家通用的世界频道）
     },
 })
 
@@ -573,14 +574,58 @@ local function FindChannelID(exactName, keywords)
     return nil, nil
 end
 
+local DEFAULT_WORLD_CHANNEL = "大脚世界频道"
+
+-- 世界频道名：自建频道按名字区分，名字相同即同一个频道（不需要装大脚插件）
+local function GetWorldChannelName()
+    local n = mod:GetDB().worldChannelName
+    if type(n) == "string" then
+        n = n:gsub("^%s+", ""):gsub("%s+$", "")
+        if n ~= "" then return n end
+    end
+    return DEFAULT_WORLD_CHANNEL
+end
+
+-- 校验玩家输入的频道名：/join 以空格分隔密码，纯数字会被当成频道编号
+local function ValidateWorldChannelName(raw)
+    if type(raw) ~= "string" then return nil, "频道名无效" end
+    local n = raw:gsub("^%s+", ""):gsub("%s+$", "")
+    if n == "" then return DEFAULT_WORLD_CHANNEL end
+    if n:find("%s") then return nil, "频道名不能包含空格" end
+    if n:match("^%d+$") then return nil, "频道名不能是纯数字（数字代表频道编号）" end
+    if #n > 31 then return nil, "频道名过长" end
+    return n
+end
+
+function mod:SetWorldChannelName(raw)
+    local n, err = ValidateWorldChannelName(raw)
+    if not n then
+        F.Print("|cffe05263" .. err .. "，未修改。|r当前世界频道：" .. GetWorldChannelName())
+        return false
+    end
+    self:GetDB().worldChannelName = n
+    F.Print("世界频道已设为 |cff5fd3a6" .. n .. "|r；右键「世」即可加入或离开。")
+    return true
+end
+
+-- 左键「世」：优先精确匹配设定的频道名，其次匹配名字里带「世界/world/大脚/组队」的已加入频道
 local function FindWorldChannel()
-    return FindChannelID("大脚世界频道", { "世界", "world", "大脚", "组队", "lookingforgroup" })
+    return FindChannelID(GetWorldChannelName(), { "世界", "world", "大脚", "组队", "lookingforgroup" })
+end
+
+-- 右键只认精确频道名：模糊匹配会把「寻求组队」等系统频道当成世界频道直接退掉
+local function FindExactWorldChannel()
+    local name = GetWorldChannelName()
+    if not _G.GetChannelName then return nil, name end
+    local id = F.PlainNumber(_G.GetChannelName(name), 0)
+    if id > 0 then return id, name end
+    return nil, name
 end
 
 local function ToggleWorldChannel()
-    local id, name = FindWorldChannel()
+    local id, name = FindExactWorldChannel()
     if id and id > 0 then
-        local targetName = name or "大脚世界频道"
+        local targetName = name
         local ok = false
         if _G.LeaveChannelByName then
             ok = pcall(_G.LeaveChannelByName, targetName)
@@ -595,14 +640,14 @@ local function ToggleWorldChannel()
     else
         local ok = false
         if _G.JoinChannelByName then
-            ok = pcall(_G.JoinChannelByName, "大脚世界频道")
+            ok = pcall(_G.JoinChannelByName, name)
         elseif _G.C_ChatInfo and _G.C_ChatInfo.JoinChannelByName then
-            ok = pcall(_G.C_ChatInfo.JoinChannelByName, "大脚世界频道")
+            ok = pcall(_G.C_ChatInfo.JoinChannelByName, name)
         end
         if ok then
-            F.Print("已尝试加入 |cff5fd3a6大脚世界频道|r，稍等 1 秒后左键「世」即可发言。")
+            F.Print("已尝试加入 |cff5fd3a6" .. name .. "|r，稍等 1 秒后左键「世」即可发言。")
         else
-            OpenChatPrefix("/join 大脚世界频道")
+            OpenChatPrefix("/join " .. name)
         end
     end
 end
@@ -611,14 +656,14 @@ end
 local CHANNELS = {
     {
         key = "WORLD",
-        label = "世", tip = "左键：世界频道发言（切换并记住）\n右键：一键加入或离开「大脚世界频道」",
+        label = "世", tip = "左键：世界频道发言（切换并记住）\n右键：一键加入或离开世界频道（频道名可在设置中修改）",
         color = { 0.97, 0.85, 0.44 },
         left = function()
             local id = FindWorldChannel()
             if id and id > 0 then
                 SwitchChatChannel("CHANNEL", { channelID = id, sticky = true, prefix = "/" .. id .. " " })
             else
-                F.Print("当前未加入世界频道，|cff5fd3a6右键「世」|r 可一键加入「大脚世界频道」。")
+                F.Print("当前未加入世界频道，|cff5fd3a6右键「世」|r 可一键加入「" .. GetWorldChannelName() .. "」。")
             end
         end,
         right = ToggleWorldChannel,
@@ -1842,6 +1887,7 @@ local function CreateBar()
                 else
                     GameTooltip:AddLine("尚未加入世界频道（右键一键加入）", 0.96, 0.76, 0.32)
                 end
+                GameTooltip:AddDoubleLine("右键加入/离开", GetWorldChannelName(), 0.68, 0.72, 0.78, 0.97, 0.85, 0.44)
             end
             GameTooltip:AddLine(
                 vert and "Alt + 左键上移 · Alt + 右键下移（自定义排序）"
@@ -2189,7 +2235,16 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         tooltip = "在聊天框输入 /fui kw 关键词1,关键词2 设置监控词（5 秒冷却）。",
         getValue = function() return db.keywordAlert == true end,
         setValue = function(v) db.keywordAlert = v == true; mod:RefreshKeywordWatch() end,
-    }, blank)
+    }, {
+        type = "input",
+        text = "世界频道名称",
+        tooltip = "「世」按钮右键一键加入/离开的自建频道。无限服通用「大脚世界频道」（不装大脚也能加入）。\n留空恢复默认；不能含空格或为纯数字。也可输入 /fui world 频道名。",
+        inputWidth = 140,
+        inputStyle = "popup",
+        placeholder = DEFAULT_WORLD_CHANNEL,
+        getValue = function() return GetWorldChannelName() end,
+        setValue = function(v) mod:SetWorldChannelName(v) end,
+    })
     y = y - h
     return y
 end

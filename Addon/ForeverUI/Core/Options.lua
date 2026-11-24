@@ -260,6 +260,17 @@ _G.SlashCmdList.FOREVERUI = function(msg)
                 F.Print("当前关键词：" .. (kw ~= "" and kw or "（空）") .. "；用法：/fui kw 黑龙,通灵 或 /fui kw clear")
             end
         end
+    elseif cmd == "world" then
+        local cb = F.Modules.Get("chatBar")
+        if cb and cb.SetWorldChannelName then
+            if rest and rest ~= "" then
+                cb:SetWorldChannelName(rest == "reset" and "" or rest)
+            else
+                local cur = cb:GetDB().worldChannelName
+                F.Print("当前世界频道：" .. ((type(cur) == "string" and cur ~= "") and cur or "大脚世界频道")
+                    .. "；用法：/fui world 频道名 或 /fui world reset")
+            end
+        end
     elseif cmd == "slim" then
         if _G.StaticPopup_Show then
             _G.StaticPopup_Show("FOREVERUI_SLIM_CONFIRM")
