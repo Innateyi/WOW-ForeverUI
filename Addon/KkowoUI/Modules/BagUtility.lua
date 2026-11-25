@@ -90,16 +90,29 @@ local KNOWN_MONEY_FRAMES = {
     "PetStableMoneyFrame",
 }
 
+-- 金币框是否挂在鼠标提示里（无名框体没法靠名字判断，向上找 4 层父框体）
+local function IsInsideTooltip(frame)
+    local f = frame
+    for _ = 1, 5 do
+        if not f then return false end
+        if f.IsObjectType and f:IsObjectType("GameTooltip") then return true end
+        local okN, n = pcall(f.GetName, f)
+        if okN and type(n) == "string" and n:find("Tooltip", 1, true) then return true end
+        f = f.GetParent and f:GetParent() or nil
+    end
+    return false
+end
+
 local function AlignMoneyFrame(mf, yOffset)
     if not mf or (mf.IsForbidden and mf:IsForbidden()) then
         return
     end
     local okName, base = pcall(mf.GetName, mf)
     if not (okName and type(base) == "string" and base ~= "") then
-        return
+        base = nil
     end
     -- 跳过 Tooltip 内嵌金币框，避免 12.x 战斗中触发 GameTooltip 秘密值污染
-    if base:find("Tooltip", 1, true) then
+    if IsInsideTooltip(mf) then
         return
     end
     if mf.IsProtected and mf:IsProtected() and _G.InCombatLockdown and _G.InCombatLockdown() then
@@ -107,7 +120,8 @@ local function AlignMoneyFrame(mf, yOffset)
     end
     local dy = yOffset ~= nil and yOffset or MONEY_TEXT_Y_OFFSET
     for _, sfx in ipairs(MONEY_SUFFIXES) do
-        local b = _G[base .. sfx]
+        -- 有名金币框按全局名找子按钮；训练师列表等滚动列表里的无名金币框按 parentKey（GoldButton / SilverButton / CopperButton）找
+        local b = (base and _G[base .. sfx]) or mf[sfx]
         if b and not (b.IsForbidden and b:IsForbidden()) then
             local t = b.GetFontString and b:GetFontString()
             if t then
@@ -262,10 +276,16 @@ local function LayoutMacroPopupNow()
     end
 end
 
+-- 打开时先同步排一次（在第一帧绘制之前，避免先显示大字再缩小），
+-- 再在下一帧（紧跟 EUI 的换肤之后）和 0.05 秒后各补一次；每次只改有差异的项，不会闪动
+local function RunMacroPopupLayout()
+    F.RunOutOfCombat("FUI_MacroPopupLayout", function() pcall(LayoutMacroPopupNow) end)
+end
+
 local function QueueMacroPopupLayout()
-    C_Timer.After(0.05, function()
-        F.RunOutOfCombat("FUI_MacroPopupLayout", function() pcall(LayoutMacroPopupNow) end)
-    end)
+    RunMacroPopupLayout()
+    C_Timer.After(0, RunMacroPopupLayout)
+    C_Timer.After(0.05, RunMacroPopupLayout)
 end
 
 local function HookMacroPopupOnce()
@@ -275,11 +295,15 @@ local function HookMacroPopupOnce()
     p:HookScript("OnShow", QueueMacroPopupLayout)
 end
 
+local function RunMacroLayout()
+    F.RunOutOfCombat("FUI_MacroLayout", function() pcall(LayoutMacroFrameNow) end)
+end
+
 local function QueueMacroLayout()
     HookMacroPopupOnce()
-    C_Timer.After(0.05, function()
-        F.RunOutOfCombat("FUI_MacroLayout", function() pcall(LayoutMacroFrameNow) end)
-    end)
+    RunMacroLayout()
+    C_Timer.After(0, RunMacroLayout)
+    C_Timer.After(0.05, RunMacroLayout)
 end
 
 local function EnlargeMacroFrame()
