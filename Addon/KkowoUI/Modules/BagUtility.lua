@@ -232,6 +232,8 @@ local function LayoutMacroFrameNow()
         if body then
             local w = F.PlainNumber(tb:GetWidth(), 0) - 38
             if w > 200 then body:SetWidth(w) end
+            -- 整合包字体的中文字形比首行行框高，滚动区上沿会把第一行中文的顶部裁掉：留出上内边距
+            if body.SetTextInsets then pcall(body.SetTextInsets, body, 2, 2, 5, 3) end
         end
         if limit then
             limit:ClearAllPoints()
