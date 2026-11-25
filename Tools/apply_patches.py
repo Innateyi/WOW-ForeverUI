@@ -15,6 +15,7 @@ PATCH_LIST = [
     'eui_friendly_player_names.py',
     'eui_chat_tab_fast.py',
     'vss_corpse_toggle.py',
+    'polestar_zhcn_fill.py',
 ]
 
 

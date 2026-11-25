@@ -3824,6 +3824,43 @@ do
     end
 end
 
+----------------------------------------------------------------------
+--  8c) 施法条英文技能名汉化
+--      无限服中文客户端有少数技能名没汉化（如开箱子、点任务物件时的「Opening」）。
+--      EUI 的施法条都先经 EllesmereUI.CleanCastName 清理名字，在它后面接一层整串对照；
+--      保密值（12.x 战斗中他人的施法名）原样放行，不做任何读取。
+----------------------------------------------------------------------
+local HookEUICastNames
+do
+local CAST_NAME_ZH = {
+    ["Opening"] = "开启",
+    ["Herb Gathering"] = "采集草药",
+    ["Mining"] = "采矿",
+    ["Skinning"] = "剥皮",
+    ["Fishing"] = "钓鱼",
+    ["Disenchant"] = "分解",
+    ["Pick Lock"] = "开锁",
+    ["Disarm Trap"] = "解除陷阱",
+    ["Hearthstone"] = "炉石",
+    ["Summoning"] = "召唤",
+}
+local castNameHooked = false
+
+HookEUICastNames = function()
+    local EUI = _G.EllesmereUI
+    if castNameHooked or not (EUI and type(EUI.CleanCastName) == "function") then return end
+    castNameHooked = true
+    local orig = EUI.CleanCastName
+    EUI.CleanCastName = function(name)
+        local clean = orig(name)
+        if F.IsSecret(clean) or type(clean) ~= "string" or not mod._active then
+            return clean
+        end
+        return CAST_NAME_ZH[clean] or clean
+    end
+end
+end
+
 local function RefreshAllModernHUD()
     pcall(SkinVehicleLeaveButton)
     pcall(SkinGhostFrame)
@@ -3836,6 +3873,7 @@ local function RefreshAllModernHUD()
     pcall(HookTrainerFrameIfReady)
     pcall(windowPolish.HookAuctionHouse)
     pcall(windowPolish.HookMail)
+    pcall(HookEUICastNames)
     pcall(HookCombatTextSizing)
     pcall(RefreshWorldRefreshBanner)
 end
