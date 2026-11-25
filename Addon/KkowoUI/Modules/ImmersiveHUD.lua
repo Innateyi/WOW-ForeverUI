@@ -46,7 +46,7 @@ do
     local SIDE_BAR_NAMES = {
         "EABBar_Bar4", "EABBar_Bar5", "EABBar_Bar6",
         "EABBar_Bar7", "EABBar_Bar8",
-        "EllesmereEAB_StanceBar",
+        "EABBar_StanceBar",
     }
 
     local managed = setmetatable({}, { __mode = "k" })   -- frame -> true（本模块已接管过透明度）

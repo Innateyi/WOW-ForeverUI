@@ -22,8 +22,22 @@ local mod = F.RegisterModule("socialTools", {
         mailContacts = true,
         alts = {},
         favorites = {},
+        v2CleanedLegacyFavs = false,
     },
 })
+
+
+local function GetPlayerMailName()
+    local first, second = _G.UnitName("player")
+    first = F.PlainString(first, nil)
+    second = F.PlainString(second, nil)
+    if not first or first == "" then return nil end
+    -- 无限服（16001）角色带姓氏：UnitName("player") 第 2 返回值为姓氏，寄信必须填「名 姓」
+    if second and second ~= "" and _G.EllesmereUI and _G.EllesmereUI.IS_FOREVER then
+        return first .. " " .. second
+    end
+    return first
+end
 
 local copyBoxFrame = nil
 local mailDrawer = nil
@@ -33,9 +47,18 @@ local menuHooked = false
 local function ShowCopyDialog(text)
     if not copyBoxFrame then
         copyBoxFrame = CreateFrame("Frame", "KkowoUI_CopyBox", _G.UIParent)
-        copyBoxFrame:SetSize(280, 74)
+        copyBoxFrame:SetSize(296, 78)
         copyBoxFrame:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 120)
-        copyBoxFrame:SetFrameStrata("DIALOG")
+        copyBoxFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+        copyBoxFrame:SetFrameLevel(260)
+        copyBoxFrame:SetToplevel(true)
+        copyBoxFrame:SetClampedToScreen(true)
+        copyBoxFrame:EnableMouse(true)
+        copyBoxFrame:SetMovable(true)
+        copyBoxFrame:RegisterForDrag("LeftButton")
+        copyBoxFrame:SetScript("OnDragStart", copyBoxFrame.StartMoving)
+        copyBoxFrame:SetScript("OnDragStop", copyBoxFrame.StopMovingOrSizing)
+        copyBoxFrame:Hide()
         F.Theme.StylePanel(copyBoxFrame, 0.94, 0.9)
         F.Theme.SetBorderAccent(copyBoxFrame, true)
 
@@ -44,18 +67,62 @@ local function ShowCopyDialog(text)
         title:SetPoint("TOPLEFT", 12, -10)
         title:SetText("按 Ctrl+C 复制（Esc 关闭）")
 
+        local closeBtn = CreateFrame("Button", nil, copyBoxFrame)
+        closeBtn:SetSize(20, 20)
+        closeBtn:SetPoint("TOPRIGHT", -8, -7)
+        F.Theme.StyleGlassSurface(closeBtn, {
+            accent = { 0.93, 0.36, 0.43 },
+            bgAlpha = 0.78,
+            borderAlpha = 0.62,
+            restAura = 0.04,
+            hoverAura = 0.34,
+            borderTintMix = 0.10,
+        })
+        local cxIcon = closeBtn:CreateTexture(nil, "OVERLAY", nil, 4)
+        cxIcon:SetSize(10, 10)
+        cxIcon:SetPoint("CENTER", closeBtn, "CENTER", 0, 0)
+        cxIcon:SetTexture(F.Theme.ICONS .. "Close.tga")
+        cxIcon:SetTexCoord(0, 1, 0, 1)
+        cxIcon:SetVertexColor(0.80, 0.84, 0.90, 0.92)
+        closeBtn:SetScript("OnEnter", function(self)
+            F.Theme.SetGlassState(self, true, false)
+            cxIcon:SetVertexColor(1.0, 0.88, 0.90, 1.0)
+        end)
+        closeBtn:SetScript("OnLeave", function(self)
+            F.Theme.SetGlassState(self, false, false)
+            cxIcon:SetVertexColor(0.80, 0.84, 0.90, 0.92)
+        end)
+        closeBtn:SetScript("OnClick", function() copyBoxFrame:Hide() end)
+
         local eb = CreateFrame("EditBox", nil, copyBoxFrame)
-        eb:SetSize(256, 26)
+        eb:SetSize(272, 26)
         eb:SetPoint("BOTTOM", 0, 12)
         eb:SetAutoFocus(true)
         F.Theme.StylePanel(eb, 0.98, 0.6)
         F.Theme.ApplyFont(eb, 13, "", 1, 1, 1, 1)
         eb:SetTextInsets(6, 6, 0, 0)
-        eb:SetScript("OnEscapePressed", function() copyBoxFrame:Hide() end)
-        eb:SetScript("OnEnterPressed", function() copyBoxFrame:Hide() end)
+        eb:SetScript("OnEscapePressed", function()
+            eb:ClearFocus()
+            copyBoxFrame:Hide()
+        end)
+        eb:SetScript("OnEnterPressed", function()
+            eb:ClearFocus()
+            copyBoxFrame:Hide()
+        end)
+        copyBoxFrame:SetScript("OnHide", function()
+            if eb.ClearFocus then eb:ClearFocus() end
+        end)
         copyBoxFrame.editBox = eb
+
+        F.Theme.RegisterEscapeClose(copyBoxFrame, function()
+            if eb.ClearFocus then eb:ClearFocus() end
+            copyBoxFrame:Hide()
+        end)
     end
+    copyBoxFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+    copyBoxFrame:SetFrameLevel(260)
     copyBoxFrame:Show()
+    copyBoxFrame:Raise()
     copyBoxFrame.editBox:SetText(text or "")
     copyBoxFrame.editBox:HighlightText()
     copyBoxFrame.editBox:SetFocus()
@@ -116,7 +183,7 @@ end
 
 local function RecordCurrentAlt()
     local db = mod:GetDB()
-    local name = _G.UnitName("player")
+    local name = GetPlayerMailName()
     local realm = (_G.GetRealmName and _G.GetRealmName()) or ""
     if not realm or realm == "" then
         return
@@ -131,6 +198,11 @@ local function RecordCurrentAlt()
         db.alts[realm] = db.alts[realm] or {}
         db.alts[realm][faction] = db.alts[realm][faction] or {}
         db.alts[realm][faction][name] = class
+        -- 无限服如果之前只记录了无姓氏的半个名字，顺手清掉以免重复
+        local firstOnly = F.PlainString(_G.UnitName("player"), nil)
+        if firstOnly and firstOnly ~= name and db.alts[realm][faction][firstOnly] then
+            db.alts[realm][faction][firstOnly] = nil
+        end
     end
 end
 
@@ -146,7 +218,7 @@ local function RefreshMailDrawer()
 
     local realm = (_G.GetRealmName and _G.GetRealmName()) or "Default"
     local faction = _G.UnitFactionGroup and _G.UnitFactionGroup("player") or "Neutral"
-    local selfName = _G.UnitName("player")
+    local selfName = GetPlayerMailName()
 
     local list = {}
     local seen = {}
@@ -154,14 +226,14 @@ local function RefreshMailDrawer()
     if type(alts) == "table" then
         for n, cls in pairs(alts) do
             if n ~= selfName then
-                list[#list + 1] = { name = n, class = cls, tag = "小号" }
+                list[#list + 1] = { name = n, class = cls, tag = "小号", kind = "alt" }
                 seen[n] = true
             end
         end
     end
     for n, cls in pairs(db.favorites or {}) do
         if not seen[n] then
-            list[#list + 1] = { name = n, class = cls, tag = "常用" }
+            list[#list + 1] = { name = n, class = cls, tag = "常用", kind = "fav" }
         end
     end
     table_sort(list, function(a, b) return a.name < b.name end)
@@ -190,6 +262,7 @@ local function RefreshMailDrawer()
         if not row then
             row = CreateFrame("Button", nil, mailDrawer)
             row:SetSize(148, 20)
+            row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
             F.Theme.StyleButton(row, 11)
             local lbl = row:CreateFontString(nil, "OVERLAY")
             F.Theme.ApplyFont(lbl, 11, "", 0.92, 0.93, 0.95, 1)
@@ -210,12 +283,40 @@ local function RefreshMailDrawer()
         end
         row.lbl:SetText(item.name)
         row._recipient = item.name
+        row._kind = item.kind
         if not row._clickSet then
             row._clickSet = true
-            row:SetScript("OnClick", function(self)
+            row:SetScript("OnClick", function(self, btn)
+                if btn == "RightButton" and self._recipient then
+                    local sdb = mod:GetDB()
+                    if self._kind == "fav" and type(sdb.favorites) == "table" then
+                        sdb.favorites[self._recipient] = nil
+                    elseif self._kind == "alt" then
+                        local rlm = (_G.GetRealmName and _G.GetRealmName()) or "Default"
+                        local fac = _G.UnitFactionGroup and _G.UnitFactionGroup("player") or "Neutral"
+                        if sdb.alts and sdb.alts[rlm] and sdb.alts[rlm][fac] then
+                            sdb.alts[rlm][fac][self._recipient] = nil
+                        end
+                    end
+                    F.Print("已从快捷收件人移除：" .. self._recipient)
+                    RefreshMailDrawer()
+                    return
+                end
                 if _G.SendMailNameEditBox and self._recipient then
                     _G.SendMailNameEditBox:SetText(self._recipient)
                 end
+            end)
+            row:SetScript("OnEnter", function(self)
+                if _G.GameTooltip and self._recipient then
+                    _G.GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    _G.GameTooltip:AddLine(self._recipient, 1, 1, 1)
+                    _G.GameTooltip:AddLine("左键：填入收件人", 0.37, 0.83, 0.65)
+                    _G.GameTooltip:AddLine("右键：从列表移除", 0.85, 0.45, 0.45)
+                    _G.GameTooltip:Show()
+                end
+            end)
+            row:SetScript("OnLeave", function()
+                if _G.GameTooltip then _G.GameTooltip:Hide() end
             end)
         end
         row:Show()
@@ -252,6 +353,13 @@ local function EnsureMailDrawer()
 end
 
 function mod:OnEnable()
+    local db = self:GetDB()
+    -- 一次性清理：favorites 唯一来源是旧版从哈兰德整合包存档迁移来的原作者联系人（KkowoUI 本身从不写入 favorites），
+    -- 整表清空即可，不必在公开仓库里硬编码他人的角色名
+    if not db.v2CleanedLegacyFavs then
+        db.v2CleanedLegacyFavs = true
+        db.favorites = {}
+    end
     RecordCurrentAlt()
     HookContextMenus()
     EnsureMailDrawer()
@@ -282,10 +390,20 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "寄信界面显示小号/联系人抽屉",
-        tooltip = "打开寄信标签页时，在邮箱右侧列出同服同阵营小号与常用收件人。",
+        tooltip = "打开寄信标签页时，在邮箱右侧列出同服同阵营小号与常用收件人（左键填入、右键移除）。",
         getValue = function() return db.mailContacts ~= false end,
         setValue = function(v) db.mailContacts = v == true; RefreshMailDrawer() end,
-    }, blank)
+    }, {
+        type = "button",
+        text = "清空常用收件人",
+        noCapture = true,
+        tooltip = "清除「快捷收件人」中的所有常用收藏联系人（不影响已记录的同服小号）。",
+        onClick = function()
+            db.favorites = {}
+            RefreshMailDrawer()
+            F.Print("已清空快捷收件人中的常用收藏列表。")
+        end,
+    })
     y = y - h
     return y
 end

@@ -247,6 +247,7 @@ ReleaseToast = function(t, skipLayout)
     t:Hide()
     t._key = nil
     t._link = nil
+    t._isPreview = nil
     t._amount = 0
     t._fadingOut = false
     t._hovered = false
@@ -282,7 +283,9 @@ LayoutToasts = function()
     local maxVis = db.maxVisible or 5
     container:SetSize(w, maxVis * (h + gap))
 
+    local hasPreview = false
     for i, t in ipairs(activeToasts) do
+        if t._isPreview then hasPreview = true end
         t:SetSize(w, h)
         t:ClearAllPoints()
         local yOff = (i - 1) * (h + gap)
@@ -291,6 +294,12 @@ LayoutToasts = function()
         else
             t:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -yOff)
         end
+    end
+    if hasPreview then
+        container:SetFrameStrata("FULLSCREEN_DIALOG")
+        container:SetFrameLevel(230)
+    else
+        container:SetFrameStrata("MEDIUM")
     end
 end
 
@@ -414,6 +423,7 @@ local function PushToast(spec)
     local t = AcquireToast()
     t._key = spec.key
     t._link = spec.link
+    t._isPreview = spec.isPreview == true
     t._amount = spec.amount or 1
     t._icon:SetTexture(spec.icon or 134400)
     t._name:SetText(spec.title or "")

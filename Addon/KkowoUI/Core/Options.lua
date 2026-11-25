@@ -32,11 +32,12 @@ local GROUPS = {
     {
         key   = "SocialUtility",
         title = "社交与工具",
-        desc  = "融合聊天条、右键菜单与邮件联系人、极速静默拾取、现代拾取微播报、装备耐久度。",
-        pages = { "聊天与社交", "拾取与工具" },
+        desc  = "融合聊天条、右键菜单与邮件联系人、趣味职业表情喊话、极速静默拾取、现代拾取微播报、装备耐久度。",
+        pages = { "聊天与社交", "趣味表情喊话", "拾取与工具" },
         pageMap = {
-            ["聊天与社交"] = { "chatBar", "socialTools" },
-            ["拾取与工具"] = { "bagUtility", "lootToast", "durability" },
+            ["聊天与社交"]   = { "chatBar", "socialTools" },
+            ["趣味表情喊话"] = { "classEmote" },
+            ["拾取与工具"]   = { "bagUtility", "lootToast", "durability" },
         },
     },
     {
@@ -153,14 +154,40 @@ local SLIM_LIST = {
     "QFXSystemBar", "QFXSystemBar_Config", "QFXSystemBar_InfoBar",
     "QFXSystemBar_Locale", "QFXSystemBar_MeetingStone",
     "EllesmereUIDataBars",
-    -- 确认闲置 / 练级无用 / 重叠重型插件（17 个）
-    "TalentsForever", "ForeverFishing", "ArcAuras_Finds", "ArcAuras_LFG",
+    -- 确认闲置 / 练级无用 / 调试 / 重叠重型插件
+    "TalentsForever", "ForeverFishing", "ArcAuras_Finds", "ArcAuras_LFG", "ArcUI",
     "EllesmereUIAuraBuffReminders", "EllesmereUIQuickdraw", "EllesmereUIMythicTimer",
-    "GlowingBars", "MiniMarkers",
+    "GlowingBars", "MiniMarkers", "163UI_Info", "QuestieTrace", "BlizzMove_Debug",
     "DungeonsForeverPvP", "DungeonsForeverExplore", "DungeonsForeverClass",
     "DungeonsForeverProf", "DungeonsForeverGear", "DungeonsForeverSpell",
     "DungeonsForeverFaction", "DungeonsForeverQuest",
 }
+
+local function SetAddOnEnabledSafely(name, enabled)
+    local ca = _G.C_AddOns
+    local fn = enabled and ((ca and ca.EnableAddOn) or _G.EnableAddOn)
+        or ((ca and ca.DisableAddOn) or _G.DisableAddOn)
+    if not fn then return end
+    local getState = ca and ca.GetAddOnEnableState
+    local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+    if guid then
+        pcall(fn, name, guid)
+    end
+    local matched = false
+    if getState then
+        local ok, st = pcall(getState, name)
+        if ok and type(st) == "number" then
+            if enabled then
+                matched = st > 0
+            else
+                matched = st == 0
+            end
+        end
+    end
+    if not matched then
+        pcall(fn, name)
+    end
+end
 
 local function ApplyInGameSlim()
     local disable = (_G.C_AddOns and _G.C_AddOns.DisableAddOn) or _G.DisableAddOn
@@ -171,10 +198,17 @@ local function ApplyInGameSlim()
         F.Print("|cffe05263当前客户端不支持插件开关接口，请退出游戏后运行 Tools\\slim_addons.py。|r")
         return
     end
-    local player = _G.UnitName and _G.UnitName("player") or nil
+    local list = {}
+    for _, name in ipairs(SLIM_LIST) do
+        list[#list + 1] = name
+    end
+    -- 已安装 ArcAuras 时一并停用冲突的 EUI 冷却管理器
+    if F.IsAddOnLoaded("ArcAuras") then
+        list[#list + 1] = "EllesmereUICooldownManager"
+    end
     local backup = {}
     local count = 0
-    for _, name in ipairs(SLIM_LIST) do
+    for _, name in ipairs(list) do
         local exists = true
         if existsFn then
             local okEx, ex = pcall(existsFn, name)
@@ -183,7 +217,7 @@ local function ApplyInGameSlim()
         local wasEnabled = false
         if exists then
             if getState then
-                local ok, st = pcall(getState, name, player)
+                local ok, st = pcall(getState, name)
                 if ok and type(st) == "number" and st > 0 then wasEnabled = true end
             else
                 wasEnabled = true
@@ -191,7 +225,7 @@ local function ApplyInGameSlim()
         end
         if wasEnabled then
             backup[#backup + 1] = name
-            pcall(disable, name, player)
+            SetAddOnEnabledSafely(name, false)
             count = count + 1
         end
     end
@@ -200,7 +234,7 @@ local function ApplyInGameSlim()
         elseif F.db then F.db.slimBackup = backup end
     end
     if saveFn then pcall(saveFn) end
-    F.Print("已为当前角色停用 " .. tostring(count) .. " 个重叠/闲置插件，即将重载界面（随时可用 /kk restore 一键还原）。")
+    F.Print("已停用 " .. tostring(count) .. " 个重叠/闲置插件，即将重载界面（随时可用 /kk restore 一键还原）。")
     if _G.ReloadUI then _G.ReloadUI() end
 end
 
@@ -211,9 +245,8 @@ local function RestoreInGameSlim()
     local accBak = F.db and type(F.db.slimBackup) == "table" and #F.db.slimBackup > 0 and F.db.slimBackup or nil
     local list = charBak or accBak or SLIM_LIST
     if not enable then return end
-    local player = _G.UnitName and _G.UnitName("player") or nil
     for _, name in ipairs(list) do
-        pcall(enable, name, player)
+        SetAddOnEnabledSafely(name, true)
     end
     if saveFn then pcall(saveFn) end
     F.Print("已重新启用 " .. tostring(#list) .. " 个插件，即将重载界面。")
@@ -222,7 +255,7 @@ end
 
 if _G.StaticPopupDialogs then
     _G.StaticPopupDialogs["KKOWOUI_SLIM_CONFIRM"] = {
-        text = "|cffdca77fKkowoUI 一键瘦身与精简切换|r\n\n将为当前角色停用以下 23 个已合并或闲置的重型插件（约省 35 MB 常驻内存），随后自动重载界面：\n\n• 合并替代：QFXSystemBar×5、EUI DataBars（PrettyTooltip 将完整保留）\n• 闲置/重叠：TalentsForever、ForeverFishing、ArcAuras_Finds/LFG、EUI Quickdraw/MythicTimer/BuffReminders、GlowingBars、MiniMarkers、DungeonsForever×8 百科子库\n\n你的布局与核心插件全部保留，随时可输入 /kk restore 一键还原。",
+        text = "|cffdca77fKkowoUI 一键瘦身与精简切换|r\n\n将停用已合并或闲置/冲突的重型插件（约省 35+ MB 常驻内存，其他角色若也启用了它们会一并停用），随后自动重载界面：\n\n• 合并/冲突：QFXSystemBar×5、EUI DataBars、EUI 冷却管理器（已装 ArcAuras 时）\n• 闲置/调试：TalentsForever、ForeverFishing、ArcAuras_Finds/LFG、ArcUI、163UI_Info、QuestieTrace、EUI Quickdraw/MythicTimer/BuffReminders、GlowingBars、MiniMarkers、DungeonsForever×8 百科子库\n\n你的布局与核心插件全部保留，随时可输入 /kk restore 一键还原。",
         button1 = "确认瘦身并重载",
         button2 = "取消",
         OnAccept = ApplyInGameSlim,
@@ -316,6 +349,11 @@ _G.SlashCmdList.KKOWOUI = function(msg)
             else
                 if ss.ShowPreview then ss:ShowPreview("expiring") end
             end
+        end
+    elseif cmd == "emote" or cmd == "rp" then
+        local ce = F.Modules.Get("classEmote")
+        if ce and ce.TriggerCommand then
+            ce:TriggerCommand(rest)
         end
     elseif cmd == "trainerdebug" then
         if F.DumpTrainerDebug then F.DumpTrainerDebug() end

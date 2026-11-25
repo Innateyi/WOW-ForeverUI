@@ -30,17 +30,21 @@ MERGED_INTO_KKOWOUI = [
     "EllesmereUIDataBars",
 ]
 
-# 确认闲置 / 练级无用 / 重叠重型插件（17 个）
+# 确认闲置 / 练级无用 / 调试 / 重叠重型插件
 IDLE_OR_REDUNDANT = [
     "TalentsForever",
     "ForeverFishing",
     "ArcAuras_Finds",
     "ArcAuras_LFG",
+    "ArcUI",
     "EllesmereUIAuraBuffReminders",
     "EllesmereUIQuickdraw",
     "EllesmereUIMythicTimer",
     "GlowingBars",
     "MiniMarkers",
+    "163UI_Info",
+    "QuestieTrace",
+    "BlizzMove_Debug",
     "DungeonsForeverPvP",
     "DungeonsForeverExplore",
     "DungeonsForeverClass",
@@ -52,6 +56,8 @@ IDLE_OR_REDUNDANT = [
 ]
 
 TO_DISABLE = set(MERGED_INTO_KKOWOUI + IDLE_OR_REDUNDANT)
+# 仅在 ArcAuras 已启用时一并停用与之冲突的 EUI 冷却管理器（与游戏内 /kk slim 一致）
+CONFLICTS_WITH_ARCAURAS = ["EllesmereUICooldownManager"]
 TO_ENABLE = {"KkowoUI"}
 
 
@@ -95,6 +101,13 @@ def main():
     crlf = b"\r\n" in raw
     lines = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").split("\n")
 
+    to_disable = set(TO_DISABLE)
+    for line in lines:
+        if ":" in line:
+            name, state = line.split(":", 1)
+            if name.strip() == "ArcAuras" and state.strip().lower() == "enabled":
+                to_disable.update(CONFLICTS_WITH_ARCAURAS)
+
     seen = set()
     changed_disable = []
     changed_enable = []
@@ -108,7 +121,7 @@ def main():
         k = name.strip()
         s = state.strip().lower()
         seen.add(k)
-        if k in TO_DISABLE:
+        if k in to_disable:
             if s != "disabled":
                 changed_disable.append(k)
             out_lines.append(f"{k}: disabled")
@@ -123,7 +136,7 @@ def main():
     trailing_blank = len(out_lines) > 0 and out_lines[-1] == ""
     if trailing_blank:
         out_lines.pop()
-    for k in sorted(TO_DISABLE):
+    for k in sorted(to_disable):
         if k not in seen:
             out_lines.append(f"{k}: disabled")
             changed_disable.append(k)

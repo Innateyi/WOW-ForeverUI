@@ -162,13 +162,7 @@ local function ImportLegacyIfPresent()
         if type(gp.combatAlert.soundLeave) == "string" then ca.soundLeave = gp.combatAlert.soundLeave end
     end
 
-    -- 4. 邮件常用联系人与小号列表
-    if type(old.social) == "table" and type(old.social.contacts) == "table" then
-        local sc = DB.GetModule("socialTools")
-        if type(old.social.contacts.favorites) == "table" then
-            sc.favorites = F.DeepCopy(old.social.contacts.favorites)
-        end
-    end
+    -- 注意：不再从旧哈兰德存档导入 favorites（里面常混有原作者整合包自带的陌生联系人，避免污染玩家快捷收件人）
 
     F.db.migratedFromHaaland = true
 end

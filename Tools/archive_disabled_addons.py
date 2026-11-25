@@ -164,21 +164,14 @@ def main():
         for name, sz in moved:
             mf.write(f"{name}\t{sz / (1024 * 1024):.2f} MB\n")
 
-    # 仅在 WoW 未运行时同步清理 AddOns.txt 中已移走的条目（先备份）
+    # 仅在 WoW 未运行时备份 AddOns.txt；刻意保留已归档插件的 `: disabled` 行：
+    # 魔兽世界会把目录存在但未出现在 AddOns.txt 里的插件当作「新安装」自动启用，
+    # 若删掉停用行，下次通过网易 DD 更新 EUI / 其他整包插件时，已归档的 EllesmereUIDataBars、
+    # EllesmereUICooldownManager 等子插件都会自动复活并造成界面重叠。
     cleaned_txt = False
     moved_names = {n for n, _ in moved}
     if not wow_proc and moved_names:
         shutil.copy2(ADDONS_TXT, os.path.join(dest_dir, "AddOns.txt.bak"))
-        new_lines = []
-        for line in lines:
-            if ":" in line:
-                k = line.split(":", 1)[0].strip()
-                if k in moved_names:
-                    continue
-            new_lines.append(line)
-        content = ("\r\n" if crlf else "\n").join(new_lines)
-        open(ADDONS_TXT, "wb").write(content.encode("utf-8"))
-        cleaned_txt = True
 
     # 检查 AddOns 目录下剩余的第三方文件夹数量
     remaining_dirs = sorted(

@@ -34,8 +34,10 @@ local function LayoutBars()
     local db = mod:GetDB()
     local w, h, gap = db.width or 300, db.height or 30, db.spacing or 6
     local shown = 0
+    local hasPreview = false
     for _, bar in ipairs(bars) do
         if bar:IsShown() then
+            if not bar.rollID then hasPreview = true end
             bar:ClearAllPoints()
             bar:SetSize(w, h)
             bar:SetPoint("TOP", container, "TOP", 0, -shown * (h + gap))
@@ -43,6 +45,12 @@ local function LayoutBars()
         end
     end
     container:SetSize(w, math.max(h, shown * (h + gap)))
+    if hasPreview then
+        container:SetFrameStrata("FULLSCREEN_DIALOG")
+        container:SetFrameLevel(230)
+    else
+        container:SetFrameStrata("MEDIUM")
+    end
 end
 
 local function HideNativeRollFrames()

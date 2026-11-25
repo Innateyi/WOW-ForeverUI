@@ -1230,54 +1230,116 @@ local function SkinBugSackIfReady()
 end
 
 ----------------------------------------------------------------------
---  4) 冷却管理器冲突一键「停用并重载」弹窗 + 调试插件提醒
+--  4) EUI 冲突一键「停用并重载」弹窗（DataBars 重叠 / 冷却管理器冲突）+ 调试插件提醒
 ----------------------------------------------------------------------
-local CDM_ADDON = "EllesmereUICooldownManager"
+local RunConflictDiagnostics
+do
+    local CDM_ADDON = "EllesmereUICooldownManager"
+    local DATABARS_ADDON = "EllesmereUIDataBars"
+    local pendingDisableList = {}
 
-if _G.StaticPopupDialogs then
-    _G.StaticPopupDialogs["KKOWOUI_CDM_CONFLICT"] = {
-        text = "|cffdca77fKkowoUI|r\n\n检测到 EUI 冷却管理器 与 Arc Auras 同时启用，冷却图标会重复或错乱。\n\n要为当前角色停用 EUI 冷却管理器并重载界面吗？",
-        button1 = "停用并重载",
-        button2 = "保留",
-        OnAccept = function()
-            local disable = (_G.C_AddOns and _G.C_AddOns.DisableAddOn) or _G.DisableAddOn
-            if disable then pcall(disable, CDM_ADDON, _G.UnitName("player")) end
-            if _G.ReloadUI then _G.ReloadUI() end
-        end,
-        OnCancel = function(_, _, reason)
-            if reason == "clicked" then
-                local db = mod:GetDB()
-                db.cdmConflictKeep = type(db.cdmConflictKeep) == "table" and db.cdmConflictKeep or {}
-                db.cdmConflictKeep[F.GetCharKey()] = true
+    local function DisableAddonSafely(addonName)
+        local ca = _G.C_AddOns
+        local disable = (ca and ca.DisableAddOn) or _G.DisableAddOn
+        if not disable then return end
+        local getState = ca and ca.GetAddOnEnableState
+        local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+        -- 无限服角色名带姓氏，UnitName("player") 会丢失姓氏导致 DisableAddOn(name, player) 静默失效；
+        -- 优先用 UnitGUID("player") 按当前角色停用，若未生效则回退为全局停用（与 EUI 面板一致）
+        if guid then
+            pcall(disable, addonName, guid)
+        end
+        local stillOn = true
+        if getState then
+            local ok, st = pcall(getState, addonName)
+            if ok and type(st) == "number" and st == 0 then
+                stillOn = false
             end
-        end,
-        timeout = 0,
-        whileDead = true,
-        hideOnEscape = true,
-        preferredIndex = 3,
-    }
-end
-
-local function RunConflictDiagnostics()
-    local db = mod:GetDB()
-    if not db.conflictCheck then
-        return
+        end
+        if stillOn then
+            pcall(disable, addonName)
+        end
     end
-    if F.IsAddOnLoaded(CDM_ADDON) and F.IsAddOnLoaded("ArcAuras") then
-        local keep = type(db.cdmConflictKeep) == "table" and db.cdmConflictKeep[F.GetCharKey()] == true
-        if not keep then
-            F.RunOutOfCombat("FUI_CDMConflictPopup", function()
+
+    if _G.StaticPopupDialogs then
+        _G.StaticPopupDialogs["KKOWOUI_EUI_CONFLICT"] = {
+            text = "%s",
+            button1 = "停用并重载",
+            button2 = "保留",
+            OnAccept = function()
+                local saveFn = _G.C_AddOns and _G.C_AddOns.SaveAddOns
+                for _, addonName in ipairs(pendingDisableList) do
+                    DisableAddonSafely(addonName)
+                end
+                if saveFn then pcall(saveFn) end
+                if _G.ReloadUI then _G.ReloadUI() end
+            end,
+            OnCancel = function(_, _, reason)
+                if reason == "clicked" then
+                    local db = mod:GetDB()
+                    local ck = F.GetCharKey()
+                    db.euiConflictKeep = type(db.euiConflictKeep) == "table" and db.euiConflictKeep or {}
+                    db.euiConflictKeep[ck] = type(db.euiConflictKeep[ck]) == "table" and db.euiConflictKeep[ck] or {}
+                    for _, addonName in ipairs(pendingDisableList) do
+                        db.euiConflictKeep[ck][addonName] = true
+                        if addonName == CDM_ADDON then
+                            db.cdmConflictKeep = type(db.cdmConflictKeep) == "table" and db.cdmConflictKeep or {}
+                            db.cdmConflictKeep[ck] = true
+                        end
+                    end
+                end
+            end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+
+    RunConflictDiagnostics = function()
+        local db = mod:GetDB()
+        if not db.conflictCheck then
+            return
+        end
+        local ck = F.GetCharKey()
+        local charKeep = type(db.euiConflictKeep) == "table" and type(db.euiConflictKeep[ck]) == "table" and db.euiConflictKeep[ck] or nil
+        local legacyCdmKeep = type(db.cdmConflictKeep) == "table" and db.cdmConflictKeep[ck] == true
+
+        for i = #pendingDisableList, 1, -1 do pendingDisableList[i] = nil end
+        local reasons = {}
+
+        local sysMod = F.Modules and F.Modules.Get and F.Modules.Get("systemBar")
+        if F.IsAddOnLoaded(DATABARS_ADDON) and sysMod and sysMod._active then
+            if not (charKeep and charKeep[DATABARS_ADDON]) then
+                pendingDisableList[#pendingDisableList + 1] = DATABARS_ADDON
+                reasons[#reasons + 1] = "• EUI 数据条（EllesmereUIDataBars）与底部系统栏重叠（时钟/FPS/延迟重影）"
+            end
+        end
+
+        if F.IsAddOnLoaded(CDM_ADDON) and F.IsAddOnLoaded("ArcAuras") then
+            if not (legacyCdmKeep or (charKeep and charKeep[CDM_ADDON])) then
+                pendingDisableList[#pendingDisableList + 1] = CDM_ADDON
+                reasons[#reasons + 1] = "• EUI 冷却管理器（EllesmereUICooldownManager）与 ArcAuras 冲突"
+            end
+        end
+
+        if #pendingDisableList > 0 then
+            local msg = "|cffdca77fKkowoUI|r\n\n检测到更新 EUI 后以下重叠/冲突子插件被重新启用：\n\n"
+                .. table.concat(reasons, "\n")
+                .. "\n\n要停用上述插件并重载界面吗？（其他角色若也启用了它们，会一并停用）"
+            F.RunOutOfCombat("FUI_EUIConflictPopup", function()
                 if _G.StaticPopup_Show then
-                    _G.StaticPopup_Show("KKOWOUI_CDM_CONFLICT")
+                    _G.StaticPopup_Show("KKOWOUI_EUI_CONFLICT", msg)
                 end
             end)
         end
-    end
-    if F.IsAddOnLoaded("QuestieTrace") or F.IsAddOnLoaded("BlizzMove_Debug") then
-        F.PrintOnce("debug_addons", "|cffffcc00性能提示：|r检测到调试插件 QuestieTrace 或 BlizzMove_Debug 仍在启用，建议停用以降低内存开销。")
-    end
-    if F.IsAddOnLoaded("ArcUI") then
-        F.PrintOnce("arcui_stub", "|cffffcc00精简提示：|rArcUI 是一次性迁移存根，数据已迁至 ArcAuras 后可直接停用。")
+
+        if F.IsAddOnLoaded("QuestieTrace") or F.IsAddOnLoaded("BlizzMove_Debug") then
+            F.PrintOnce("debug_addons", "|cffffcc00性能提示：|r检测到调试插件 QuestieTrace 或 BlizzMove_Debug 仍在启用，建议停用或输入 /kk slim 一键清理。")
+        end
+        if F.IsAddOnLoaded("ArcUI") then
+            F.PrintOnce("arcui_stub", "|cffffcc00精简提示：|rArcUI 是一次性迁移存根，数据已迁至 ArcAuras 后可直接停用。")
+        end
     end
 end
 
@@ -3307,6 +3369,461 @@ do
     end
 end
 
+----------------------------------------------------------------------
+--  8b) 拍卖行与发件箱排版修复（零污染、弱表管理）
+--      • 拍卖行：修复「单价 / 每个物品」叠字 + 补齐无限服铜币框换肤与对齐
+--      • 发件箱：EUI 去掉左上角圆形头像后，暴雪经典坐标仍把「收件人 / 主题」
+--        向右挤了 ~60px，导致主题框捅出右边界且收件人框与「邮资」重叠；
+--        按 MailFrame 实际宽度重排两行输入框与邮资，彻底对齐框体边缘。
+----------------------------------------------------------------------
+local windowPolish = {}
+do
+    local ahHooked = setmetatable({}, { __mode = "k" })
+    local ahSkinnedCopper = setmetatable({}, { __mode = "k" })
+    local ahOrigTopAnchor = setmetatable({}, { __mode = "k" })
+    local ahFixedSub = setmetatable({}, { __mode = "k" })
+    local ahPolishQueued = false
+    local mailHooked = false
+    local mailPolishQueued = false
+
+    local function SkinCopperEditBox(eb, refBox)
+        if not eb or (eb.IsForbidden and eb:IsForbidden()) then return end
+        if refBox and refBox.GetHeight and eb.GetHeight and eb.SetHeight then
+            local rh = F.PlainNumber(refBox:GetHeight(), 0)
+            local ch = F.PlainNumber(eb:GetHeight(), 0)
+            if rh > 10 and ch > 10 and math_abs(ch - rh) > 0.5 then
+                pcall(eb.SetHeight, eb, rh)
+            end
+        end
+        if ahSkinnedCopper[eb] then return end
+        ahSkinnedCopper[eb] = true
+
+        -- 隐藏暴雪三段式金属边框，保留右侧铜币图标
+        for _, k in ipairs({ "Left", "Right", "Middle", "Mid" }) do
+            local r = eb[k]
+            if r and r.SetAlpha then pcall(r.SetAlpha, r, 0) end
+        end
+        local name = eb.GetName and eb:GetName()
+        if type(name) == "string" and name ~= "" then
+            for _, suf in ipairs({ "Left", "Middle", "Right" }) do
+                local t = _G[name .. suf]
+                if t and t.SetAlpha then pcall(t.SetAlpha, t, 0) end
+            end
+        end
+        if eb.GetRegions then
+            local keepIcon = eb.texture or eb.Icon
+            for _, r in ipairs({ eb:GetRegions() }) do
+                if r and r ~= keepIcon and r.IsObjectType and r:IsObjectType("Texture") then
+                    local rw = F.PlainNumber(r.GetWidth and r:GetWidth(), 0)
+                    local rh = F.PlainNumber(r.GetHeight and r:GetHeight(), 0)
+                    -- 铜币圆图标通常 <= 16x16 且接近正方形，保留它；其余背景/边框贴图静音
+                    local looksLikeCoin = rw > 4 and rw <= 18 and rh > 4 and rh <= 18 and math_abs(rw - rh) <= 4
+                    if not looksLikeCoin and r.SetAlpha then
+                        pcall(r.SetAlpha, r, 0)
+                    end
+                end
+            end
+        end
+
+        local bg = eb:CreateTexture(nil, "BACKGROUND", nil, -6)
+        bg:SetColorTexture(0.02, 0.02, 0.02, 1)
+        bg:SetAllPoints(eb)
+        local borders = {
+            { "TOPLEFT",    "TOPRIGHT",    0, 0, nil, 1 },
+            { "BOTTOMLEFT", "BOTTOMRIGHT", 0, 0, nil, 1 },
+            { "TOPLEFT",    "BOTTOMLEFT",  0, 0, 1, nil },
+            { "TOPRIGHT",   "BOTTOMRIGHT", 0, 0, 1, nil },
+        }
+        for _, sp in ipairs(borders) do
+            local ln = eb:CreateTexture(nil, "BORDER", nil, -7)
+            ln:SetPoint(sp[1], eb, sp[1], sp[3], sp[4])
+            ln:SetPoint(sp[2], eb, sp[2], sp[3], sp[4])
+            if sp[5] then ln:SetWidth(sp[5]) end
+            if sp[6] then ln:SetHeight(sp[6]) end
+            ln:SetColorTexture(0.2, 0.2, 0.2, 1)
+        end
+    end
+
+    local function CollectVisibleFS(frame, out, seen)
+        if not (frame and frame.GetRegions) then return end
+        for _, r in ipairs({ frame:GetRegions() }) do
+            if r and not seen[r] and r.IsObjectType and r:IsObjectType("FontString")
+                and r.IsShown and r:IsShown() then
+                local txt = F.PlainString(r.GetText and r:GetText(), "")
+                if txt and txt ~= "" then
+                    seen[r] = true
+                    out[#out + 1] = r
+                end
+            end
+        end
+    end
+
+    local function SeparatePriceLabels(sf, pi)
+        if not (sf and pi) then return end
+        local mi = pi.MoneyInputFrame
+        local miLeft = mi and mi.GetLeft and F.PlainNumber(mi:GetLeft(), nil)
+
+        -- 优先查找显式命名字段，同时扫描 PriceInput 及其父页签的可见 FontString，确保无论客户端模板怎么命名都能命中
+        local topFS = pi.Label or pi.Text
+        local subFS = pi.PerItemPostfix or pi.SubText or sf.PerItemPostfix or sf.SubText
+
+        local list, seen = {}, {}
+        CollectVisibleFS(pi, list, seen)
+        CollectVisibleFS(sf, list, seen)
+        -- 顺带扫描 PriceInput 的直接非输入框子框体（部分客户端把标签包在子层里）
+        if pi.GetChildren then
+            for _, ch in ipairs({ pi:GetChildren() }) do
+                if ch and ch ~= mi then
+                    CollectVisibleFS(ch, list, seen)
+                end
+            end
+        end
+
+        if topFS and not (topFS.IsShown and topFS:IsShown()) then topFS = nil end
+        if subFS and not (subFS.IsShown and subFS:IsShown()) then subFS = nil end
+
+        if not (topFS and subFS and topFS ~= subFS) then
+            -- 按文本/几何位置找「单价」+「每个物品」或同一标签列内垂直重叠的一对文字
+            local piTop = pi.GetTop and F.PlainNumber(pi:GetTop(), nil)
+            local piBot = pi.GetBottom and F.PlainNumber(pi:GetBottom(), nil)
+            local colCandidates = {}
+            for _, fs in ipairs(list) do
+                local l = F.PlainNumber(fs:GetLeft(), nil)
+                local r = F.PlainNumber(fs:GetRight(), nil)
+                local t = F.PlainNumber(fs:GetTop(), nil)
+                local b = F.PlainNumber(fs:GetBottom(), nil)
+                if l and r and t and b then
+                    local inLeftCol = (not miLeft) or (r <= miLeft + 18)
+                    local nearRow = (not (piTop and piBot)) or (t >= piBot - 24 and b <= piTop + 24)
+                    if inLeftCol and nearRow then
+                        colCandidates[#colCandidates + 1] = { fs = fs, l = l, r = r, t = t, b = b, txt = F.PlainString(fs:GetText(), "") }
+                    end
+                end
+            end
+
+            -- 1) 如果之前已配对过，直接沿用（不依赖固定字段名）
+            if topFS and ahFixedSub[topFS] and ahFixedSub[topFS].IsShown and ahFixedSub[topFS]:IsShown() then
+                subFS = ahFixedSub[topFS]
+            else
+                for _, cand in ipairs(colCandidates) do
+                    local paired = ahFixedSub[cand.fs]
+                    if paired and paired.IsShown and paired:IsShown() then
+                        topFS, subFS = cand.fs, paired
+                        break
+                    end
+                end
+            end
+
+            -- 2) 找带「每个物品 / Per Item」的副标签，或任意两段水平+垂直重叠的标签
+            if not (topFS and subFS and topFS ~= subFS) then
+                for i = 1, #colCandidates do
+                    local a = colCandidates[i]
+                    for j = i + 1, #colCandidates do
+                        local b = colCandidates[j]
+                        local hOverlap = math_min(a.r, b.r) - math_max(a.l, b.l)
+                        local vOverlap = math_min(a.t, b.t) - math_max(a.b, b.b)
+                        local isPerItemPair = a.txt:find("每个", 1, true) or b.txt:find("每个", 1, true)
+                            or a.txt:lower():find("per item", 1, true) or b.txt:lower():find("per item", 1, true)
+                        if hOverlap > 2 and (vOverlap > -2 or isPerItemPair) then
+                            local aIsSub = a.txt:find("每个", 1, true) or a.txt:lower():find("per item", 1, true)
+                            local bIsSub = b.txt:find("每个", 1, true) or b.txt:lower():find("per item", 1, true)
+                            if aIsSub and not bIsSub then
+                                topFS, subFS = b.fs, a.fs
+                            elseif bIsSub and not aIsSub then
+                                topFS, subFS = a.fs, b.fs
+                            elseif a.t >= b.t then
+                                topFS, subFS = a.fs, b.fs
+                            else
+                                topFS, subFS = b.fs, a.fs
+                            end
+                            break
+                        end
+                    end
+                    if topFS and subFS then break end
+                end
+            end
+        end
+
+        if not (topFS and subFS and topFS ~= subFS) then return end
+        if (topFS.IsForbidden and topFS:IsForbidden()) or (subFS.IsForbidden and subFS:IsForbidden()) then return end
+
+        ahFixedSub[topFS] = subFS
+
+        -- 记录主标签原始锚点（仅首次记录），确保反复打开/切换物品 100% 幂等不漂移；规避与副标签形成循环锚点
+        local orig = ahOrigTopAnchor[topFS]
+        if not orig and topFS.GetNumPoints and topFS:GetNumPoints() > 0 then
+            local pts = {}
+            local np = topFS:GetNumPoints()
+            for i = 1, np do
+                local p, rel, rp, x, y = topFS:GetPoint(i)
+                if p and rel ~= subFS then
+                    pts[#pts + 1] = { p, rel, rp, x or 0, y or 0 }
+                end
+            end
+            if #pts > 0 then
+                orig = pts
+                ahOrigTopAnchor[topFS] = orig
+            end
+        end
+        if orig then
+            pcall(topFS.ClearAllPoints, topFS)
+            for i = 1, #orig do
+                local pt = orig[i]
+                pcall(topFS.SetPoint, topFS, pt[1], pt[2], pt[3], pt[4], pt[5] + 5)
+            end
+        elseif mi or pi then
+            pcall(topFS.ClearAllPoints, topFS)
+            pcall(topFS.SetPoint, topFS, "RIGHT", mi or pi, "LEFT", -12, 5)
+        end
+
+        -- 副标签（「每个物品」）保持清晰小号字并紧贴主标签正下方 2px，彻底告别叠字
+        if subFS.GetFont and subFS.SetFont then
+            local okF, fPath, fSize, fFlags = pcall(subFS.GetFont, subFS)
+            if okF and type(fPath) == "string" and fPath ~= "" then
+                local curSz = F.PlainNumber(fSize, 12)
+                if curSz > 11.5 then
+                    pcall(subFS.SetFont, subFS, fPath, 11, type(fFlags) == "string" and fFlags or "")
+                end
+            end
+        end
+        local alignLeft = (topFS.GetJustifyH and topFS:GetJustifyH() == "LEFT")
+        pcall(subFS.ClearAllPoints, subFS)
+        if alignLeft then
+            pcall(subFS.SetPoint, subFS, "TOPLEFT", topFS, "BOTTOMLEFT", 0, -2)
+        else
+            pcall(subFS.SetPoint, subFS, "TOPRIGHT", topFS, "BOTTOMRIGHT", 0, -2)
+        end
+    end
+
+    local function PolishAuctionHouseNow()
+        if not mod._active then return end
+        local ah = _G.AuctionHouseFrame
+        if not (ah and ah:IsShown()) then return end
+        for _, key in ipairs({ "CommoditiesSellFrame", "ItemSellFrame" }) do
+            local sf = ah[key]
+            if sf and sf:IsShown() then
+                for _, pk in ipairs({ "PriceInput", "SecondaryPriceInput" }) do
+                    local pi = sf[pk]
+                    if pi and pi:IsShown() then
+                        local mi = pi.MoneyInputFrame
+                        if mi and mi.CopperBox and mi.CopperBox:IsShown() then
+                            SkinCopperEditBox(mi.CopperBox, mi.SilverBox or mi.GoldBox)
+                        end
+                        SeparatePriceLabels(sf, pi)
+                    end
+                end
+            end
+        end
+        -- 顺手补齐竞价区遗漏的铜币输入框换肤（如存在且可见）
+        for _, pair in ipairs({
+            { "AuctionHouseFrameCopper", "AuctionHouseFrameSilver" },
+            { "BidAmountCopper",         "BidAmountSilver" },
+        }) do
+            local cb = _G[pair[1]]
+            if cb and cb:IsShown() then
+                SkinCopperEditBox(cb, _G[pair[2]])
+            end
+        end
+    end
+
+    local function QueuePolishAuctionHouse()
+        if ahPolishQueued or not mod._active then return end
+        ahPolishQueued = true
+        C_Timer.After(0, function()
+            ahPolishQueued = false
+            pcall(PolishAuctionHouseNow)
+            -- 晚一拍在 EUI WSkin.Debounce 之后复核一次，确保不被首帧换肤盖回
+            C_Timer.After(0.08, function() pcall(PolishAuctionHouseNow) end)
+        end)
+    end
+
+    windowPolish.HookAuctionHouse = function()
+        local ah = _G.AuctionHouseFrame
+        if not ah then return end
+        if not ahHooked[ah] then
+            ahHooked[ah] = true
+            ah:HookScript("OnShow", QueuePolishAuctionHouse)
+            if type(ah.SetDisplayMode) == "function" then
+                _G.hooksecurefunc(ah, "SetDisplayMode", QueuePolishAuctionHouse)
+            end
+        end
+        for _, key in ipairs({ "CommoditiesSellFrame", "ItemSellFrame" }) do
+            local sf = ah[key]
+            if sf and not ahHooked[sf] then
+                ahHooked[sf] = true
+                sf:HookScript("OnShow", QueuePolishAuctionHouse)
+                if type(sf.SetItem) == "function" then
+                    _G.hooksecurefunc(sf, "SetItem", QueuePolishAuctionHouse)
+                end
+                if type(sf.UpdatePostState) == "function" then
+                    _G.hooksecurefunc(sf, "UpdatePostState", QueuePolishAuctionHouse)
+                end
+            end
+        end
+        if ah:IsShown() then
+            QueuePolishAuctionHouse()
+        end
+    end
+
+    -- 发件箱重排：收件人 / 主题左移对齐信纸左边距，主题框严控在框内，邮资与收件人框垂直居中不重叠
+    local function FindMailRegionByText(container, kw1, kw2)
+        if not (container and container.GetRegions) then return nil end
+        for _, r in ipairs({ container:GetRegions() }) do
+            if r and r.IsObjectType and r:IsObjectType("FontString") then
+                local txt = F.PlainString(r.GetText and r:GetText(), "")
+                if txt and txt ~= "" then
+                    if (kw1 and txt:find(kw1, 1, true)) or (kw2 and kw2 ~= "" and txt:find(kw2, 1, true)) then
+                        return r
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    local function PolishSendMailNow()
+        if not mod._active then return end
+        local mf = _G.MailFrame
+        local sf = _G.SendMailFrame
+        local nameBox = _G.SendMailNameEditBox
+        local subjBox = _G.SendMailSubjectEditBox
+        if not (mf and sf and nameBox and subjBox and sf:IsShown()) then return end
+        if (mf.IsForbidden and mf:IsForbidden()) or (sf.IsForbidden and sf:IsForbidden()) then return end
+
+        local mfW = F.PlainNumber(mf:GetWidth(), 338)
+        if mfW < 260 then mfW = 338 end
+
+        -- 找到「收件人」「主题」「邮资」标签 FontString
+        local toLbl = _G.SendMailNameEditBoxLabel
+            or FindMailRegionByText(nameBox, "收件人", _G.SEND_MAIL_TO)
+            or FindMailRegionByText(sf, "收件人", _G.SEND_MAIL_TO)
+        local subjLbl = _G.SendMailSubjectEditBoxLabel
+            or FindMailRegionByText(subjBox, "主题", _G.SUBJECT)
+            or FindMailRegionByText(sf, "主题", _G.SUBJECT)
+        local costFrame = _G.SendMailCostMoneyFrame
+        local costLbl = _G.SendMailCostMoneyFrameLabel
+            or FindMailRegionByText(sf, "邮资", _G.SEND_MAIL_COST)
+            or (costFrame and FindMailRegionByText(costFrame, "邮资", _G.SEND_MAIL_COST))
+
+        -- 垂直坐标：严控在标题栏（-30）与信纸区（SendMailScrollFrame）之间
+        local rowH = 20
+        local rowGap = 6
+        local row1Top = -36
+        local mfTop = F.PlainNumber(mf:GetTop(), nil)
+        local scroll = _G.SendMailScrollFrame
+        local scrollTop = scroll and F.PlainNumber(scroll:GetTop(), nil)
+        if mfTop and scrollTop then
+            local gapToBody = mfTop - scrollTop
+            if gapToBody > 62 and gapToBody < 140 then
+                local avail = gapToBody - 30 - 6
+                local blockH = rowH * 2 + rowGap
+                if avail >= blockH then
+                    row1Top = -math_floor(30 + (avail - blockH) * 0.5 + 0.5)
+                else
+                    row1Top = -32
+                end
+            end
+        end
+
+        -- 计算左侧标签宽度，使「收件人: / 主题:」紧贴左侧信纸边距（约 14px）不再空出一大截
+        local toW = toLbl and F.PlainNumber(toLbl.GetStringWidth and toLbl:GetStringWidth(), 44) or 44
+        local subjW = subjLbl and F.PlainNumber(subjLbl.GetStringWidth and subjLbl:GetStringWidth(), 36) or 36
+        local labelColW = math_max(40, math_min(72, math_floor(math_max(toW, subjW) + 0.5)))
+        local editLeft = 14 + labelColW + 6
+        local rightPad = 14
+
+        -- 邮资区：靠右对齐 MailFrame 右内边，并与收件人输入框严格同一水平中线
+        local row1MidY = row1Top - math_floor(rowH * 0.5)
+        local costTotalW = 92
+        if costFrame and costFrame.IsShown and costFrame:IsShown() then
+            -- 对齐邮资金币/银币/铜币按钮内数字与币图标垂直中线
+            for _, sfx in ipairs({ "GoldButton", "SilverButton", "CopperButton" }) do
+                local cb = _G["SendMailCostMoneyFrame" .. sfx]
+                local fs = cb and cb.GetFontString and cb:GetFontString()
+                if fs then
+                    if fs.SetJustifyV then pcall(fs.SetJustifyV, fs, "MIDDLE") end
+                    pcall(fs.ClearAllPoints, fs)
+                    pcall(fs.SetPoint, fs, "RIGHT", cb, "RIGHT", -13, -0.5)
+                end
+            end
+            pcall(costFrame.ClearAllPoints, costFrame)
+            pcall(costFrame.SetPoint, costFrame, "RIGHT", mf, "TOPRIGHT", -rightPad, row1MidY)
+            local cfW = F.PlainNumber(costFrame:GetWidth(), 54)
+            local clW = 0
+            if costLbl and costLbl ~= costFrame then
+                pcall(costLbl.ClearAllPoints, costLbl)
+                pcall(costLbl.SetPoint, costLbl, "RIGHT", costFrame, "LEFT", -2, 0)
+                clW = F.PlainNumber(costLbl.GetStringWidth and costLbl:GetStringWidth(), 32)
+            end
+            costTotalW = math_max(78, math_floor(cfW + clW + 8))
+        end
+
+        -- 收件人输入框：左侧对齐标签列，右侧给「邮资」留足 10px 间距
+        local nameW = math_max(105, math_floor(mfW - editLeft - rightPad - costTotalW - 10))
+        pcall(nameBox.SetHeight, nameBox, rowH)
+        pcall(nameBox.SetWidth, nameBox, nameW)
+        pcall(nameBox.ClearAllPoints, nameBox)
+        pcall(nameBox.SetPoint, nameBox, "TOPLEFT", mf, "TOPLEFT", editLeft, row1Top)
+        if toLbl and toLbl ~= nameBox then
+            pcall(toLbl.ClearAllPoints, toLbl)
+            pcall(toLbl.SetPoint, toLbl, "RIGHT", nameBox, "LEFT", -6, 0)
+        end
+
+        -- 主题输入框：与收件人左对齐，宽度精确收在 MailFrame 右内边（绝不捅出界面）
+        local subjWBox = math_max(150, math_floor(mfW - editLeft - rightPad))
+        pcall(subjBox.SetHeight, subjBox, rowH)
+        pcall(subjBox.SetWidth, subjBox, subjWBox)
+        pcall(subjBox.ClearAllPoints, subjBox)
+        pcall(subjBox.SetPoint, subjBox, "TOPLEFT", nameBox, "BOTTOMLEFT", 0, -rowGap)
+        if subjLbl and subjLbl ~= subjBox then
+            pcall(subjLbl.ClearAllPoints, subjLbl)
+            pcall(subjLbl.SetPoint, subjLbl, "RIGHT", subjBox, "LEFT", -6, 0)
+        end
+
+        -- 实测兜底：若邮资实测左缘与收件人右缘间距不足 8px，动态微收收件人框宽
+        if costFrame and costFrame:IsShown() then
+            local costLeft = (costLbl and costLbl:IsShown() and F.PlainNumber(costLbl:GetLeft(), nil))
+                or F.PlainNumber(costFrame:GetLeft(), nil)
+            local nameRight = F.PlainNumber(nameBox:GetRight(), nil)
+            if costLeft and nameRight and (costLeft - nameRight) < 8 then
+                local shrink = (8 - (costLeft - nameRight)) + 2
+                local curW = F.PlainNumber(nameBox:GetWidth(), nameW)
+                if curW - shrink >= 95 then
+                    pcall(nameBox.SetWidth, nameBox, math_floor(curW - shrink))
+                end
+            end
+        end
+    end
+
+    local function QueuePolishSendMail()
+        if mailPolishQueued or not mod._active then return end
+        mailPolishQueued = true
+        C_Timer.After(0, function()
+            mailPolishQueued = false
+            pcall(PolishSendMailNow)
+            C_Timer.After(0.06, function() pcall(PolishSendMailNow) end)
+        end)
+    end
+
+    windowPolish.HookMail = function()
+        local sf = _G.SendMailFrame
+        if not sf then return end
+        if not mailHooked then
+            mailHooked = true
+            sf:HookScript("OnShow", QueuePolishSendMail)
+            if type(_G.MailFrameTab_OnClick) == "function" then
+                _G.hooksecurefunc("MailFrameTab_OnClick", QueuePolishSendMail)
+            end
+            if type(_G.SendMailFrame_Update) == "function" then
+                _G.hooksecurefunc("SendMailFrame_Update", QueuePolishSendMail)
+            end
+        end
+        if sf:IsShown() then
+            QueuePolishSendMail()
+        end
+    end
+end
+
 local function RefreshAllModernHUD()
     pcall(SkinVehicleLeaveButton)
     pcall(SkinGhostFrame)
@@ -3317,6 +3834,8 @@ local function RefreshAllModernHUD()
     pcall(ApplyQuestieTownsfolkDedup, false)
     pcall(RefreshHDPetHappiness)
     pcall(HookTrainerFrameIfReady)
+    pcall(windowPolish.HookAuctionHouse)
+    pcall(windowPolish.HookMail)
     pcall(HookCombatTextSizing)
     pcall(RefreshWorldRefreshBanner)
 end
@@ -3411,8 +3930,16 @@ function mod:OnEnable()
             end
         elseif addonName == "Blizzard_CombatText" then
             HookCombatTextSizing()
+        elseif addonName == "Blizzard_AuctionHouseUI" then
+            windowPolish.HookAuctionHouse()
+        elseif addonName == "Blizzard_MailFrame" then
+            windowPolish.HookMail()
         end
     end)
+    self:RegisterEvent("AUCTION_HOUSE_SHOW", windowPolish.HookAuctionHouse)
+    self:RegisterEvent("MAIL_SHOW", windowPolish.HookMail)
+    self:RegisterEvent("SEND_MAIL_MONEY_CHANGED", windowPolish.HookMail)
+    self:RegisterEvent("MAIL_SEND_INFO_UPDATE", windowPolish.HookMail)
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA", function()
         C_Timer.After(0.5, RefreshWorldRefreshBanner)
     end)
@@ -3637,7 +4164,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     }, {
         type = "toggle",
         text = "同步美化 BugSack 与冲突弹窗",
-        tooltip = "同步美化 BugSack，并在检测到冷却管理器与 ArcAuras 同时开启时弹窗询问停用。",
+        tooltip = "同步美化 BugSack，并在检测到 EUI DataBars（与底部系统栏重叠）或 EUI 冷却管理器（与 ArcAuras 冲突）同时启用时弹窗询问停用。",
         getValue = function() return db.conflictCheck ~= false end,
         setValue = function(v) db.conflictCheck = v == true; db.skinBugSack = v == true; SkinBugSackIfReady() end,
     })
@@ -3801,6 +4328,26 @@ do
     }
 
     local euiHideHooked = false
+    local writingSelf = false
+    -- [cvar] = { value, t }：记录本模块最近一次写入，CVAR_UPDATE 即便晚于 SetCVar 返回才派发，也不会被误判为玩家手动修改
+    local selfWrites = {}
+    local euiGuardUntil = 0
+    local manualOverrides = {}
+    local lastShouldHide = false
+
+    local function ClearManualOverrides()
+        for k in pairs(manualOverrides) do
+            manualOverrides[k] = nil
+        end
+    end
+
+    local function ArmEUIGuard(seconds)
+        local now = _G.GetTime and _G.GetTime() or 0
+        local untilT = now + (seconds or 4.5)
+        if untilT > euiGuardUntil then
+            euiGuardUntil = untilT
+        end
+    end
 
     local function SafeGetCVar(name)
         local CV = _G.C_CVar
@@ -3819,13 +4366,17 @@ do
         if cur == nil then return false end
         local want = tostring(value)
         if cur == want then return true end
+        writingSelf = true
+        selfWrites[name] = { value = want, t = _G.GetTime and _G.GetTime() or 0 }
+        local ok = false
         local CV = _G.C_CVar
         if CV and CV.SetCVar then
-            return pcall(CV.SetCVar, name, want)
+            ok = pcall(CV.SetCVar, name, want)
         elseif _G.SetCVar then
-            return pcall(_G.SetCVar, name, want)
+            ok = pcall(_G.SetCVar, name, want)
         end
-        return false
+        writingSelf = false
+        return ok
     end
 
     local function IsInCombatInstance()
@@ -3872,17 +4423,27 @@ do
             shouldHide = not IsInCombatInstance()
         end
 
+        -- 离开隐藏区域（例如走出主城）时重置单次手动放行标记
+        if lastShouldHide and not shouldHide then
+            ClearManualOverrides()
+        end
+        lastShouldHide = shouldHide
+
         if shouldHide then
             db.savedFriendly = SnapshotCVars(db.savedFriendly, FRIENDLY_NAME_CVARS)
             if db.hideGuildTitle ~= false then
                 db.savedFriendly = SnapshotCVars(db.savedFriendly, FRIENDLY_EXTRA_CVARS)
             end
             for _, name in ipairs(FRIENDLY_NAME_CVARS) do
-                SafeSetCVar(name, "0")
+                if not manualOverrides[name] then
+                    SafeSetCVar(name, "0")
+                end
             end
             if db.hideGuildTitle ~= false then
                 for _, name in ipairs(FRIENDLY_EXTRA_CVARS) do
-                    SafeSetCVar(name, "0")
+                    if not manualOverrides[name] then
+                        SafeSetCVar(name, "0")
+                    end
                 end
             elseif db.savedFriendly then
                 -- 仍在主城但用户取消了「同时隐藏公会/头衔」：立即把这两项还原，而不是等离开主城
@@ -3903,7 +4464,9 @@ do
         if hideNpcPlates then
             db.savedNpcPlates = SnapshotCVars(db.savedNpcPlates, FRIENDLY_NPC_PLATE_CVARS)
             for _, name in ipairs(FRIENDLY_NPC_PLATE_CVARS) do
-                SafeSetCVar(name, "0")
+                if not manualOverrides[name] then
+                    SafeSetCVar(name, "0")
+                end
             end
         elseif db.savedNpcPlates then
             RestoreCVars(db.savedNpcPlates)
@@ -3966,6 +4529,7 @@ do
         if EUI and EUI.RegisterOnHide then
             euiHideHooked = true
             pcall(EUI.RegisterOnHide, EUI, function()
+                ArmEUIGuard(2.5)
                 C_Timer.After(0.25, ApplyAll)
             end)
         end
@@ -4000,13 +4564,16 @@ do
             target = MODE_ORDER[(idx % #MODE_ORDER) + 1]
         end
         db.friendlyMode = target
+        ClearManualOverrides()
         ApplyAll()
         F.Print("友方玩家 ID 策略已切换为：|cff5fd3a6" .. (MODE_LABELS[target] or target) .. "|r")
     end
 
     function npMod:OnEnable()
         local QueueApply = F.Debounce(0.25, ApplyAll)
+        ArmEUIGuard(4.5)
         self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+            ArmEUIGuard(4.5)
             ApplyAll()
             C_Timer.After(0.6, ApplyAll)
             C_Timer.After(2.0, ApplyAll)
@@ -4015,13 +4582,61 @@ do
         end)
         self:RegisterEvent("PLAYER_UPDATE_RESTING", ApplyAll)
         self:RegisterEvent("ZONE_CHANGED_NEW_AREA", function()
+            ArmEUIGuard(3.0)
             ApplyAll()
             C_Timer.After(1.0, ApplyAll)
         end)
         -- 战斗中被推迟的 ApplyAll 已由 F.RunOutOfCombat 在 PLAYER_REGEN_ENABLED 统一补跑，无需每次脱战再查一遍 CVar
-        self:RegisterEvent("CVAR_UPDATE", function(_, _, cvar)
-            -- EUI 友方姓名板模块也会改写 nameplateShowFriends / 友方 NPC 姓名板；本模块自身写回不会再改值，防抖后至多空跑一次
-            if WATCHED_NP_CVARS[cvar] then
+        self:RegisterEvent("CVAR_UPDATE", function(_, _, cvar, val)
+            if not WATCHED_NP_CVARS[cvar] then return end
+            local pendingSelf = selfWrites[cvar]
+            selfWrites[cvar] = nil
+            if writingSelf then return end
+            if pendingSelf then
+                local written = F.PlainString(val, nil) or SafeGetCVar(cvar)
+                local age = (_G.GetTime and _G.GetTime() or 0) - pendingSelf.t
+                if written == pendingSelf.value and age < 2 then return end
+            end
+            local db = npMod:GetDB()
+            local settingsOpen = _G.SettingsPanel and _G.SettingsPanel.IsShown and _G.SettingsPanel:IsShown()
+            local euiOpen = _G.EllesmereUI and _G.EllesmereUI._mainFrame
+                and _G.EllesmereUI._mainFrame.IsShown and _G.EllesmereUI._mainFrame:IsShown()
+            local now = _G.GetTime and _G.GetTime() or 0
+            local inGuardWindow = (now <= euiGuardUntil) or euiOpen
+
+            -- 玩家在暴雪「选项 → 姓名板」点击勾选框，或平时按 Shift+V 等快捷键修改：
+            -- 绝不自动取消勾选，同步记录到快照并在本次停留期间放行
+            if settingsOpen or not inGuardWindow then
+                local cur = F.PlainString(val, nil) or SafeGetCVar(cvar)
+                if cur ~= nil then
+                    local aliases = (cvar == "nameplateShowFriends" or cvar == "nameplateShowFriendlyPlayers")
+                        and { "nameplateShowFriends", "nameplateShowFriendlyPlayers" }
+                        or (cvar == "nameplateShowFriendlyNPCs" or cvar == "nameplateShowFriendlyNpcs")
+                        and { "nameplateShowFriendlyNPCs", "nameplateShowFriendlyNpcs" }
+                        or { cvar }
+                    for _, k in ipairs(aliases) do
+                        if type(db.savedFriendly) == "table" and db.savedFriendly[k] ~= nil then
+                            db.savedFriendly[k] = cur
+                        end
+                        if type(db.savedNpcPlates) == "table" and db.savedNpcPlates[k] ~= nil then
+                            db.savedNpcPlates[k] = cur
+                        end
+                        if cur == "1" then
+                            manualOverrides[k] = true
+                        else
+                            manualOverrides[k] = nil
+                        end
+                    end
+                    if cur == "1" and (db.friendlyMode or "city_hide") ~= "keep" and lastShouldHide then
+                        F.PrintOnce("np_manual_override",
+                            "已保留你手动开启的友方姓名/姓名板设置（本次已暂停主城自动隐藏）。如需永久交由游戏设置管理，请在 /kk → 姓名板与主城减卡优化 选「不干预」，或输入 /kk friendly keep。")
+                    end
+                end
+                return
+            end
+
+            -- 仅在登录/切图/关闭 EUI 设置的短暂保护窗口内，压制 EUI 自动写回
+            if not manualOverrides[cvar] then
                 QueueApply()
             end
         end)
@@ -4033,6 +4648,8 @@ do
     end
 
     function npMod:OnDisable()
+        ClearManualOverrides()
+        lastShouldHide = false
         RestoreAll()
     end
 
@@ -4051,7 +4668,7 @@ do
             },
             order = { "city_hide", "instance_only", "always_hide", "keep" },
             getValue = function() return db.friendlyMode or "city_hide" end,
-            setValue = function(v) db.friendlyMode = v; ApplyAll() end,
+            setValue = function(v) db.friendlyMode = v; ClearManualOverrides(); ApplyAll() end,
         })
         y = y - h
 
@@ -4060,13 +4677,13 @@ do
             text = "同步隐藏友方公会与头衔",
             tooltip = "隐藏友方玩家 ID 时一并关闭公会与头衔渲染，主城帧数提升更明显。",
             getValue = function() return db.hideGuildTitle ~= false end,
-            setValue = function(v) db.hideGuildTitle = v == true; ApplyAll() end,
+            setValue = function(v) db.hideGuildTitle = v == true; ClearManualOverrides(); ApplyAll() end,
         }, {
             type = "toggle",
             text = "主城同时隐藏友方 NPC 姓名板",
             tooltip = "在主城/休整区临时隐藏卫兵、商人等友方 NPC 姓名板以换取最高帧数（离开主城自动恢复）。",
             getValue = function() return db.hideCityNpcPlates == true end,
-            setValue = function(v) db.hideCityNpcPlates = v == true; ApplyAll() end,
+            setValue = function(v) db.hideCityNpcPlates = v == true; ClearManualOverrides(); ApplyAll() end,
         })
         y = y - h
 

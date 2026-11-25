@@ -210,8 +210,45 @@ function Theme.StyleButton(btn, fontSize)
     end
     local r, g, b = Theme.GetAccent()
     hl:SetColorTexture(r, g, b, 0.16)
-    if btn.GetFontString and btn:GetFontString() then
-        Theme.ApplyFont(btn:GetFontString(), fontSize or 12, "", 0.95, 0.95, 0.96, 1)
+    local fs = btn.GetFontString and btn:GetFontString()
+    if not fs and btn.CreateFontString and btn.SetFontString then
+        fs = btn:CreateFontString(nil, "OVERLAY")
+        fs:SetPoint("CENTER", btn, "CENTER", 0, 0)
+        fs:SetJustifyH("CENTER")
+        fs:SetJustifyV("MIDDLE")
+        btn:SetFontString(fs)
+    end
+    if fs then
+        Theme.ApplyFont(fs, fontSize or 12, "", 0.95, 0.95, 0.96, 1)
+    end
+    if btn.SetPushedTextOffset then
+        pcall(btn.SetPushedTextOffset, btn, 0, -1)
+    end
+end
+
+-- 统一注册弹窗按 Esc 关闭：优先接入 EllesmereUI 退出栈（在 EUI 设置界面上层弹窗时，先关弹窗不误关设置页），
+-- 非 EUI 环境下自动回退到暴雪 UISpecialFrames
+local escapeRegistered = setmetatable({}, { __mode = "k" })
+function Theme.RegisterEscapeClose(frame, onEscape)
+    if not frame or escapeRegistered[frame] then
+        return
+    end
+    escapeRegistered[frame] = true
+    local eui = _G.EllesmereUI
+    if eui and type(eui.RegisterEscapeClose) == "function" then
+        pcall(eui.RegisterEscapeClose, frame, {
+            notOwned = true,
+            onEscape = type(onEscape) == "function" and onEscape or nil,
+        })
+        return
+    end
+    local name = frame.GetName and frame:GetName()
+    local special = _G.UISpecialFrames
+    if type(name) == "string" and name ~= "" and type(special) == "table" then
+        for _, existing in ipairs(special) do
+            if existing == name then return end
+        end
+        special[#special + 1] = name
     end
 end
 

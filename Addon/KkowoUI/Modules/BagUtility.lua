@@ -7,7 +7,7 @@
 local _, F = ...
 
 local _G = _G
-local ipairs, pcall, select, type = ipairs, pcall, select, type
+local ipairs, pairs, pcall, select, type = ipairs, pairs, pcall, select, type
 local table_sort = table.sort
 local string_format = string.format
 local CreateFrame = CreateFrame
@@ -23,6 +23,7 @@ local mod = F.RegisterModule("bagUtility", {
     defaults = {
         enabled = true,
         silentFastLoot = true,
+        showEmptyLoot = true,
         clickLoot = false,         -- 默认使用暴雪原生 C++ 自动拾取（1 次往返零卡顿，按住 Shift+右键开窗）；开启则改为右键全拾 / 左键开窗
         v2NativeAutoLoot = false,
         autoSellJunk = true,
@@ -46,6 +47,13 @@ local lootRevealToken = 0
 local lootFrameHooked = false
 local editModeHooked = false
 local lootSweptThisOpen = false
+local sawAnyLootThisOpen = false
+local notifiedEmptyThisOpen = false
+local lastEmptyToastTime = -10
+local fallbackArmedThisOpen = false
+local lastFallbackArmTime = -1
+local sweptSlots = {}
+local retriedCoinOnOpen = {}
 local pendingCloseCheck = false
 local lootParked = false
 local lootPreArmed = false
@@ -55,22 +63,83 @@ local inSilentPointSet = false
 local savedLootPoint = nil
 local savedLootClamped = true
 local ResolveWantAuto = nil
+local emptyToastFrame = nil
+local emptyToastCount = 0
+local emptyToastRepositionPending = false
+local emptyGradFrom = nil
+local emptyGradTo = nil
 
--- 1) 无侵入对齐 EllesmereUIBags 底部金币数字（替代手打补丁）
+local function ClearLootSessionTracking()
+    lootSweptThisOpen = false
+    sawAnyLootThisOpen = false
+    notifiedEmptyThisOpen = false
+    fallbackArmedThisOpen = false
+    for k in pairs(sweptSlots) do sweptSlots[k] = nil end
+    for k in pairs(retriedCoinOnOpen) do retriedCoinOnOpen[k] = nil end
+end
+
+-- 1) 无侵入对齐所有金币框（EUI 背包、邮箱发件箱/邮资、商人、银行、训练师、拍卖行等）数字与币图标垂直居中
 local MONEY_SUFFIXES = { "GoldButton", "SilverButton", "CopperButton" }
+local MONEY_TEXT_Y_OFFSET = -0.5
+local KNOWN_MONEY_FRAMES = {
+    "EUI_BagMoneyFrame",
+    "SendMailMoneyFrame",
+    "SendMailCostMoneyFrame",
+    "MerchantMoneyFrame",
+    "BankFrameMoneyFrame",
+    "PetStableMoneyFrame",
+}
 
-local function AlignMoneyFrame(mf)
-    if not (mf and mf.GetName and mf:GetName()) then
+local function AlignMoneyFrame(mf, yOffset)
+    if not mf or (mf.IsForbidden and mf:IsForbidden()) then
         return
     end
-    local base = mf:GetName()
+    local okName, base = pcall(mf.GetName, mf)
+    if not (okName and type(base) == "string" and base ~= "") then
+        return
+    end
+    -- 跳过 Tooltip 内嵌金币框，避免 12.x 战斗中触发 GameTooltip 秘密值污染
+    if base:find("Tooltip", 1, true) then
+        return
+    end
+    if mf.IsProtected and mf:IsProtected() and _G.InCombatLockdown and _G.InCombatLockdown() then
+        return
+    end
+    local dy = yOffset ~= nil and yOffset or MONEY_TEXT_Y_OFFSET
     for _, sfx in ipairs(MONEY_SUFFIXES) do
         local b = _G[base .. sfx]
-        local t = b and b.GetFontString and b:GetFontString()
-        if t then
-            t:ClearAllPoints()
-            t:SetPoint("RIGHT", b, "RIGHT", -13, -1)
+        if b and not (b.IsForbidden and b:IsForbidden()) then
+            local t = b.GetFontString and b:GetFontString()
+            if t then
+                local nt = b.GetNormalTexture and b:GetNormalTexture()
+                local iconW = nt and nt.GetWidth and F.PlainNumber(nt:GetWidth(), nil) or nil
+                if not iconW or iconW < 10 or iconW > 28 then
+                    iconW = 13
+                end
+                if t.SetJustifyV then pcall(t.SetJustifyV, t, "MIDDLE") end
+                pcall(t.ClearAllPoints, t)
+                pcall(t.SetPoint, t, "RIGHT", b, "RIGHT", -iconW, dy)
+            end
         end
+    end
+end
+
+local function AlignKnownMoneyFrames(yOffset)
+    for _, fname in ipairs(KNOWN_MONEY_FRAMES) do
+        local mf = _G[fname]
+        if mf then
+            AlignMoneyFrame(mf, yOffset)
+        end
+    end
+end
+
+local function TryAlignAnyMoneyFrame(frame)
+    if not (mod._active and mod:GetDB().alignBagMoney) then
+        return
+    end
+    local mf = type(frame) == "string" and _G[frame] or frame
+    if mf then
+        AlignMoneyFrame(mf)
     end
 end
 
@@ -80,16 +149,10 @@ local function SetupMoneyAlign()
     end
     moneyHooked = true
     if _G.MoneyFrame_Update then
-        _G.hooksecurefunc("MoneyFrame_Update", function(frame)
-            if not (mod._active and mod:GetDB().alignBagMoney) then
-                return
-            end
-            local mf = type(frame) == "string" and _G[frame] or frame
-            local name = mf and mf.GetName and mf:GetName()
-            if name and (name:find("^EUI_Bag") or name:find("^EUI_OfflineMoneyFrame") or name:find("EllesmereUIBags")) then
-                AlignMoneyFrame(mf)
-            end
-        end)
+        _G.hooksecurefunc("MoneyFrame_Update", TryAlignAnyMoneyFrame)
+    end
+    if _G.MoneyFrame_UpdateMoney then
+        _G.hooksecurefunc("MoneyFrame_UpdateMoney", TryAlignAnyMoneyFrame)
     end
 end
 
@@ -245,8 +308,18 @@ local function EnsureLVILFrame()
     lvilFrame = CreateFrame("Frame", "KkowoUI_LowValueList", _G.UIParent)
     lvilFrame:SetSize(296, 220)
     lvilFrame:SetFrameStrata("MEDIUM")
+    lvilFrame:SetToplevel(true)
+    lvilFrame:SetClampedToScreen(true)
     -- 面板空白处吃掉点击，避免点穿到 3D 世界误选目标/误转镜头
     lvilFrame:EnableMouse(true)
+    lvilFrame:Hide()
+    lvilFrame:SetScript("OnHide", function(self)
+        self:SetFrameStrata("MEDIUM")
+    end)
+    F.Theme.RegisterEscapeClose(lvilFrame, function()
+        lvilManualOpen = false
+        lvilFrame:Hide()
+    end)
     F.Theme.StyleGlassSurface(lvilFrame, {
         bgAlpha = 0.93,
         borderAlpha = 0.90,
@@ -468,7 +541,17 @@ RefreshLVIL = function(forceShow)
         return
     end
     lvilFrame:SetHeight(math.max(60, shown * 24 + 34))
+    -- 从 EUI 设置面板手动点击预览时临时置顶到 FULLSCREEN_DIALOG，避免被设置面板遮挡；关闭后自动回落 MEDIUM
+    if forceShow then
+        lvilFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+        lvilFrame:SetFrameLevel(240)
+    else
+        lvilFrame:SetFrameStrata("MEDIUM")
+    end
     lvilFrame:Show()
+    if forceShow then
+        lvilFrame:Raise()
+    end
 end
 
 -- 4) 智能商人助手（仅当 EllesmereUIQoL 未接管自动卖灰/修装时生效，绝不重复触发；按住 Shift 临时跳过）
@@ -655,7 +738,7 @@ local function RevealLootWindow(markManual)
     else
         manualLootThisOpen = false
     end
-    lootSweptThisOpen = false
+    ClearLootSessionTracking()
     pendingCloseCheck = false
     lootRevealToken = lootRevealToken + 1
     SetLootFrameSilent(false)
@@ -666,7 +749,7 @@ end
 local function ResetSilentLootOnClose()
     isSilentLooting = false
     manualLootThisOpen = false
-    lootSweptThisOpen = false
+    ClearLootSessionTracking()
     pendingCloseCheck = false
     lootRevealToken = lootRevealToken + 1
     local lf = _G.LootFrame
@@ -747,7 +830,7 @@ local function HookLootFrameOnce()
             end)
         end
         if type(lf.SetPoint) == "function" and _G.hooksecurefunc then
-            _G.hooksecurefunc(lf, "SetPoint", function(self, pt, rel, rpt, x, y)
+            local function ParkLootOnSetPoint(self, pt, rel, rpt, x, y)
                 if inSilentPointSet or IsEditModeActiveSafe() then return end
                 if not (isSilentLooting or lootPreArmed) then return end
                 -- 若玩家正按住 Shift 手动开窗，不要劫持暴雪将窗口放到鼠标处的 SetPoint
@@ -765,7 +848,11 @@ local function HookLootFrameOnce()
                     inSilentPointSet = false
                     lootParked = true
                 end
-            end)
+            end
+            _G.hooksecurefunc(lf, "SetPoint", ParkLootOnSetPoint)
+            if type(lf.SetPointBase) == "function" and lf.SetPointBase ~= lf.SetPoint then
+                _G.hooksecurefunc(lf, "SetPointBase", ParkLootOnSetPoint)
+            end
         end
         lf:HookScript("OnHide", function()
             if LootHooksIdle() then return end
@@ -821,13 +908,41 @@ end
 
 -- 注意：GetNumLootItems() 在槽位拾空后仍返回原始槽位数（直到 LOOT_CLOSED），
 -- 必须用 GetLootSlotType / LootSlotHasItem 判断真正尚未拾取的剩余物品与金币
-local function IsLootSlotActive(slot)
+local function GetLootSlotKind(slot)
     if _G.GetLootSlotType then
         local ok, st = pcall(_G.GetLootSlotType, slot)
-        if ok and st ~= nil then
-            local noneType = (_G.Enum and _G.Enum.LootSlotType and _G.Enum.LootSlotType.None) or 0
-            return st ~= noneType
+        if ok then
+            return F.PlainNumber(st, nil)
         end
+    end
+    return nil
+end
+
+local function IsCoinOrCurrencyType(st)
+    if not st then return false end
+    local moneyType = (_G.Enum and _G.Enum.LootSlotType and _G.Enum.LootSlotType.Money) or _G.LOOT_SLOT_MONEY or 2
+    local currType = (_G.Enum and _G.Enum.LootSlotType and _G.Enum.LootSlotType.Currency) or _G.LOOT_SLOT_CURRENCY or 3
+    return st == moneyType or st == currType
+end
+
+local function GetLootSlotSignature(slot, st)
+    if _G.GetLootSlotInfo then
+        local ok, _, item, qty, currencyID = pcall(_G.GetLootSlotInfo, slot)
+        if ok then
+            local cleanItem = F.PlainString(item, "")
+            local cleanQty = F.PlainNumber(qty, 0)
+            local cleanCurr = F.PlainNumber(currencyID, 0)
+            return string_format("%d:%d:%d:%s", st or -1, cleanQty, cleanCurr, cleanItem)
+        end
+    end
+    return st or true
+end
+
+local function IsLootSlotActive(slot)
+    local st = GetLootSlotKind(slot)
+    if st ~= nil then
+        local noneType = (_G.Enum and _G.Enum.LootSlotType and _G.Enum.LootSlotType.None) or 0
+        return st ~= noneType
     end
     if _G.LootSlotHasItem then
         local ok, has = pcall(_G.LootSlotHasItem, slot)
@@ -850,21 +965,60 @@ local function CountRemainingLootSlots()
     return rem
 end
 
-local function SweepLootSlotsOnce()
+local function HasActiveCoinSlot()
     local num = _G.GetNumLootItems and F.PlainNumber(_G.GetNumLootItems(), 0) or 0
-    if num <= 0 then
+    for i = 1, num do
+        if IsCoinOrCurrencyType(GetLootSlotKind(i)) then
+            return true
+        end
+    end
+    return false
+end
+
+-- 先扫金币与货币（1..num，确保金币永远最先发出、不再排在所有物品之后），再倒序扫普通物品（num..1）；
+-- onlyUnswept=true 时按槽位签名去重：既防止同一具尸体重复刷 LootSlot 卡顿，又能 0ms 拾取群拾/后续包新增的槽位；
+-- allowCoinRetry=true（仅 LOOT_OPENED 使用）时，若金币/货币槽在 LOOT_READY 时机过早未被清空，仅对其补发 1 次（绝不重刷物品槽）。
+local function SweepLootSlots(onlyUnswept, onlyCoins, allowCoinRetry)
+    local num = _G.GetNumLootItems and F.PlainNumber(_G.GetNumLootItems(), 0) or 0
+    if num <= 0 or not _G.LootSlot then
         return 0
     end
     local swept = 0
-    if _G.LootSlot then
-        for i = num, 1, -1 do
-            if IsLootSlotActive(i) then
+    for i = 1, num do
+        local st = GetLootSlotKind(i)
+        if IsCoinOrCurrencyType(st) then
+            local sig = GetLootSlotSignature(i, st)
+            local needSweep = (not onlyUnswept) or (sweptSlots[i] ~= sig)
+            local needCoinRetry = (not needSweep) and allowCoinRetry and (not retriedCoinOnOpen[i])
+            if needSweep or needCoinRetry then
                 pcall(_G.LootSlot, i)
+                sweptSlots[i] = sig
+                if allowCoinRetry then
+                    retriedCoinOnOpen[i] = true
+                end
+                swept = swept + 1
+            end
+        end
+    end
+    if onlyCoins then
+        return swept
+    end
+    for i = num, 1, -1 do
+        local st = GetLootSlotKind(i)
+        if not IsCoinOrCurrencyType(st) and IsLootSlotActive(i) then
+            local sig = GetLootSlotSignature(i, st)
+            if not onlyUnswept or sweptSlots[i] ~= sig then
+                pcall(_G.LootSlot, i)
+                sweptSlots[i] = sig
                 swept = swept + 1
             end
         end
     end
     return swept
+end
+
+local function SweepLootSlotsOnce()
+    return SweepLootSlots(false, false, false)
 end
 
 local function CloseLootSafely()
@@ -886,9 +1040,6 @@ local function ScheduleSilentCloseCheck()
         end
     end)
 end
-
--- 每具尸体只拾取一次（避免重复刷 LootSlot 造成延迟），但若首次事件尚无有效槽位则不占节流窗口
-local lastLootTime = -1
 
 -- 左右键拾取：分别记录最近左右键时间，仅在启用 clickLoot 时监听 GLOBAL_MOUSE_DOWN
 local lastLeftTime, lastRightTime = -10, -10
@@ -960,9 +1111,18 @@ ResolveWantAuto = function(autoLoot)
 end
 
 local function ArmSilentLootFallback()
+    fallbackArmedThisOpen = true
+    lastFallbackArmTime = _G.GetTime()
     lootRevealToken = lootRevealToken + 1
     local myToken = lootRevealToken
     local prevRem = nil
+    -- 0.08s 仅检查仍活跃的金币/货币槽位（已清零时不发任何包，未清时比 0.30s 提早 220ms 补拾，不显窗也不重刷物品）
+    C_Timer.After(0.08, function()
+        if myToken ~= lootRevealToken or not isSilentLooting then return end
+        if HasActiveCoinSlot() then
+            SweepLootSlots(false, true, false)
+        end
+    end)
     -- 0.30s / 0.85s 静默补扫两次（处理群拾或网络波动时稍晚到达的槽位，不显窗）
     C_Timer.After(0.30, function()
         if myToken ~= lootRevealToken or not isSilentLooting then return end
@@ -1011,38 +1171,358 @@ local function ArmSilentLootFallback()
     C_Timer.After(1.80, function() CheckFinalReveal(true) end)
 end
 
+local function EnsureSilentLootFallback(now)
+    if not fallbackArmedThisOpen or (now - lastFallbackArmTime >= 0.25) then
+        ArmSilentLootFallback()
+    end
+end
+
+-- 空包裹微播报：自动对齐 EllesmereUIForeverEssentials 拾取信息（EUI_LootFeed）位置与外观，
+-- 若当前已有其他拾取条目则自动顺排在其上方，零重叠、全鼠标穿透；停用 EUI 拾取信息时回退到 KkowoUI 播报锚点
+local EMPTY_LOOT_ICON = "Interface\\Icons\\INV_Misc_Bag_08"
+
+local function GetEUILootFeedContext()
+    local eui = _G.EllesmereUI
+    local lf = eui and eui._LootFeed
+    if not (lf and type(lf.Get) == "function") then
+        return nil, nil
+    end
+    local okEn, enabled = pcall(lf.Get, "enabled")
+    if not (okEn and enabled == true) then
+        return nil, nil
+    end
+    local elems = eui._unlockRegisteredElements
+    local elem = elems and elems["EUI_LootFeed"]
+    local anchor = nil
+    if elem and type(elem.getFrame) == "function" then
+        local okF, frame = pcall(elem.getFrame)
+        if okF and frame then
+            anchor = frame
+        end
+    end
+    return anchor, lf.Get
+end
+
+local function ReadFeedOpt(getOpt, key, fallback)
+    if not getOpt then return fallback end
+    local ok, v = pcall(getOpt, key)
+    if ok and v ~= nil then return v end
+    return fallback
+end
+
+local function CountVisibleEUIFeedRows(feedAnchor, getOpt)
+    if not (feedAnchor and feedAnchor.GetChildren) then return 0 end
+    local count = 0
+    local children = { feedAnchor:GetChildren() }
+    for i = 1, #children do
+        local ch = children[i]
+        if ch and ch.IsShown and ch:IsShown() and not ch.pinned then
+            count = count + 1
+        end
+    end
+    local maxRows = F.PlainNumber(ReadFeedOpt(getOpt, "maxRows", 6), 6)
+    if count > maxRows then count = maxRows end
+    return count
+end
+
+local function PositionEmptyLootToast(f, feedAnchor, getOpt)
+    local style = ReadFeedOpt(getOpt, "style", "BAR")
+    local rowHeight = F.PlainNumber(ReadFeedOpt(getOpt, "rowHeight", 30), 30)
+    local spacing = F.PlainNumber(ReadFeedOpt(getOpt, "spacing", 2), 2)
+    local gap = spacing + (style == "TOAST" and 2 or 0)
+    local step = rowHeight + (style == "TRAY" and spacing or gap)
+    local pin = (ReadFeedOpt(getOpt, "tracker", false) == true) and (rowHeight + (style == "TRAY" and 6 or gap)) or 0
+    local growUp = ReadFeedOpt(getOpt, "grow", "UP") ~= "DOWN"
+
+    f:ClearAllPoints()
+    if feedAnchor then
+        local visCount = CountVisibleEUIFeedRows(feedAnchor, getOpt)
+        local yOff = pin + visCount * step
+        if growUp then
+            f:SetPoint("BOTTOMLEFT", feedAnchor, "BOTTOMLEFT", 0, yOff)
+        else
+            f:SetPoint("TOPLEFT", feedAnchor, "TOPLEFT", 0, -yOff)
+        end
+        return
+    end
+    local kToast = _G.KkowoUI_LootToast
+    if kToast then
+        f:SetPoint("BOTTOMLEFT", kToast, "BOTTOMLEFT", 0, 0)
+        return
+    end
+    local euiDB = _G.EllesmereUIDB
+    local pos = euiDB and euiDB.lootFeed and euiDB.lootFeed.pos
+    if pos and type(pos.point) == "string" then
+        f:SetPoint(pos.point, _G.UIParent, pos.relPoint or pos.point, F.PlainNumber(pos.x, 0), F.PlainNumber(pos.y, 0))
+    else
+        f:SetPoint("BOTTOMRIGHT", _G.UIParent, "BOTTOMRIGHT", -320, 260)
+    end
+end
+
+local function StyleEmptyLootToast(f, getOpt)
+    local style = ReadFeedOpt(getOpt, "style", "BAR")
+    local width = F.PlainNumber(ReadFeedOpt(getOpt, "width", 180), 180)
+    local rowHeight = F.PlainNumber(ReadFeedOpt(getOpt, "rowHeight", 30), 30)
+    local textSize = F.PlainNumber(ReadFeedOpt(getOpt, "textSize", 13), 13)
+    local barWidth = F.PlainNumber(ReadFeedOpt(getOpt, "barWidth", 3), 3)
+    local duration = F.PlainNumber(ReadFeedOpt(getOpt, "duration", 3), 3)
+    local bgR = F.PlainNumber(ReadFeedOpt(getOpt, "bgR", 0.05), 0.05)
+    local bgG = F.PlainNumber(ReadFeedOpt(getOpt, "bgG", 0.05), 0.05)
+    local bgB = F.PlainNumber(ReadFeedOpt(getOpt, "bgB", 0.05), 0.05)
+    local bgA = F.PlainNumber(ReadFeedOpt(getOpt, "bgA", 0.30), 0.30)
+
+    if width < 130 then width = 130 end
+    if rowHeight < 22 then rowHeight = 22 end
+    f:SetSize(width, rowHeight)
+
+    local isBar = (style == "BAR")
+    local showBar = isBar and barWidth > 0
+    f.bar:SetWidth(showBar and barWidth or 1)
+    f.bar:SetShown(showBar)
+    f.bar:SetColorTexture(0.68, 0.72, 0.78, 1)
+
+    local iconSize = rowHeight - 8
+    if iconSize < 14 then iconSize = 14 end
+    f.icon:ClearAllPoints()
+    f.icon:SetSize(iconSize, iconSize)
+    f.icon:SetPoint("LEFT", f, "LEFT", showBar and (barWidth + 5) or 5, 0)
+
+    local bgTexKey = ReadFeedOpt(getOpt, "bgTexture", "none")
+    local eui = _G.EllesmereUI
+    if bgTexKey ~= "none" and eui and eui.BuildBarTextureTables and eui.ResolveTexturePath then
+        local okT, tbl = pcall(eui.BuildBarTextureTables)
+        local okP, path = false, nil
+        if okT and tbl then
+            okP, path = pcall(eui.ResolveTexturePath, tbl, bgTexKey, "Interface\\Buttons\\WHITE8x8")
+        end
+        if okP and type(path) == "string" and path ~= "" then
+            f.bg:SetTexture(path)
+            f.bg:SetVertexColor(1, 1, 1, 1)
+        else
+            f.bg:SetColorTexture(1, 1, 1, 1)
+        end
+    else
+        f.bg:SetColorTexture(1, 1, 1, 1)
+    end
+    if _G.CreateColor and f.bg.SetGradient then
+        if not emptyGradFrom then
+            emptyGradFrom = _G.CreateColor(0, 0, 0, 0)
+            emptyGradTo = _G.CreateColor(0, 0, 0, 0)
+        end
+        emptyGradFrom:SetRGBA(bgR, bgG, bgB, bgA)
+        emptyGradTo:SetRGBA(bgR, bgG, bgB, isBar and 0 or bgA)
+        f.bg:SetGradient("HORIZONTAL", emptyGradFrom, emptyGradTo)
+    else
+        f.bg:SetColorTexture(bgR, bgG, bgB, bgA)
+    end
+
+    if eui and eui.ApplyModuleFont then
+        pcall(eui.ApplyModuleFont, f.name, nil, textSize, "essentials")
+    else
+        F.Theme.SetFont(f.name, textSize, "")
+    end
+
+    local hold = duration > 2.5 and 2.5 or (duration < 0.8 and 0.8 or duration)
+    if f.fade and f.fade.alpha then
+        f.fade.alpha:SetStartDelay(hold)
+    end
+end
+
+local function EnsureEmptyLootToast()
+    if emptyToastFrame then return emptyToastFrame end
+    local f = CreateFrame("Frame", "KkowoUI_EmptyLootToast", _G.UIParent)
+    f:SetFrameStrata("MEDIUM")
+    f:EnableMouse(false)
+
+    f.bg = f:CreateTexture(nil, "BACKGROUND")
+    f.bg:SetAllPoints()
+
+    f.bar = f:CreateTexture(nil, "ARTWORK")
+    f.bar:SetPoint("TOPLEFT")
+    f.bar:SetPoint("BOTTOMLEFT")
+
+    f.iconBg = f:CreateTexture(nil, "ARTWORK", nil, 0)
+    f.iconBg:SetColorTexture(0, 0, 0, 1)
+
+    f.icon = f:CreateTexture(nil, "ARTWORK", nil, 1)
+    f.icon:SetTexture(EMPTY_LOOT_ICON)
+    f.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    if f.icon.SetDesaturated then pcall(f.icon.SetDesaturated, f.icon, true) end
+    f.icon:SetVertexColor(0.80, 0.83, 0.88)
+
+    f.iconBg:SetPoint("TOPLEFT", f.icon, "TOPLEFT", -1, 1)
+    f.iconBg:SetPoint("BOTTOMRIGHT", f.icon, "BOTTOMRIGHT", 1, -1)
+
+    f.name = f:CreateFontString(nil, "OVERLAY")
+    f.name:SetJustifyH("LEFT")
+    f.name:SetWordWrap(false)
+    f.name:SetPoint("LEFT", f.icon, "RIGHT", 6, 0)
+    f.name:SetPoint("RIGHT", f, "RIGHT", -8, 0)
+
+    local showAG = f:CreateAnimationGroup()
+    local jump = showAG:CreateAnimation("Translation")
+    jump:SetOrder(1)
+    jump:SetDuration(0)
+    jump:SetOffset(-24, 0)
+    local glide = showAG:CreateAnimation("Translation")
+    glide:SetOrder(2)
+    glide:SetDuration(0.35)
+    glide:SetSmoothing("OUT")
+    glide:SetOffset(24, 0)
+    local appear = showAG:CreateAnimation("Alpha")
+    appear:SetOrder(2)
+    appear:SetDuration(0.35)
+    appear:SetSmoothing("OUT")
+    appear:SetFromAlpha(0)
+    appear:SetToAlpha(1)
+    showAG:SetScript("OnFinished", function()
+        f:SetAlpha(1)
+        f.fade:Play()
+    end)
+    f.show = showAG
+
+    local fadeAG = f:CreateAnimationGroup()
+    local fadeAlpha = fadeAG:CreateAnimation("Alpha")
+    fadeAlpha:SetOrder(1)
+    fadeAlpha:SetDuration(0.8)
+    fadeAlpha:SetSmoothing("IN_OUT")
+    fadeAlpha:SetFromAlpha(1)
+    fadeAlpha:SetToAlpha(0)
+    fadeAG.alpha = fadeAlpha
+    fadeAG:SetScript("OnFinished", function()
+        f:Hide()
+        emptyToastCount = 0
+    end)
+    f.fade = fadeAG
+
+    f:Hide()
+    emptyToastFrame = f
+    return f
+end
+
+local function ScheduleEmptyToastReposition()
+    if emptyToastRepositionPending or not (emptyToastFrame and emptyToastFrame:IsShown()) then
+        return
+    end
+    emptyToastRepositionPending = true
+    C_Timer.After(0, function()
+        emptyToastRepositionPending = false
+        if emptyToastFrame and emptyToastFrame:IsShown() then
+            local feedAnchor, getOpt = GetEUILootFeedContext()
+            if feedAnchor then
+                PositionEmptyLootToast(emptyToastFrame, feedAnchor, getOpt)
+            end
+        end
+    end)
+end
+
+local function ShowEmptyLootToast()
+    if not (mod._active and mod:GetDB().showEmptyLoot ~= false) then return end
+    local now = _G.GetTime()
+    if (now - lastEmptyToastTime) < 0.25 then return end
+    lastEmptyToastTime = now
+
+    local f = EnsureEmptyLootToast()
+    local feedAnchor, getOpt = GetEUILootFeedContext()
+    StyleEmptyLootToast(f, getOpt)
+    PositionEmptyLootToast(f, feedAnchor, getOpt)
+
+    local wasShown = f:IsShown()
+    emptyToastCount = wasShown and (emptyToastCount + 1) or 1
+    if emptyToastCount > 1 then
+        f.name:SetText(string_format("%dx |cffd4d8df空包裹|r", emptyToastCount))
+    else
+        f.name:SetText("|cffd4d8df空包裹|r")
+    end
+
+    if not wasShown then
+        f.fade:Stop()
+        f:SetAlpha(0)
+        f:Show()
+        f.show:Play()
+    else
+        f.fade:Stop()
+        if not f.show:IsPlaying() then
+            f:SetAlpha(1)
+            f.fade:Play()
+        end
+    end
+end
+
+local function NotifyEmptyLootOnce()
+    if notifiedEmptyThisOpen then return end
+    notifiedEmptyThisOpen = true
+    ShowEmptyLootToast()
+end
+
+local function ScheduleEmptyLootCloseCheck()
+    local myToken = lootRevealToken
+    C_Timer.After(0.03, function()
+        if myToken ~= lootRevealToken or not isSilentLooting then return end
+        local rawNum = _G.GetNumLootItems and F.PlainNumber(_G.GetNumLootItems(), 0) or 0
+        if rawNum <= 0 or (not sawAnyLootThisOpen and CountRemainingLootSlots() <= 0) then
+            NotifyEmptyLootOnce()
+            CloseLootSafely()
+        end
+    end)
+end
+
 local function HandleLootTrigger(_, event, autoLoot)
     if not (mod._active and mod:GetDB().silentFastLoot ~= false) then return end
     HookLootFrameOnce()
 
+    local rawNum = _G.GetNumLootItems and F.PlainNumber(_G.GetNumLootItems(), 0) or 0
+    local rem = rawNum > 0 and CountRemainingLootSlots() or 0
+    if rem > 0 then
+        sawAnyLootThisOpen = true
+    end
+    local isEmptyLoot = (rawNum <= 0) or (rem <= 0 and not sawAnyLootThisOpen)
+
     if event == "LOOT_OPENED" then
         if not isSilentLooting then
-            if not ResolveWantAuto(autoLoot) then
+            local wantAuto = ResolveWantAuto(autoLoot)
+            -- 空包裹时暴雪常以 autoLoot=false 触发事件：只要玩家未按住 Shift（或右键拾取），绝不显窗闪烁
+            if not wantAuto and isEmptyLoot and ResolveWantAuto(nil) then
+                wantAuto = true
+            end
+            if not wantAuto then
                 RevealLootWindow(true)
                 return
             end
+            manualLootThisOpen = false
             isSilentLooting = true
         end
         SetLootFrameSilent(true)
-        local rem = CountRemainingLootSlots()
         if rem <= 0 then
+            if isEmptyLoot then
+                NotifyEmptyLootOnce()
+            end
             CloseLootSafely()
             return
         end
-        if not lootSweptThisOpen then
-            local swept = SweepLootSlotsOnce()
-            if swept > 0 then
-                lootSweptThisOpen = true
-                lastLootTime = _G.GetTime()
+        local now = _G.GetTime()
+        local hadSweptBefore = lootSweptThisOpen
+        local swept = SweepLootSlots(true, false, true)
+        if swept > 0 then
+            lootSweptThisOpen = true
+            if not hadSweptBefore then
+                ArmSilentLootFallback()
+            else
+                EnsureSilentLootFallback(now)
             end
-            ArmSilentLootFallback()
+        else
+            EnsureSilentLootFallback(now)
         end
         return
     end
 
     if event ~= "LOOT_READY" then return end
 
-    if not ResolveWantAuto(autoLoot) then
+    local wantAuto = ResolveWantAuto(autoLoot)
+    if not wantAuto and isEmptyLoot and ResolveWantAuto(nil) then
+        wantAuto = true
+    end
+    if not wantAuto then
         RevealLootWindow(true)
         return
     end
@@ -1052,21 +1532,27 @@ local function HandleLootTrigger(_, event, autoLoot)
     SetLootFrameSilent(true)
 
     local now = _G.GetTime()
-    if lootSweptThisOpen and (now - lastLootTime < 0.3) then
-        if CountRemainingLootSlots() <= 0 then
-            ScheduleSilentCloseCheck()
-        end
-        return
-    end
-
-    local swept = SweepLootSlotsOnce()
+    local hadSweptBefore = lootSweptThisOpen
+    local swept = SweepLootSlots(true, false, false)
     if swept > 0 then
         lootSweptThisOpen = true
-        lastLootTime = now
-        ArmSilentLootFallback()
+        if not hadSweptBefore then
+            ArmSilentLootFallback()
+        else
+            EnsureSilentLootFallback(now)
+        end
     else
-        -- 服务端尚未下发或空掉落：延后兜底（若到达 LOOT_OPENED 仍为空则立刻关闭）
-        ArmSilentLootFallback()
+        if CountRemainingLootSlots() <= 0 then
+            if hadSweptBefore then
+                ScheduleSilentCloseCheck()
+            else
+                -- 服务端尚未下发或空包裹：保持离屏静默（防闪窗），若到 LOOT_OPENED 或 30ms 后仍为空则直接关闭并播报「空包裹」
+                EnsureSilentLootFallback(now)
+                ScheduleEmptyLootCloseCheck()
+            end
+        else
+            EnsureSilentLootFallback(now)
+        end
     end
 end
 
@@ -1082,9 +1568,9 @@ function mod:OnEnable()
     end
 
     SetupMoneyAlign()
-    -- 背包框体可能早于本模块创建，此时 MoneyFrame_Update 尚未再次触发：启用时先对齐一次
-    if db.alignBagMoney and _G.EUI_BagMoneyFrame then
-        AlignMoneyFrame(_G.EUI_BagMoneyFrame)
+    -- 背包/邮箱等框体可能早于本模块创建，启用时先统一对齐一次
+    if db.alignBagMoney then
+        AlignKnownMoneyFrames()
     end
     HookLootFrameOnce()
     PreArmSilentLoot()
@@ -1092,6 +1578,9 @@ function mod:OnEnable()
     C_Timer.After(1.5, DisableSlowEUIQuickLoot)
 
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        if db.alignBagMoney then
+            AlignKnownMoneyFrames()
+        end
         HookLootFrameOnce()
         PreArmSilentLoot()
         DisableSlowEUIQuickLoot()
@@ -1103,7 +1592,12 @@ function mod:OnEnable()
     if db.clickLoot == true and db.silentFastLoot ~= false then
         ApplyClickLootCVars(true)
     end
-    self:RegisterEvent("LOOT_SLOT_CLEARED", function()
+    self:RegisterEvent("LOOT_SLOT_CLEARED", function(_, _, slot)
+        local cleanSlot = F.PlainNumber(slot, nil)
+        if cleanSlot then
+            sweptSlots[cleanSlot] = nil
+            retriedCoinOnOpen[cleanSlot] = nil
+        end
         if isSilentLooting then
             -- 已停到屏外时无需每个槽位都重做 ~20 次窗口 API 调用（AoE 一次拾 15 件时尤为明显）
             if not lootParked then SetLootFrameSilent(true) end
@@ -1112,6 +1606,9 @@ function mod:OnEnable()
     end)
     self:RegisterEvent("LOOT_BIND_CONFIRM", function() RevealLootWindow(true) end)
     self:RegisterEvent("LOOT_CLOSED", ResetSilentLootOnClose)
+    self:RegisterEvent("CHAT_MSG_LOOT", ScheduleEmptyToastReposition)
+    self:RegisterEvent("CHAT_MSG_MONEY", ScheduleEmptyToastReposition)
+    self:RegisterEvent("CURRENCY_DISPLAY_UPDATE", ScheduleEmptyToastReposition)
     self:RegisterEvent("CVAR_UPDATE", function(_, _, cvarName)
         if cvarName == "autoLootDefault" then
             if WantPersistentPreArm() then
@@ -1152,6 +1649,12 @@ function mod:OnDisable()
     RestoreEUIQuickLoot()
     lvilManualOpen = false
     if lvilFrame then lvilFrame:Hide() end
+    if emptyToastFrame then
+        emptyToastFrame.show:Stop()
+        emptyToastFrame.fade:Stop()
+        emptyToastFrame:Hide()
+        emptyToastCount = 0
+    end
 end
 
 function mod:OnThemeChanged()
@@ -1187,15 +1690,32 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             ApplyClickLootCVars(v == true and db.silentFastLoot ~= false)
             SyncClickLootMouseWatch()
         end,
-    }, blank)
+    }, {
+        type = "toggle",
+        text = "空包裹在拾取信息区提示",
+        tooltip = "怪物掉落空包裹时静默秒关防闪窗，并在 EUI 拾取信息位置以同风格微条提示「空包裹」。",
+        getValue = function() return db.showEmptyLoot ~= false end,
+        setValue = function(v)
+            db.showEmptyLoot = v == true
+            if not v and emptyToastFrame then
+                emptyToastFrame.show:Stop()
+                emptyToastFrame.fade:Stop()
+                emptyToastFrame:Hide()
+                emptyToastCount = 0
+            end
+        end,
+    })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "对齐 EUI 背包金币数字",
-        tooltip = "无侵入式钩子自动将 EUI 背包底栏金币数字与币图标垂直居中对齐。",
+        text = "对齐背包/邮箱/商人金币数字",
+        tooltip = "无侵入式钩子自动将背包、邮箱、商人、银行等界面的金币数字与金/银/铜币图标垂直居中对齐。",
         getValue = function() return db.alignBagMoney ~= false end,
-        setValue = function(v) db.alignBagMoney = v == true end,
+        setValue = function(v)
+            db.alignBagMoney = v == true
+            AlignKnownMoneyFrames(db.alignBagMoney and MONEY_TEXT_Y_OFFSET or 0)
+        end,
     }, {
         type = "toggle",
         text = "放大宏编辑窗口",
