@@ -12,7 +12,7 @@ local GetTime = GetTime
 
 local mod = F.RegisterModule("rollBars", {
     title = "Roll 点增强",
-    desc = "现代扁平装备 Roll 点条（带倒计时条、需求/贪婪/分解/放弃快捷钮，零全局函数污染）。",
+    desc = "现代扁平装备 Roll 点条（带倒计时条、需求/贪婪/分解/放弃快捷钮，零全局函数污染）。开启 EUI「拾取掷点框」时自动让位。",
     group = "combat",
     order = 30,
     defaults = {
@@ -51,6 +51,18 @@ local function LayoutBars()
     else
         container:SetFrameStrata("MEDIUM")
     end
+end
+
+-- EUI 9.9.4+ 的「拾取掷点框」（生活质量 → 拾取 → LOOT ROLLS，默认关闭）开启并接管掷点时返回 true：
+-- 此时由它显示掷点列表（暴雪原生弹窗也已由它关闭），本模块让位，避免同时出现两套掷点框；关掉后自动恢复
+local function EUILootRollsInUse()
+    local eui = _G.EllesmereUI
+    local lr = eui and eui._LootRolls
+    if not (lr and type(lr.InUse) == "function") then
+        return false
+    end
+    local ok, inUse = pcall(lr.InUse)
+    return ok and inUse == true
 end
 
 local function HideNativeRollFrames()
@@ -236,6 +248,10 @@ end
 
 function mod:OnStartRoll(_, rollID, rollTime)
     if not (_G.GetLootRollItemInfo and rollID) then
+        return
+    end
+    if EUILootRollsInUse() then
+        F.PrintOnce("rollbars_yield_eui", "检测到 EUI「拾取掷点框」已开启，KkowoUI 的 Roll 点条自动让位（关闭 EUI 的掷点框后自动恢复）。")
         return
     end
     EnsureContainer()
