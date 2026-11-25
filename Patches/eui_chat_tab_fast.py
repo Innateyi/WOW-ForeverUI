@@ -17,10 +17,8 @@ DEFAULT_DIR = os.path.join(WOW_ROOT, 'Interface', 'AddOns', 'EllesmereUIChat')
 BACKUP_ROOT = os.environ.get('WOW_BACKUP_ROOT', os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backups')))
 MARK = '[fui-chat-fasttab v1]'
 
-FILE_PATCHES = {
-    'EllesmereUIChat.lua': [
-        (
-            '''        -- State compares are cheaper at a coarse cadence.
+# 9.9.2 原版锚点；9.9.3 起注释里的 colour 改成了 color，代码本身未变，两种拼写都接受
+_FOLLOWER_OLD = '''        -- State compares are cheaper at a coarse cadence.
         accum = accum + elapsed
         if accum < 0.1 then return end
         accum = 0
@@ -41,7 +39,12 @@ FILE_PATCHES = {
             -- Blizzard Style sidebar backdrop: the selected window's stored
             -- colour (tab-menu colour and opacity edits land while armed).
             if ECHAT.SB_SyncBackdrop then ECHAT.SB_SyncBackdrop() end
-        end''',
+        end'''
+
+FILE_PATCHES = {
+    'EllesmereUIChat.lua': [
+        (
+            (_FOLLOWER_OLD, _FOLLOWER_OLD.replace('colour', 'color')),
             '''        -- [fui-chat-fasttab v1] 选中标签切换改为当帧即时检测与同步刷新（零 100ms 延迟、不误触 QueueFullPass）
         if GENERAL_CHAT_DOCK and FCFDock_GetSelectedWindow then
             local sel = FCFDock_GetSelectedWindow(GENERAL_CHAT_DOCK)
@@ -142,9 +145,13 @@ def run(addon_dir=DEFAULT_DIR, check_only=False):
             applied_count += 1
             continue
         for old, new in pairs:
-            if text.count(old) != 1:
-                return ('ANCHOR_MISMATCH', f'{fname} 锚点匹配数={text.count(old)}（EUI 可能已更新）')
-            text = text.replace(old, new)
+            # 锚点可给多个版本的写法，取恰好匹配一次的那个
+            olds = old if isinstance(old, tuple) else (old,)
+            hit = next((o for o in olds if text.count(o) == 1), None)
+            if hit is None:
+                counts = '/'.join(str(text.count(o)) for o in olds)
+                return ('ANCHOR_MISMATCH', f'{fname} 锚点匹配数={counts}（EUI 可能已更新）')
+            text = text.replace(hit, new)
         pending[fname] = (path, text, crlf)
 
     if applied_count == len(FILE_PATCHES):
