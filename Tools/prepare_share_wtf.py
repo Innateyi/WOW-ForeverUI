@@ -7,7 +7,9 @@ r"""
   2. 账号级 SavedVariables：只保留「当前已安装插件」的配置，删除已卸载插件残留、暴雪自带面板配置与 .bak 备份；
      在保留的配置里清掉个人信息：本人及小号的角色名/服务器、角色 GUID、AceDB profileKeys（让别人的角色自动用 Default 方案）、
      金币账本/离线背包快照、KkowoUI 快捷收件人（好友名）等
-  3. 角色级 SavedVariables（任务进度、指南进度、聊天记录等）全部移走，只留 AddOns.txt、按键、宏、频道等角色设置
+  3. 角色级 SavedVariables（任务进度、指南进度、聊天记录等）全部移走，只留 AddOns.txt、按键、宏、频道等角色设置；
+     只保留设置最全/最近游玩的那个角色，文件夹改名为中性的 Kkowo-Share，其余角色文件夹整夹移走（分享包路径里不再有角色名）；
+     config-cache.wtf 里的社群 ID（lastSelectedClubId）一并删掉
   4. 删除 character-list-order.txt（角色列表）
   5. 最后复查一遍，报告仍残留的可疑内容
 
@@ -41,12 +43,16 @@ CLEAR_PATHS = {
     'KkowoUIDB/modules/socialTools/favorites',
     'KkowoUIDB/modules/socialTools/alts',
     'KkowoUIDB/modules/modernChrome/cdmConflictKeep',
+    'KkowoUIDB/modules/modernChrome/euiConflictKeep',
+    'PolestarDB/update/probed',  # Polestar 版本探测记下的其他玩家「名 姓」（数百个，与你同服的社交痕迹）
     'EllesmereUIDB/goldLedger',
     'EllesmereUIDB/warband',
     'EllesmereUIBagsInventoryDB',
 }
 GUID_RE = re.compile(r'^(Player|Pet|Creature|BNet)-\d+-[0-9A-Fa-f-]+$')
-ADDON_NAME_RE = re.compile(r'KkowoUI|migratedFromHaaland', re.I)
+GUID_IN_TEXT_RE = re.compile(r'Player-\d+-[0-9A-Fa-f]{8}')
+SHARE_CHAR_DIR = 'Kkowo-Share'  # 分享包里唯一保留的角色文件夹的中性名字
+ADDON_NAME_RE = re.compile(r'KkowoUI|migratedFromHaaland|Haalandtool', re.I)
 
 
 # ---------------------------------------------------------------- Lua SavedVariables 解析 / 写回
@@ -190,8 +196,8 @@ class Scrubber:
             if not n:
                 continue
             self.exact.add(n)
-            # 两个字以内的短名只做「整词」匹配，避免误伤普通键名
-            if len(n) >= 3 or any(ord(c) > 0x2E80 for c in n):
+            # 两个字以内的短名（含中文，如「风暴」）只做「整词」匹配，避免误伤普通键名和技能名（如 ArcAuras 的「风暴打击」）
+            if len(n) >= 3:
                 self.contains.add(n)
         self.removed = []
 
@@ -333,7 +339,10 @@ CHAR_KEEP_FILES = {'addons.txt', 'bindings-cache.wtf', 'macros-cache.txt', 'chat
 
 
 def plan_characters(acc, apply):
+    """角色级：移走进度/聊天等文件；只保留最近游玩角色的设置文件，并把它的文件夹改成中性名字，
+    其余角色文件夹整夹移走——分享包里的路径（Account/<账号>/<服务器>/<名-姓>）不再出现任何角色名。"""
     moved = []
+    chars = []  # (最近修改时间, realm, ch)
     for realm in os.listdir(acc):
         rp = os.path.join(acc, realm)
         if realm == 'SavedVariables' or not os.path.isdir(rp):
@@ -342,36 +351,79 @@ def plan_characters(acc, apply):
             cp = os.path.join(rp, ch)
             if not os.path.isdir(cp):
                 continue
-            for fn in os.listdir(cp):
-                fp = os.path.join(cp, fn)
-                if os.path.isdir(fp):  # 角色级 SavedVariables：进度/聊天记录，整夹移走
-                    moved.append(f'{realm}/{ch}/{fn}/')
-                    if apply:
-                        shutil.rmtree(fp)
-                elif fn.lower() not in CHAR_KEEP_FILES:
-                    moved.append(f'{realm}/{ch}/{fn}')
-                    if apply:
-                        os.remove(fp)
+            files = os.listdir(cp)
+            newest = max((os.path.getmtime(os.path.join(cp, f)) for f in files), default=0)
+            kept = sum(1 for f in files if f.lower() in CHAR_KEEP_FILES)
+            # 设置文件最全（有 config-cache.wtf / 宏 / 聊天窗口）的角色优先，其次看最近修改时间
+            chars.append(((('config-cache.wtf' in (f.lower() for f in files)), kept, newest), realm, ch))
+    chars.sort(reverse=True)
+    for idx, (_, realm, ch) in enumerate(chars):
+        cp = os.path.join(acc, realm, ch)
+        if idx > 0:  # 非最近游玩的角色：整夹移走（其设置不是分享的布局来源）
+            moved.append(f'{realm}/{ch}/')
+            if apply:
+                shutil.rmtree(cp)
+            continue
+        for fn in os.listdir(cp):
+            fp = os.path.join(cp, fn)
+            if os.path.isdir(fp):  # 角色级 SavedVariables：进度/聊天记录，整夹移走
+                moved.append(f'{realm}/{ch}/{fn}/')
+                if apply:
+                    shutil.rmtree(fp)
+            elif fn.lower() not in CHAR_KEEP_FILES:
+                moved.append(f'{realm}/{ch}/{fn}')
+                if apply:
+                    os.remove(fp)
+        if ch != SHARE_CHAR_DIR:
+            moved.append(f'{realm}/{ch}/ -> {realm}/{SHARE_CHAR_DIR}/（改名）')
+            if apply:
+                os.rename(cp, os.path.join(acc, realm, SHARE_CHAR_DIR))
     for fn in ('character-list-order.txt', 'character-list-order.old'):
         if os.path.exists(os.path.join(acc, fn)):
             moved.append(fn)
             if apply:
                 os.remove(os.path.join(acc, fn))
+    # config-cache.wtf 里的社群/公会 ID（lastSelectedClubId）能反查你所在的社群：删掉这一行
+    for p in glob.glob(os.path.join(acc, '**', 'config-cache.wtf'), recursive=True):
+        text = read_raw(p)
+        cleaned = re.sub(r'^SET lastSelectedClubId "[^"]*"\r?\n?', '', text, flags=re.M)
+        if cleaned != text:
+            moved.append(f'{os.path.relpath(p, acc)}: lastSelectedClubId')
+            if apply:
+                write_raw(p, cleaned)
     return moved
 
 
 def residual_scan(acc, names):
     scrub = Scrubber(names)
     hits = []
-    for p in glob.glob(os.path.join(acc, '**', '*.lua'), recursive=True):
+    exact_only = sorted(n for n in scrub.exact if n not in scrub.contains and len(n) >= 2)
+    short_res = [re.compile(r'(?:^|["\s/\\])' + re.escape(n) + r'(?:["\s\-/\\]|$)') for n in exact_only]
+    for p in glob.glob(os.path.join(acc, '**', '*'), recursive=True):
+        rel = os.path.relpath(p, acc)
+        rel_dirs = rel.split(os.sep)[1:]  # 账号目录本身不算
+        for n in sorted(scrub.contains):
+            if any(n in part for part in rel_dirs):
+                hits.append(f'{rel}: 路径含「{n}」')
+        if not os.path.isfile(p):
+            continue
         text = ADDON_NAME_RE.sub('', read_raw(p))
-        for n in sorted(scrub.contains | scrub.exact):
-            if len(n) >= 2 and n in text:
+        for n in sorted(scrub.contains):
+            if n in text:
                 i = text.index(n)
-                hits.append(f'{os.path.relpath(p, acc)}: …{text[max(0, i - 40):i + 30]}…'.replace('\n', ' '))
+                hits.append(f'{rel}: …{text[max(0, i - 40):i + 30]}…'.replace('\n', ' '))
                 break
+        else:
+            for n, rx in zip(exact_only, short_res):
+                mm = rx.search(text)
+                if mm:
+                    i = mm.start()
+                    hits.append(f'{rel}: …{text[max(0, i - 40):i + 30]}…'.replace('\n', ' '))
+                    break
+        if GUID_IN_TEXT_RE.search(text):
+            hits.append(f'{rel}: 含角色 GUID')
         if re.search(r'\|Hplayer:|CHAT_MSG_', text):
-            hits.append(f'{os.path.relpath(p, acc)}: 含聊天记录痕迹')
+            hits.append(f'{rel}: 含聊天记录痕迹')
     return hits
 
 
