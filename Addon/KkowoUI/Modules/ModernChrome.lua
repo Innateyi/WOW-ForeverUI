@@ -4289,6 +4289,7 @@ do
             enabled = true,
             friendlyMode = "city_hide",     -- "city_hide" | "instance_only" | "always_hide" | "keep"
             hideGuildTitle = true,          -- 隐藏友方玩家 ID 时同步隐藏公会/头衔
+            guildTitleAlways = false,       -- 公会/头衔在所有地方都隐藏（含自己名字下方的公会），不只在主城
             hideCityNpcPlates = false,      -- 主城/休整区同时隐藏友方 NPC 姓名板（卫兵/商人等）
             distantNpcMode = "keep",        -- "keep" | "quest_only" | "hide_all"
             savedFriendly = nil,
@@ -4429,9 +4430,33 @@ do
         end
         lastShouldHide = shouldHide
 
+        -- 「公会/头衔始终隐藏」独立于主城策略：单独快照 savedGuild，关掉后原样还原。
+        -- 先于下面的友方策略处理，切换模式时公会/头衔的原值不会被对方的快照吃掉
+        local alwaysGuild = db.hideGuildTitle ~= false and db.guildTitleAlways == true
+        if alwaysGuild then
+            if type(db.savedFriendly) == "table" then
+                for _, name in ipairs(FRIENDLY_EXTRA_CVARS) do
+                    if db.savedFriendly[name] ~= nil then
+                        db.savedGuild = type(db.savedGuild) == "table" and db.savedGuild or {}
+                        if db.savedGuild[name] == nil then db.savedGuild[name] = db.savedFriendly[name] end
+                        db.savedFriendly[name] = nil
+                    end
+                end
+            end
+            db.savedGuild = SnapshotCVars(db.savedGuild, FRIENDLY_EXTRA_CVARS)
+            for _, name in ipairs(FRIENDLY_EXTRA_CVARS) do
+                if not manualOverrides[name] then
+                    SafeSetCVar(name, "0")
+                end
+            end
+        elseif db.savedGuild then
+            RestoreCVars(db.savedGuild)
+            db.savedGuild = nil
+        end
+
         if shouldHide then
             db.savedFriendly = SnapshotCVars(db.savedFriendly, FRIENDLY_NAME_CVARS)
-            if db.hideGuildTitle ~= false then
+            if db.hideGuildTitle ~= false and not alwaysGuild then
                 db.savedFriendly = SnapshotCVars(db.savedFriendly, FRIENDLY_EXTRA_CVARS)
             end
             for _, name in ipairs(FRIENDLY_NAME_CVARS) do
@@ -4515,6 +4540,10 @@ do
             if db.savedNpcPlates then
                 RestoreCVars(db.savedNpcPlates)
                 db.savedNpcPlates = nil
+            end
+            if db.savedGuild then
+                RestoreCVars(db.savedGuild)
+                db.savedGuild = nil
             end
             if db.savedDistantNpc then
                 RestoreCVars(db.savedDistantNpc)
@@ -4621,6 +4650,9 @@ do
                         if type(db.savedNpcPlates) == "table" and db.savedNpcPlates[k] ~= nil then
                             db.savedNpcPlates[k] = cur
                         end
+                        if type(db.savedGuild) == "table" and db.savedGuild[k] ~= nil then
+                            db.savedGuild[k] = cur
+                        end
                         if cur == "1" then
                             manualOverrides[k] = true
                         else
@@ -4685,6 +4717,15 @@ do
             getValue = function() return db.hideCityNpcPlates == true end,
             setValue = function(v) db.hideCityNpcPlates = v == true; ClearManualOverrides(); ApplyAll() end,
         })
+        y = y - h
+
+        _, h = W:DualRow(parent, y, {
+            type = "toggle",
+            text = "公会与头衔在所有地方都隐藏（含自己）",
+            tooltip = "默认只在主城/休整区隐藏公会与头衔，离开后恢复；开启后在野外和副本也一直隐藏，包括你自己名字下方的公会。\n需同时开启「同步隐藏友方公会与头衔」；关闭后恢复为开启前的游戏设置。",
+            getValue = function() return db.guildTitleAlways == true end,
+            setValue = function(v) db.guildTitleAlways = v == true; ClearManualOverrides(); ApplyAll() end,
+        }, blank)
         y = y - h
 
         _, h = W:DualRow(parent, y, {

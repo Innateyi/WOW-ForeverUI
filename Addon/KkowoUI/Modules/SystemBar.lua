@@ -166,6 +166,129 @@ local function GetOnlineGuildCount()
     return 0
 end
 
+-- 鼠标提示里的在线名单（好友 / 公会）：按等级从高到低，职业着色，最多列 20 人
+local TOOLTIP_LIST_MAX = 20
+local localizedClassToken = nil
+
+local function ClassTokenFromLocalized(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    if not localizedClassToken then
+        localizedClassToken = {}
+        for _, tbl in ipairs({ _G.LOCALIZED_CLASS_NAMES_MALE, _G.LOCALIZED_CLASS_NAMES_FEMALE }) do
+            if type(tbl) == "table" then
+                for token, loc in pairs(tbl) do localizedClassToken[loc] = token end
+            end
+        end
+    end
+    return localizedClassToken[name] or (_G.RAID_CLASS_COLORS and _G.RAID_CLASS_COLORS[name] and name) or nil
+end
+
+local function ClassColor(token)
+    local c = token and _G.RAID_CLASS_COLORS and _G.RAID_CLASS_COLORS[token]
+    if c then return c.r, c.g, c.b end
+    return 0.86, 0.88, 0.92
+end
+
+local function ShortName(name)
+    name = F.PlainString(name, nil)
+    if not name then return nil end
+    if _G.Ambiguate then
+        local ok, s = pcall(_G.Ambiguate, name, "guild")
+        if ok and type(s) == "string" and s ~= "" then return s end
+    end
+    return (name:gsub("%-.*$", ""))
+end
+
+local function CollectOnlineFriends()
+    local list = {}
+    local FL = _G.C_FriendList
+    if FL and FL.GetNumFriends and FL.GetFriendInfoByIndex then
+        local okN, n = pcall(FL.GetNumFriends)
+        for i = 1, (okN and F.PlainNumber(n, 0) or 0) do
+            local ok, info = pcall(FL.GetFriendInfoByIndex, i)
+            if ok and type(info) == "table" and info.connected == true then
+                list[#list + 1] = {
+                    name = ShortName(info.name) or "?",
+                    level = F.PlainNumber(info.level, 0),
+                    class = ClassTokenFromLocalized(F.PlainString(info.className, nil)),
+                    zone = F.PlainString(info.area, nil),
+                }
+            end
+        end
+    end
+    local BN = _G.C_BattleNet
+    if _G.BNGetNumFriends and BN and BN.GetFriendAccountInfo then
+        local okN, n = pcall(_G.BNGetNumFriends)
+        for i = 1, (okN and F.PlainNumber(n, 0) or 0) do
+            local ok, acc = pcall(BN.GetFriendAccountInfo, i)
+            local game = ok and type(acc) == "table" and acc.gameAccountInfo or nil
+            if type(game) == "table" and game.isOnline == true then
+                local inWoW = game.clientProgram == (_G.BNET_CLIENT_WOW or "WoW") and F.PlainString(game.characterName, nil)
+                list[#list + 1] = {
+                    name = inWoW and ShortName(game.characterName) or (F.PlainString(acc.accountName, nil) or F.PlainString(acc.battleTag, "战网好友")),
+                    level = inWoW and F.PlainNumber(game.characterLevel, 0) or 0,
+                    class = inWoW and ClassTokenFromLocalized(F.PlainString(game.className, nil)) or nil,
+                    zone = inWoW and F.PlainString(game.areaName, nil) or F.PlainString(game.richPresence, nil),
+                    bnet = true,
+                }
+            end
+        end
+    end
+    return list
+end
+
+local function CollectOnlineGuild()
+    local list = {}
+    if not (_G.IsInGuild and _G.IsInGuild() and _G.GetNumGuildMembers and _G.GetGuildRosterInfo) then
+        return list
+    end
+    local okN, total = pcall(_G.GetNumGuildMembers)
+    for i = 1, (okN and F.PlainNumber(total, 0) or 0) do
+        local ok, name, rank, _, level, _, zone, _, _, online, _, classFile = pcall(_G.GetGuildRosterInfo, i)
+        if ok and online == true then
+            list[#list + 1] = {
+                name = ShortName(name) or "?",
+                level = F.PlainNumber(level, 0),
+                class = F.PlainString(classFile, nil),
+                zone = F.PlainString(zone, nil),
+                rank = F.PlainString(rank, nil),
+            }
+        end
+    end
+    return list
+end
+
+local lastRosterRequest = -60
+local function RequestGuildRoster()
+    local now = GetTime()
+    if now - lastRosterRequest < 15 then return end
+    lastRosterRequest = now
+    local GI = _G.C_GuildInfo
+    if GI and GI.GuildRoster then pcall(GI.GuildRoster)
+    elseif _G.GuildRoster then pcall(_G.GuildRoster) end
+end
+
+local function AddOnlineListToTooltip(list, emptyText)
+    if #list == 0 then
+        GameTooltip:AddLine(emptyText, 0.62, 0.65, 0.70)
+        return
+    end
+    table_sort(list, function(a, b)
+        if a.level ~= b.level then return a.level > b.level end
+        return a.name < b.name
+    end)
+    GameTooltip:AddLine(" ")
+    for i = 1, math_min(TOOLTIP_LIST_MAX, #list) do
+        local it = list[i]
+        local r, g, b = ClassColor(it.class)
+        local left = it.level > 0 and string_format("|cffd6c08a%d|r  %s", it.level, it.name) or it.name
+        GameTooltip:AddDoubleLine(left, it.zone or (it.bnet and "战网" or ""), r, g, b, 0.62, 0.66, 0.72)
+    end
+    if #list > TOOLTIP_LIST_MAX then
+        GameTooltip:AddLine(string_format("……还有 %d 人", #list - TOOLTIP_LIST_MAX), 0.62, 0.65, 0.70)
+    end
+end
+
 local function GetUnspentTalentPoints()
     local total = 0
     local CT = _G.C_Traits
@@ -964,10 +1087,13 @@ local function CreateBar()
             end
             if def.badge == "friends" then
                 GameTooltip:AddDoubleLine("在线好友", tostring(GetOnlineFriendsCount()), 0.72, 0.75, 0.80, ar, ag, ab)
+                AddOnlineListToTooltip(CollectOnlineFriends(), "暂无好友在线")
             elseif def.badge == "guild" then
-                local gName = _G.GetGuildInfo and _G.GetGuildInfo("player")
+                local gName = F.PlainString(_G.GetGuildInfo and _G.GetGuildInfo("player"), nil)
                 if gName then
+                    RequestGuildRoster()
                     GameTooltip:AddDoubleLine(gName, "在线 " .. tostring(GetOnlineGuildCount()) .. " 人", 0.72, 0.75, 0.80, 0.42, 0.86, 0.50)
+                    AddOnlineListToTooltip(CollectOnlineGuild(), "暂无公会成员在线")
                 else
                     GameTooltip:AddLine("尚未加入公会", 0.62, 0.65, 0.70)
                 end
