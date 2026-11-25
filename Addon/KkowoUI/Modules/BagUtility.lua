@@ -156,13 +156,139 @@ local function SetupMoneyAlign()
     end
 end
 
--- 2) 宏编辑界面放大（弱表记录，不往暴雪 MacroFrame 写字段）
+-- 2) 宏编辑界面放大 + 排版修正（弱表记录，不往暴雪 MacroFrame 写字段）
+--    EUI 皮肤换上整合包字体后字号偏大：已选宏名、「改变名字/图标」按钮、「输入宏命令」挤在一起，
+--    图标选择弹窗的「输入宏的名字」标题也压住输入框。这里收小字号、按图标 / 文本框重新排位，
+--    并让文本框铺满放大后的窗口。EUI 每次打开都会在下一帧重新换肤（保留当前字号），所以稍后再排一次。
+local MACRO_FONT_NAME, MACRO_FONT_BUTTON, MACRO_FONT_LABEL, MACRO_FONT_BODY, MACRO_FONT_SMALL = 14, 12, 13, 14, 12
+local macroUIHooked, macroPopupHooked = false, false
+
+local function SetFontSizeKeepFace(obj, size)
+    if not (obj and obj.GetFont and obj.SetFont) then return end
+    if obj.IsForbidden and obj:IsForbidden() then return end
+    local ok, face, cur, flags = pcall(obj.GetFont, obj)
+    if not ok or type(face) ~= "string" or face == "" then return end
+    if F.PlainNumber(cur, 0) == size then return end
+    pcall(obj.SetFont, obj, face, size, type(flags) == "string" and flags or "")
+end
+
+local function LayoutMacroFrameNow()
+    local mf = _G.MacroFrame
+    if not (mod._active and mod:GetDB().enlargeMacro and mf and mf:IsShown()) then return end
+    local selBtn = _G.MacroFrameSelectedMacroButton
+    local nameFS = _G.MacroFrameSelectedMacroName
+    local editBtn = _G.MacroEditButton
+    local label = _G.MacroFrameEnterMacroText
+    local tb = _G.MacroFrameTextBackground
+    local sf = _G.MacroFrameScrollFrame
+    local body = _G.MacroFrameText
+    local limit = _G.MacroFrameCharLimitText
+
+    SetFontSizeKeepFace(nameFS, MACRO_FONT_NAME)
+    SetFontSizeKeepFace(label, MACRO_FONT_LABEL)
+    SetFontSizeKeepFace(body, MACRO_FONT_BODY)
+    SetFontSizeKeepFace(limit, MACRO_FONT_SMALL)
+    if not selBtn then return end
+
+    -- 已选宏：名字贴图标右上、按钮贴图标右下，都收在图标高度以内
+    if nameFS then
+        nameFS:ClearAllPoints()
+        nameFS:SetPoint("TOPLEFT", selBtn, "TOPRIGHT", 10, -1)
+        nameFS:SetWidth(230)
+        nameFS:SetJustifyH("LEFT")
+        if nameFS.SetWordWrap then nameFS:SetWordWrap(false) end
+    end
+    if editBtn then
+        local fs = editBtn.GetFontString and editBtn:GetFontString()
+        SetFontSizeKeepFace(fs, MACRO_FONT_BUTTON)
+        local tw = fs and F.PlainNumber(fs:GetStringWidth(), 0) or 0
+        editBtn:SetSize(math.max(108, math.floor(tw + 28 + 0.5)), 22)
+        editBtn:ClearAllPoints()
+        editBtn:SetPoint("BOTTOMLEFT", selBtn, "BOTTOMRIGHT", 10, 0)
+    end
+    if label then
+        label:ClearAllPoints()
+        label:SetPoint("TOPLEFT", selBtn, "BOTTOMLEFT", 0, -8)
+    end
+
+    -- 文本框：紧接「输入宏命令」下方，左右贴窗体内边距，向下铺满到字数提示上方
+    if tb and label then
+        local mfL = F.PlainNumber(mf:GetLeft(), nil)
+        local selL = F.PlainNumber(selBtn:GetLeft(), nil)
+        local dx = (mfL and selL) and math.floor(mfL + 8 - selL + 0.5) or -6
+        tb:ClearAllPoints()
+        tb:SetPoint("TOPLEFT", label, "BOTTOMLEFT", dx, -5)
+        tb:SetPoint("BOTTOMRIGHT", mf, "BOTTOMRIGHT", -10, 58)
+        if sf then
+            sf:ClearAllPoints()
+            sf:SetPoint("TOPLEFT", tb, "TOPLEFT", 8, -6)
+            sf:SetPoint("BOTTOMRIGHT", tb, "BOTTOMRIGHT", -26, 6)
+        end
+        if body then
+            local w = F.PlainNumber(tb:GetWidth(), 0) - 38
+            if w > 200 then body:SetWidth(w) end
+        end
+        if limit then
+            limit:ClearAllPoints()
+            limit:SetPoint("TOP", tb, "BOTTOM", 0, -6)
+        end
+    end
+end
+
+local function LayoutMacroPopupNow()
+    local p = _G.MacroPopupFrame
+    local bb = p and p.BorderBox
+    if not (mod._active and mod:GetDB().enlargeMacro and bb and p:IsShown()) then return end
+    local hdr, eb = bb.EditBoxHeaderText, bb.IconSelectorEditBox
+    SetFontSizeKeepFace(hdr, MACRO_FONT_LABEL)
+    SetFontSizeKeepFace(bb.IconSelectionText, MACRO_FONT_LABEL)
+    SetFontSizeKeepFace(eb, MACRO_FONT_LABEL)
+    if hdr and eb then
+        -- 名字输入框放到标题正下方，不再压住「输入宏的名字（最多16个字符）」
+        local w = F.PlainNumber(eb:GetWidth(), 0)
+        local h = F.PlainNumber(eb:GetHeight(), 0)
+        eb:ClearAllPoints()
+        eb:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, -6)
+        if w > 50 then eb:SetWidth(w) end
+        eb:SetHeight(math.max(h, 22))
+    end
+end
+
+local function QueueMacroPopupLayout()
+    C_Timer.After(0.05, function()
+        F.RunOutOfCombat("FUI_MacroPopupLayout", function() pcall(LayoutMacroPopupNow) end)
+    end)
+end
+
+local function HookMacroPopupOnce()
+    local p = _G.MacroPopupFrame
+    if macroPopupHooked or not p then return end
+    macroPopupHooked = true
+    p:HookScript("OnShow", QueueMacroPopupLayout)
+end
+
+local function QueueMacroLayout()
+    HookMacroPopupOnce()
+    C_Timer.After(0.05, function()
+        F.RunOutOfCombat("FUI_MacroLayout", function() pcall(LayoutMacroFrameNow) end)
+    end)
+end
+
 local function EnlargeMacroFrame()
     if not (mod._active and mod:GetDB().enlargeMacro) then
         return
     end
     local mf = _G.MacroFrame
-    if not mf or macroEnlarged[mf] then
+    if not mf then
+        return
+    end
+    if not macroUIHooked then
+        macroUIHooked = true
+        mf:HookScript("OnShow", QueueMacroLayout)
+    end
+    HookMacroPopupOnce()
+    if macroEnlarged[mf] then
+        if mf:IsShown() then QueueMacroLayout() end
         return
     end
     F.RunOutOfCombat("FUI_EnlargeMacro", function()
@@ -176,6 +302,7 @@ local function EnlargeMacroFrame()
             _G.MacroFrameScrollFrame:SetWidth(430)
             _G.MacroFrameScrollFrame:SetHeight(165)
         end
+        if mf:IsShown() then QueueMacroLayout() end
     end)
 end
 
@@ -1719,7 +1846,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     }, {
         type = "toggle",
         text = "放大宏编辑窗口",
-        tooltip = "打开 /macro 时自动放大界面，方便查看和编辑长宏。",
+        tooltip = "打开 /macro 时自动放大界面，方便查看和编辑长宏；同时收小宏名、按钮与输入框字号，避免文字和按钮重叠（关闭后 /reload 恢复原样）。",
         getValue = function() return db.enlargeMacro ~= false end,
         setValue = function(v) db.enlargeMacro = v == true; if v then EnlargeMacroFrame() end end,
     })
