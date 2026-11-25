@@ -160,7 +160,7 @@ end
 --    EUI 皮肤换上整合包字体后字号偏大：已选宏名、「改变名字/图标」按钮、「输入宏命令」挤在一起，
 --    图标选择弹窗的「输入宏的名字」标题也压住输入框。这里收小字号、按图标 / 文本框重新排位，
 --    并让文本框铺满放大后的窗口。EUI 每次打开都会在下一帧重新换肤（保留当前字号），所以稍后再排一次。
-local MACRO_FONT_NAME, MACRO_FONT_BUTTON, MACRO_FONT_LABEL, MACRO_FONT_BODY, MACRO_FONT_SMALL = 14, 12, 13, 14, 12
+local MACRO_FONT_NAME, MACRO_FONT_BUTTON, MACRO_FONT_LABEL, MACRO_FONT_BODY, MACRO_FONT_SMALL = 13, 12, 13, 14, 12
 local macroUIHooked, macroPopupHooked = false, false
 
 local function SetFontSizeKeepFace(obj, size)
@@ -190,11 +190,14 @@ local function LayoutMacroFrameNow()
     SetFontSizeKeepFace(limit, MACRO_FONT_SMALL)
     if not selBtn then return end
 
-    -- 已选宏：名字贴图标右上、按钮贴图标右下，都收在图标高度以内
+    -- 已选宏：名字贴图标右上、按钮贴图标右下，都收在图标高度以内。
+    -- 暴雪给名字和「输入宏命令」的文字框是固定矮高度，换成整合包字体后下沿（g、y 等）会被裁掉，
+    -- 「输入宏命令」溢出的部分还会被下方文本框盖住：两者都按字号给足高度
     if nameFS then
         nameFS:ClearAllPoints()
-        nameFS:SetPoint("TOPLEFT", selBtn, "TOPRIGHT", 10, -1)
+        nameFS:SetPoint("TOPLEFT", selBtn, "TOPRIGHT", 10, 1)
         nameFS:SetWidth(230)
+        nameFS:SetHeight(MACRO_FONT_NAME + 5)
         nameFS:SetJustifyH("LEFT")
         if nameFS.SetWordWrap then nameFS:SetWordWrap(false) end
     end
@@ -202,13 +205,15 @@ local function LayoutMacroFrameNow()
         local fs = editBtn.GetFontString and editBtn:GetFontString()
         SetFontSizeKeepFace(fs, MACRO_FONT_BUTTON)
         local tw = fs and F.PlainNumber(fs:GetStringWidth(), 0) or 0
-        editBtn:SetSize(math.max(108, math.floor(tw + 28 + 0.5)), 22)
+        editBtn:SetSize(math.max(108, math.floor(tw + 28 + 0.5)), 20)
         editBtn:ClearAllPoints()
         editBtn:SetPoint("BOTTOMLEFT", selBtn, "BOTTOMRIGHT", 10, 0)
     end
     if label then
         label:ClearAllPoints()
-        label:SetPoint("TOPLEFT", selBtn, "BOTTOMLEFT", 0, -8)
+        label:SetPoint("TOPLEFT", selBtn, "BOTTOMLEFT", 0, -6)
+        label:SetHeight(MACRO_FONT_LABEL + 7)
+        if label.SetJustifyV then label:SetJustifyV("MIDDLE") end
     end
 
     -- 文本框：紧接「输入宏命令」下方，左右贴窗体内边距，向下铺满到字数提示上方
@@ -247,6 +252,7 @@ local function LayoutMacroPopupNow()
         -- 名字输入框放到标题正下方，不再压住「输入宏的名字（最多16个字符）」
         local w = F.PlainNumber(eb:GetWidth(), 0)
         local h = F.PlainNumber(eb:GetHeight(), 0)
+        hdr:SetHeight(MACRO_FONT_LABEL + 7)
         eb:ClearAllPoints()
         eb:SetPoint("TOPLEFT", hdr, "BOTTOMLEFT", 0, -6)
         if w > 50 then eb:SetWidth(w) end
