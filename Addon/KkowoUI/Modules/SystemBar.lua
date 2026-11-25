@@ -32,7 +32,8 @@ local mod = F.RegisterModule("systemBar", {
         iconSpacing = 8,
         showBackdrop = false,      -- 默认无框透明悬浮（与现代透明 HUD 一致），可开暗色玻璃托底
         showTelemetry = true,      -- 显示右侧 时钟 / FPS / 延迟
-        showSocialGuild = false,   -- 默认隐藏好友/公会（与小地图顶部社交入口去重，可按需开启）
+        showSocialGuild = false,   -- 公会与社区按钮（默认隐藏，可按需开启）
+        socialInBar = true,        -- 好友与社交按钮放进底栏，并隐藏 EUI 小地图上的好友按钮（关掉则恢复小地图按钮）
         showBadges = true,         -- 未分配天赋/传承点数角标与炉石冷却
         replaceMicroAlerts = true, -- 隐藏暴雪黄色微菜单气泡，改由屏幕中上方现代轻提示单次提醒
         showHearthstone = true,    -- 一键炉石
@@ -570,7 +571,7 @@ local function UpdateBadges(allowNotify)
     if not barFrame then return end
     local db = mod:GetDB()
     local showBadges = db.showBadges ~= false
-    local friends = (showBadges and db.showSocialGuild == true) and GetOnlineFriendsCount() or 0
+    local friends = (showBadges and db.socialInBar ~= false) and GetOnlineFriendsCount() or 0
     local guild = (showBadges and db.showSocialGuild == true) and GetOnlineGuildCount() or 0
     local unspentTalents = GetUnspentTalentPoints()
     local unspentLegacy = GetUnspentLegacyPoints()
@@ -732,7 +733,9 @@ LayoutBar = function()
 
     for _, btn in ipairs(iconButtons) do
         local visible = true
-        if btn._def.socialGroup and db.showSocialGuild ~= true then
+        if btn._def.id == "Social" and db.socialInBar == false then
+            visible = false
+        elseif btn._def.id == "Guild" and db.showSocialGuild ~= true then
             visible = false
         elseif btn._def.hearthstone and db.showHearthstone == false then
             visible = false
@@ -1110,6 +1113,55 @@ local function CreateBar()
     end)
 end
 
+-- 底栏「好友与社交」取代 EUI 小地图上的好友按钮：走 EUI 自己的「Friends Online」开关
+-- （EllesmereUIMinimap 的 hideExtraBtns.friendsOnline，与 EUI 设置里那个勾选框是同一个值），
+-- 接管前记下原值，关闭本选项或停用底栏时原样还给 EUI
+local function SyncEUIFriendsButton()
+    local edb = _G._EMM_DB
+    local profile = edb and edb.profile
+    local m = type(profile) == "table" and profile.minimap or nil
+    if type(m) ~= "table" then
+        return false
+    end
+    local db = mod:GetDB()
+    local wantHidden = mod._active and db.socialInBar ~= false
+    if type(m.hideExtraBtns) ~= "table" then
+        m.hideExtraBtns = {}
+    end
+    local cur = m.hideExtraBtns.friendsOnline == true
+    local changed = false
+    if wantHidden then
+        if not db.euiFriendsTakenOver then
+            db.euiFriendsTakenOver = true
+            db.euiFriendsPrevHidden = cur
+        end
+        if not cur then
+            m.hideExtraBtns.friendsOnline = true
+            changed = true
+        end
+    elseif db.euiFriendsTakenOver then
+        local prev = db.euiFriendsPrevHidden == true
+        db.euiFriendsTakenOver = nil
+        db.euiFriendsPrevHidden = nil
+        if cur ~= prev then
+            m.hideExtraBtns.friendsOnline = prev
+            changed = true
+        end
+    end
+    if changed and type(_G._EMM_ApplyMinimap) == "function" then
+        F.RunOutOfCombat("FUI_EUIFriendsButton", function() pcall(_G._EMM_ApplyMinimap) end)
+    end
+    return true
+end
+
+-- EUI 小地图在登录后才建立 _EMM_DB：取不到时稍后重试几次
+local function SyncEUIFriendsButtonSoon()
+    if SyncEUIFriendsButton() then return end
+    for _, delay in ipairs({ 1, 3, 6 }) do
+        C_Timer.After(delay, function() SyncEUIFriendsButton() end)
+    end
+end
+
 function mod:OnEnable()
     local db = self:GetDB()
     if not db.v2HideRedundantSocial then
@@ -1124,6 +1176,7 @@ function mod:OnEnable()
     CreateBar()
     BindSecureButtons()
     ApplyVisuals()
+    SyncEUIFriendsButtonSoon()
     InstallMicroAlertHooks()
     SuppressBlizzardMicroHelpTips(false)
     -- 栏内含安全按钮，战斗中显示/隐藏会被拦截：顺延到脱战（同一 key 与 OnDisable 互相覆盖，以最后一次操作为准）
@@ -1178,6 +1231,8 @@ function mod:OnDisable()
         if barFrame and not mod._active then barFrame:Hide() end
     end)
     if alertBanner then alertBanner:Hide() end
+    -- 底栏停用后好友入口要回到小地图
+    SyncEUIFriendsButton()
 end
 
 function mod:OnThemeChanged()
@@ -1214,17 +1269,31 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "显示好友 / 公会按钮（与小地图去重默认隐藏）",
-        tooltip = "小地图上方已有合并的公会/好友在线卡片，默认隐藏底部重复按钮以保持导航栏精简。",
-        getValue = function() return db.showSocialGuild == true end,
-        setValue = function(v) db.showSocialGuild = v == true; ApplyVisuals() end,
+        text = "底栏显示好友按钮（取代小地图好友图标）",
+        tooltip = "在底栏显示「好友与社交」按钮（带在线好友数角标），同时隐藏 EUI 小地图上的好友按钮；关闭后小地图好友按钮自动恢复。",
+        getValue = function() return db.socialInBar ~= false end,
+        setValue = function(v)
+            db.socialInBar = v == true
+            ApplyVisuals()
+            UpdateBadges(false)
+            SyncEUIFriendsButton()
+        end,
     }, {
+        type = "toggle",
+        text = "底栏显示公会按钮",
+        tooltip = "在底栏显示「公会与社区」按钮（带在线公会成员数角标）。",
+        getValue = function() return db.showSocialGuild == true end,
+        setValue = function(v) db.showSocialGuild = v == true; ApplyVisuals(); UpdateBadges(false) end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "显示未分配点数角标与炉石冷却",
         tooltip = "在底部「天赋与法术 / 传承与成就」图标右下角直接显示未分配点数，并在炉石图标显示冷却时间。",
         getValue = function() return db.showBadges ~= false end,
         setValue = function(v) db.showBadges = v == true; UpdateBadges(false) end,
-    })
+    }, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
