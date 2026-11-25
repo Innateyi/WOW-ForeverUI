@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-ForeverUI — 多字重 MMO 字体 5 槽位安装与一键回滚工具
+KkowoUI — 多字重 MMO 字体 5 槽位安装与一键回滚工具
 自动将 HarmonyOS Sans SC / MiSans / 思源黑体等多字重字体按视觉层次映射到 WoW 5 个核心字体槽位，
 并在安装前自动备份原有 Fonts 目录、清理旧 .slug / .slugo GPU 矢量缓存。
 
@@ -9,7 +9,7 @@ ForeverUI — 多字重 MMO 字体 5 槽位安装与一键回滚工具
   - ARHei.ttf    (聊天正文 / 任务说明长文本)    -> Regular (400)
   - ARIALN.ttf   (数字 / 冷却 / 快捷键 / 血量)  -> SemiBold/Bold (600-700)
   - FRIZQT__.ttf (标题 / 区域名 / 框体标题)     -> SemiBold/Bold (600-700)
-  - ARKai_C.ttf  (原生伤害槽，ForeverUI独立管战伤) -> Bold (700)
+  - ARKai_C.ttf  (原生伤害槽，KkowoUI独立管战伤) -> Bold (700)
 
 用法：
   python -I Tools/install_mmo_fonts.py --src "C:\path\to\HarmonyOS_Sans_SC"

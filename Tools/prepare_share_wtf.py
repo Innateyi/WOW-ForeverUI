@@ -6,7 +6,7 @@ r"""
   1. 把整个 WTF\Account\<账号目录> 完整备份到 <备份目录>\WTF_分享前_<时间>\（WOW_BACKUP_ROOT 可覆盖）
   2. 账号级 SavedVariables：只保留「当前已安装插件」的配置，删除已卸载插件残留、暴雪自带面板配置与 .bak 备份；
      在保留的配置里清掉个人信息：本人及小号的角色名/服务器、角色 GUID、AceDB profileKeys（让别人的角色自动用 Default 方案）、
-     金币账本/离线背包快照、ForeverUI 快捷收件人（好友名）等
+     金币账本/离线背包快照、KkowoUI 快捷收件人（好友名）等
   3. 角色级 SavedVariables（任务进度、指南进度、聊天记录等）全部移走，只留 AddOns.txt、按键、宏、频道等角色设置
   4. 删除 character-list-order.txt（角色列表）
   5. 最后复查一遍，报告仍残留的可疑内容
@@ -38,14 +38,15 @@ BACKUP_PREFIX = 'WTF_分享前_'
 
 # 这些容器整个清空（路径用 / 分隔，从 SavedVariables 顶层变量开始）
 CLEAR_PATHS = {
-    'ForeverUIDB/modules/socialTools/favorites',
-    'ForeverUIDB/modules/socialTools/alts',
-    'ForeverUIDB/modules/modernChrome/cdmConflictKeep',
+    'KkowoUIDB/modules/socialTools/favorites',
+    'KkowoUIDB/modules/socialTools/alts',
+    'KkowoUIDB/modules/modernChrome/cdmConflictKeep',
     'EllesmereUIDB/goldLedger',
     'EllesmereUIDB/warband',
     'EllesmereUIBagsInventoryDB',
 }
 GUID_RE = re.compile(r'^(Player|Pet|Creature|BNet)-\d+-[0-9A-Fa-f-]+$')
+ADDON_NAME_RE = re.compile(r'KkowoUI|migratedFromHaaland', re.I)
 
 
 # ---------------------------------------------------------------- Lua SavedVariables 解析 / 写回
@@ -199,6 +200,10 @@ class Scrubber:
             return False
         if GUID_RE.match(s):
             return True
+        # 先去掉插件名本身再比对，免得把字体路径、框体名当成个人信息误删
+        s = ADDON_NAME_RE.sub('', s)
+        if not s:
+            return False
         if s in self.exact:
             return True
         for n in self.exact:
@@ -359,7 +364,7 @@ def residual_scan(acc, names):
     scrub = Scrubber(names)
     hits = []
     for p in glob.glob(os.path.join(acc, '**', '*.lua'), recursive=True):
-        text = read_raw(p)
+        text = ADDON_NAME_RE.sub('', read_raw(p))
         for n in sorted(scrub.contains | scrub.exact):
             if len(n) >= 2 and n in text:
                 i = text.index(n)

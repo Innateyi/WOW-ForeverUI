@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 外科手术式迁移配置：保留 100% 现有界面布局与其他插件设置，仅做：
-  1. 预生成 ForeverUI.lua（精准继承原哈兰德各框体坐标、开关与常用联系人）
-  2. 更新 当前角色的 AddOns.txt（启用 ForeverUI，停用已被替代/调试/过时插件）
+  1. 预生成 KkowoUI.lua（精准继承原哈兰德各框体坐标、开关与常用联系人）
+  2. 更新 当前角色的 AddOns.txt（启用 KkowoUI，停用已被替代/调试/过时插件）
   3. Leatrix_Maps.lua 仅关闭 ShowZoneLevels（避免地图区域等级重复）
   4. EllesmereUI.lua 仅将 euiAccent.useClass 设为 true（全界面统一职业主题色）
 """
@@ -18,7 +18,7 @@ SV_DIR = os.path.join(WTF_ACC, 'SavedVariables')
 ADDONS_TXT = os.environ.get('WOW_ADDONS_TXT', os.path.join(WTF_ACC, '<Realm>', '<CharName>', 'AddOns.txt'))
 
 FOREVER_UI_SV = """
-ForeverUIDB = {
+KkowoUIDB = {
 ["version"] = 1,
 ["migratedFromHaaland"] = true,
 ["theme"] = {
@@ -139,7 +139,7 @@ def update_addons_txt():
     lines = raw.replace('\r\n', '\n').splitlines()
 
     overrides = {
-        'ForeverUI': 'enabled',
+        'KkowoUI': 'enabled',
         'EUI_Haalandtool': 'disabled',
         'ForeverLootSparkles': 'disabled',
         'ArcUI': 'disabled',
@@ -206,7 +206,7 @@ def update_eui_accent():
 
 
 def seed_forever_ui_sv():
-    path = os.path.join(SV_DIR, 'ForeverUI.lua')
+    path = os.path.join(SV_DIR, 'KkowoUI.lua')
     open(path, 'wb').write(FOREVER_UI_SV.replace('\n', '\r\n').encode('utf-8'))
     print(f'[OK] Seeded {path}（已继承原哈兰德坐标、自动任务、技能音效、耐久度与常用联系人）')
 

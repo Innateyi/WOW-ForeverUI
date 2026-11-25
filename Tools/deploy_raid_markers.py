@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 r"""
-ForeverUI — 全局 3D 团队标记图标部署脚本
+KkowoUI — 全局 3D 团队标记图标部署脚本
 将 MarkBar 重绘的 512x512 无损多级 Mipmap BLP2 团队标记图集安装到客户端
 E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame\UI-RaidTargetingIcons.blp
 以替换 3D 世界头顶标记、聊天频道 {rt1}-{rt8} 及全局单位框体/姓名板标记。
@@ -14,7 +14,7 @@ import os
 import shutil
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC_BLP = os.path.join(REPO_ROOT, "Addon", "ForeverUI", "Media", "MarkBar", "UI-RaidTargetingIcons.blp")
+SRC_BLP = os.path.join(REPO_ROOT, "Addon", "KkowoUI", "Media", "MarkBar", "UI-RaidTargetingIcons.blp")
 DST_DIR = r"E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame"
 DST_BLP = os.path.join(DST_DIR, "UI-RaidTargetingIcons.blp")
 

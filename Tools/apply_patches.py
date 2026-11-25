@@ -11,7 +11,6 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATCH_DIR = os.path.join(ROOT, 'Patches')
 PATCH_LIST = [
-    'eui_dm_total.py',
     'eui_np_questtext_name.py',
     'eui_friendly_player_names.py',
     'eui_chat_tab_fast.py',
@@ -31,7 +30,7 @@ def main():
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     apply_mode = '--apply' in sys.argv
     check_only = not apply_mode
-    print('=== ForeverUI 补丁检查（只读） ===' if check_only else '=== ForeverUI 一键应用补丁 ===')
+    print('=== KkowoUI 补丁检查（只读） ===' if check_only else '=== KkowoUI 一键应用补丁 ===')
     failed = 0
     for name in PATCH_LIST:
         try:

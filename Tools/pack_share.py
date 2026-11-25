@@ -33,7 +33,7 @@ BLANK_RULES = [
     ('EUI_Haalandtool.lua', 'contacts', ['favorites', 'alts']),
     ('EUI_Haalandtool.lua', 'general', ['_char']),
     ('EUI_Haalandtool.lua', 'warband', ['characters']),
-    ('ForeverUI.lua', 'socialTools', ['favorites', 'alts']),
+    ('KkowoUI.lua', 'socialTools', ['favorites', 'alts']),
 ]
 
 
@@ -131,7 +131,7 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     stamp = time.strftime('%Y%m%d')
-    zpath = os.path.join(args.out, f'ForeverUI整合包_{stamp}.zip')
+    zpath = os.path.join(args.out, f'KkowoUI整合包_{stamp}.zip')
     with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for d in addons:
             base = os.path.join(addons_dir, d)

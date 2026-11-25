@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ForeverUI — 猎人弓箭技能音效合成器（物理建模弦鸣 + 弓臂共振 + 箭羽破风）
-生成 6 枚无损 16-bit PCM 32kHz WAV 音效至 Addon/ForeverUI/Media/SpellSounds/：
+KkowoUI — 猎人弓箭技能音效合成器（物理建模弦鸣 + 弓臂共振 + 箭羽破风）
+生成 6 枚无损 16-bit PCM 32kHz WAV 音效至 Addon/KkowoUI/Media/SpellSounds/：
   - bow_autoshot.wav  : 轻弓弦鸣（自动射击）
   - bow_arcane.wav    : 奥术光箭（奥术射击）
   - bow_multishot.wav : 三连散射（多重射击）
@@ -17,7 +17,7 @@ from scipy import signal
 SR = 32000
 OUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "Addon", "ForeverUI", "Media", "SpellSounds",
+    "Addon", "KkowoUI", "Media", "SpellSounds",
 )
 
 

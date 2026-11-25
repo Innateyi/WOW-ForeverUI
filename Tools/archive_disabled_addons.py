@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-ForeverUI — 停用插件安全归档工具（方案 A）
+KkowoUI — 停用插件安全归档工具（方案 A）
 功能：
   1. 读取当前角色的 AddOns.txt（环境变量 WOW_ADDONS_TXT），识别全部已停用（disabled）的非 Blizzard 插件
   2. 校验所有已启用插件的 .toc RequiredDeps / Dependencies，确认无任何必需依赖
@@ -24,7 +24,7 @@ ARCHIVE_ROOT = os.path.join(
     "ArchivedAddOns",
 )
 
-PROTECTED_ALWAYS = {"ForeverUI", "EllesmereUI", "YaMedia"}
+PROTECTED_ALWAYS = {"KkowoUI", "EllesmereUI", "YaMedia"}
 
 
 def is_wow_running():
