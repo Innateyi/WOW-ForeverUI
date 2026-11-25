@@ -15,7 +15,16 @@ r"""
 
 分享完成后务必运行 --restore 把你自己的完整 WTF 原样换回来（进游戏前！）。
 
-用法：
+推荐流程（专用分享副本，真实配置不做任何修改）：
+  双击 Tools\\网易DD分享上传.bat（= python -I Tools/prepare_share_wtf.py --upload）：
+    1. 在 <仓库同级>\\share-kkowo\\Account\\<账号目录> 生成脱敏副本（WOW_SHARE_DIR 可覆盖），复查无残留才继续
+    2. 把游戏里的真实账号目录整个挪到 <备份目录>\\WTF_上传期间_<时间>\\（这份就是完整备份，不会删）
+       ——网易DD 会把整个 WTF\\Account 打包，所以真实目录必须离开 WTF\\Account
+    3. 换入脱敏副本，等你在网易DD上传完按回车，再把真实目录原样换回（逐文件数/大小校验）
+  若窗口被意外关掉，下次运行会先自动换回。也可分步：--stage（只生成副本，游戏开着也行）/ --swap-in / --swap-out。
+  账号目录与角色名自动识别（角色文件夹名 + profileKeys），一般不用 --names 和 WOW_ACCOUNT_DIR。
+
+旧用法（原地脱敏）：
   python -I Tools/prepare_share_wtf.py --names 角色名 服务器名 [其它小号名...]            # 只预览，不改文件
   python -I Tools/prepare_share_wtf.py --names 角色名 服务器名 --apply                    # 备份并整理
   python -I Tools/prepare_share_wtf.py --restore                                          # 用最近一次备份还原
@@ -427,20 +436,174 @@ def residual_scan(acc, names):
     return hits
 
 
+# ---------------------------------------------------------------- 专用分享副本（share-kkowo）+ 上传期间换入/换出
+# 网易DD 把整个 WTF\Account 打进 Account.zip，所以上传期间你自己的账号目录必须整个离开 WTF\Account：
+# 先在 share-kkowo 里生成脱敏副本（你的真实配置一个字节都不改），上传时把真实目录挪到备份目录、换入副本，
+# 上传完再原样换回。挪出去的那份就是完整备份，一直留着。
+SHARE_DIR = os.environ.get(
+    'WOW_SHARE_DIR',
+    os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'share-kkowo')),
+)
+PARK_PREFIX = 'WTF_上传期间_'
+STATE_FILE = os.path.join(SHARE_DIR, '上传换入状态.txt')
+
+
+def detect_account():
+    if ACCOUNT:
+        return os.path.normpath(ACCOUNT) if os.path.isdir(ACCOUNT) else None
+    root = os.path.join(GAME, 'WTF', 'Account')
+    if not os.path.isdir(root):
+        return None
+    cands = [d for d in os.listdir(root) if d != 'SavedVariables' and os.path.isdir(os.path.join(root, d))]
+    return os.path.join(root, cands[0]) if len(cands) == 1 else None
+
+
+def char_folder_names(acc):
+    """WTF 里的角色文件夹名（无限服是「名-姓」）：名、姓、「名 姓」都算个人信息。"""
+    names = set()
+    for realm in os.listdir(acc):
+        rp = os.path.join(acc, realm)
+        if realm == 'SavedVariables' or not os.path.isdir(rp):
+            continue
+        for ch in os.listdir(rp):
+            if not os.path.isdir(os.path.join(rp, ch)) or ch == SHARE_CHAR_DIR:
+                continue
+            parts = [p for p in ch.split('-') if p]
+            names.update(p for p in parts if len(p) >= 2)
+            if len(parts) >= 2:
+                names.add(' '.join(parts))
+    return names
+
+
+def tree_stats(path):
+    n = size = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            n += 1
+            size += os.path.getsize(os.path.join(root, f))
+    return n, size
+
+
+def copy_verified(src, dst):
+    shutil.copytree(src, dst)
+    if tree_stats(src) != tree_stats(dst):
+        sys.exit(f'复制校验失败：{src} -> {dst}（文件数或大小不一致），已停止，未做其它改动。')
+
+
+def read_state():
+    if not os.path.exists(STATE_FILE):
+        return None
+    state = {}
+    for line in open(STATE_FILE, encoding='utf-8'):
+        if '=' in line:
+            k, v = line.rstrip('\n').split('=', 1)
+            state[k] = v
+    return state if state.get('acc') and state.get('park') else None
+
+
+def stage_share_copy(acc, names, quiet=False):
+    """把当前真实配置复制到 share-kkowo 并脱敏；返回 (副本路径, 复查残留列表)。不碰游戏目录。"""
+    dst = os.path.join(SHARE_DIR, 'Account', os.path.basename(acc))
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copytree(acc, dst)
+    drop, keep, failed, removed = plan_account(dst, names, True)
+    moved = plan_characters(dst, True)
+    hits = residual_scan(dst, names)
+    if not quiet:
+        print(f'[分享副本] {dst}')
+        print(f'  账号级配置保留 {len(keep)} 份（{sum(1 for _, c in keep if c)} 份脱敏），移走 {len(drop)} 份；脱敏 {len(removed)} 处；角色级处理 {len(moved)} 项')
+        if failed:
+            print('  无法解析（已整份移走）：' + '；'.join(failed))
+        print('  复查：' + ('未发现残留个人信息。' if not hits else f'发现 {len(hits)} 处可疑内容'))
+        for h in hits:
+            print('    ! ' + h)
+    return dst, hits
+
+
+def swap_in(acc, names):
+    if read_state():
+        sys.exit('上一次上传的换入还没换回：先运行 --swap-out（或直接用 --upload，会先自动换回）。')
+    staged, hits = stage_share_copy(acc, names)
+    if hits:
+        sys.exit('分享副本里还有可疑内容，已停止，游戏目录没有任何改动。请把上面的提示发给我处理。')
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    park = os.path.join(BACKUP_ROOT, PARK_PREFIX + stamp, os.path.basename(acc))
+    os.makedirs(os.path.dirname(park), exist_ok=True)
+    copy_verified(acc, park)
+    with open(STATE_FILE, 'w', encoding='utf-8') as f:
+        f.write(f'acc={acc}\npark={park}\nstaged={staged}\ntime={stamp}\n')
+    shutil.rmtree(acc)
+    copy_verified(staged, acc)
+    print(f'[已换入] 你的真实配置已整个挪到 {park}（这份就是完整备份）')
+    print(f'         游戏目录里现在是脱敏的分享副本，可以在网易DD上传了。')
+
+
+def swap_out():
+    state = read_state()
+    if not state:
+        print('[换回] 当前没有处于上传换入状态，无需还原。')
+        return False
+    acc, park = state['acc'], state['park']
+    if not os.path.isdir(os.path.join(park, 'SavedVariables')):
+        sys.exit(f'备份目录不完整，未做任何改动：{park}')
+    if os.path.exists(acc):
+        shutil.rmtree(acc)
+    copy_verified(park, acc)
+    os.remove(STATE_FILE)
+    print(f'[已换回] {acc}  <-  {park}（备份仍保留在原处）')
+    return True
+
+
 def main():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     ap = argparse.ArgumentParser()
-    ap.add_argument('--names', nargs='*', default=[], help='本人角色名、服务器名、小号名（会自动补上 profileKeys 里的全部角色名）')
-    ap.add_argument('--apply', action='store_true')
-    ap.add_argument('--restore', action='store_true')
+    ap.add_argument('--names', nargs='*', default=[], help='本人角色名、服务器名、小号名（会自动补上 profileKeys 里的全部角色名和角色文件夹名）')
+    ap.add_argument('--apply', action='store_true', help='旧流程：原地脱敏（会先备份）')
+    ap.add_argument('--restore', action='store_true', help='旧流程：用最近一次 WTF_分享前_* 备份还原')
+    ap.add_argument('--stage', action='store_true', help='只在 share-kkowo 生成/刷新脱敏副本，不碰游戏目录（游戏开着也行）')
+    ap.add_argument('--swap-in', action='store_true', help='换入分享副本（真实配置挪到备份目录）')
+    ap.add_argument('--swap-out', action='store_true', help='换回真实配置')
+    ap.add_argument('--upload', action='store_true', help='一条龙：换入 → 等你在网易DD上传完按回车 → 换回')
     args = ap.parse_args()
 
-    if not ACCOUNT or not os.path.isdir(ACCOUNT):
-        sys.exit('请先设置环境变量 WOW_ACCOUNT_DIR 指向 WTF\\Account\\<你的账号目录>。')
-    acc = os.path.normpath(ACCOUNT)
-    if (args.apply or args.restore) and wow_running():
+    if args.swap_out or args.upload:
+        if wow_running():
+            sys.exit('检测到魔兽客户端正在运行：请先完全退出游戏。')
+        if args.swap_out:
+            swap_out()
+            return 0
+        if read_state():
+            print('发现上一次上传还没换回，先换回……')
+            swap_out()
+
+    acc = detect_account()
+    if not acc:
+        sys.exit('找不到唯一的 WTF\\Account\\<账号目录>：请设置环境变量 WOW_ACCOUNT_DIR。')
+    if (args.apply or args.restore or args.swap_in or args.upload) and wow_running():
         sys.exit('检测到魔兽客户端正在运行：请先完全退出游戏。')
+
+    if args.stage or args.swap_in or args.upload:
+        names = set(args.names) | collect_profile_names(os.path.join(acc, 'SavedVariables')) | char_folder_names(acc)
+        if args.stage:
+            stage_share_copy(acc, names)
+            return 0
+        swap_in(acc, names)
+        if args.swap_in:
+            print('\n上传完成后、进游戏之前，运行：python -I Tools/prepare_share_wtf.py --swap-out')
+            return 0
+        print('\n>>> 现在去网易DD上传配置分享。上传完成后回到这个窗口按回车，自动换回你的配置。')
+        print('>>> （上传期间不要启动游戏；万一关掉了这个窗口，再运行一次就会先自动换回。）')
+        try:
+            input()
+        except EOFError:
+            pass
+        if wow_running():
+            sys.exit('检测到游戏正在运行：退出游戏后再运行一次本工具即可换回（你的真实配置在备份目录里，安全）。')
+        swap_out()
+        return 0
 
     if args.restore:
         baks = sorted(glob.glob(os.path.join(BACKUP_ROOT, BACKUP_PREFIX + '*')))
@@ -453,7 +616,7 @@ def main():
         return 0
 
     sv_dir = os.path.join(acc, 'SavedVariables')
-    names = set(args.names) | collect_profile_names(sv_dir)
+    names = set(args.names) | collect_profile_names(sv_dir) | char_folder_names(acc)
     print('将视为个人信息的名字：' + '、'.join(sorted(names)))
 
     if args.apply:
