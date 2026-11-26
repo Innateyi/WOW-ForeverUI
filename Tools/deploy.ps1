@@ -1,130 +1,110 @@
-﻿# KkowoUI 手动部署脚本（请在【完全退出魔兽世界】后再运行！）
-# 用法：
-#   powershell -ExecutionPolicy Bypass -File Tools\deploy.ps1 -Link   # 创建目录链接（开发调样式推荐，改代码直接 /reload）
-#   powershell -ExecutionPolicy Bypass -File Tools\deploy.ps1 -Copy   # 独立复制进 AddOns
+﻿# kkowoUI 部署脚本（必须先完全退出魔兽世界）
+# 把仓库里的 Addon\kkowoUI 复制成游戏 AddOns 里的真实文件夹（不使用目录链接）。
+# 用法：powershell -ExecutionPolicy Bypass -File Tools\deploy.ps1
+#
+# 绝不删除任何文件：
+#   - 游戏 AddOns 里已有的 kkowoUI / KkowoUI / ForeverUI 文件夹整夹移进备份
+#     （备份目录：仓库同级 backups\kkowoUI部署前_<时间>，可用环境变量 WOW_BACKUP_ROOT 改位置）
+#   - 旧的目录链接只移除「链接本身」：先确认它是链接，再非递归移除，链接指向的仓库文件不受影响
+#   - 改名迁移：存档 ForeverUI.lua / KkowoUI.lua(.bak) → kkowoUI.lua(.bak)，存档变量名改成 kkowoUIDB / kkowoUICharDB；
+#     原文件移进备份后再写新文件。各角色 AddOns.txt 先备份，再把旧名那一行改成 kkowoUI。
 param(
-    [switch]$Link,
-    [switch]$Copy,
     [string]$AddOns = 'E:\Program Files\World of Warcraft\_forever_\Interface\AddOns'
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$src  = Join-Path $root 'Addon\KkowoUI'
-$dst  = Join-Path $AddOns 'KkowoUI'
+$src  = Join-Path $root 'Addon\kkowoUI'
+$name = 'kkowoUI'
+$oldNames = @('kkowoUI', 'KkowoUI', 'ForeverUI')   # 文件夹名 Windows 不区分大小写，KkowoUI 与 kkowoUI 是同一个
 
-if (-not $Link -and -not $Copy) {
-    Write-Host "请指定部署模式：-Link（创建目录链接）或 -Copy（复制文件）。未做任何改动。" -ForegroundColor Yellow
+if (Get-Process -Name 'Wow*' -ErrorAction SilentlyContinue) {
+    Write-Host '魔兽世界正在运行：请完全退出游戏后再部署（游戏退出时会覆盖存档与 AddOns.txt）。未做任何改动。' -ForegroundColor Yellow
     exit 1
 }
-if (-not (Test-Path $AddOns)) {
-    throw "找不到游戏 AddOns 目录：$AddOns"
-}
+if (-not (Test-Path -LiteralPath (Join-Path $src "$name.toc"))) { throw "找不到插件源目录：$src" }
+if (-not (Test-Path -LiteralPath $AddOns)) { throw "找不到游戏 AddOns 目录：$AddOns" }
 
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-# 备份放在仓库同级的 backups 目录（可用环境变量 WOW_BACKUP_ROOT 覆盖）
 $backupRoot = if ($env:WOW_BACKUP_ROOT) { $env:WOW_BACKUP_ROOT } else { Join-Path (Split-Path -Parent $root) 'backups' }
+$bk = Join-Path $backupRoot "kkowoUI部署前_$stamp"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
-# 旧名 ForeverUI → KkowoUI 一次性迁移：
-#   WoW 按插件文件夹名读写存档（KkowoUI.lua），插件内部读不到旧的 ForeverUI.lua，只能在游戏外改名；
-#   旧的 AddOns\ForeverUI 若保留，会与 KkowoUI 同时加载（两套系统栏 / 聊天栏 / 拾取钩子）。
-function Invoke-ForeverUIMigration {
-    # 1) 旧插件目录 / 目录链接
-    $oldDst = Join-Path $AddOns 'ForeverUI'
-    $oldItem = Get-Item -LiteralPath $oldDst -Force -ErrorAction SilentlyContinue
-    if ($oldItem) {
-        if ($oldItem.LinkType -in @('Junction', 'SymbolicLink')) {
-            # 非递归删除只移除链接本身，不碰链接指向的目录
-            [System.IO.Directory]::Delete($oldDst, $false)
-            Write-Host "已移除旧目录链接：$oldDst" -ForegroundColor Cyan
-        } else {
-            $oldBak = Join-Path $backupRoot "ForeverUI_renamed_$stamp"
-            New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
-            Move-Item -LiteralPath $oldDst -Destination $oldBak
-            Write-Host "已将旧版 ForeverUI 目录移至：$oldBak" -ForegroundColor Cyan
-        }
+function Ensure-Dir([string]$p) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
+
+# ---------- 1) 旧插件文件夹 / 目录链接 ----------
+$old = @(Get-ChildItem -LiteralPath $AddOns -Directory -Force | Where-Object { $oldNames -contains $_.Name })
+foreach ($it in $old) {
+    if ($it.LinkType -in @('Junction', 'SymbolicLink')) {
+        $target = ($it.Target -join ', ')
+        [System.IO.Directory]::Delete($it.FullName, $false)   # 非递归：只移除链接本身
+        Write-Host "已移除目录链接：$($it.FullName) -> $target（链接指向的文件未动）" -ForegroundColor Cyan
+    } else {
+        Ensure-Dir (Join-Path $bk 'AddOns')
+        $dest = Join-Path $bk ('AddOns\' + $it.Name)
+        Move-Item -LiteralPath $it.FullName -Destination $dest
+        Write-Host "已把旧文件夹移进备份：$($it.Name) -> $dest" -ForegroundColor Cyan
     }
+}
 
-    $wtfAccount = Join-Path (Split-Path -Parent (Split-Path -Parent $AddOns)) 'WTF\Account'
-    if (-not (Test-Path -LiteralPath $wtfAccount)) { return }
+# ---------- 2) 复制成真实文件夹 ----------
+$dst = Join-Path $AddOns $name
+& robocopy $src $dst /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "复制失败（robocopy 代码 $LASTEXITCODE）：$src -> $dst" }
+$nSrc = @(Get-ChildItem -LiteralPath $src -File -Recurse).Count
+$nDst = @(Get-ChildItem -LiteralPath $dst -File -Recurse).Count
+if ($nSrc -ne $nDst) { throw "复制校验失败：源 $nSrc 个文件，目标 $nDst 个" }
+Write-Host "已复制到：$dst（$nDst 个文件）" -ForegroundColor Green
+
+# ---------- 3) 存档与 AddOns.txt 改名迁移 ----------
+$wtfAccount = Join-Path (Split-Path -Parent (Split-Path -Parent $AddOns)) 'WTF\Account'
+if (Test-Path -LiteralPath $wtfAccount) {
     $accRoot = (Get-Item -LiteralPath $wtfAccount -Force).FullName.TrimEnd('\')
-    $migBak = Join-Path $backupRoot "WTF_ForeverUI_migrate_$stamp"
-
-    # 2) 账号级 / 角色级存档 ForeverUI.lua(.bak) → KkowoUI.lua(.bak)，存档变量名同步替换
-    $svFiles = Get-ChildItem -LiteralPath $accRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Directory.Name -eq 'SavedVariables' -and ($_.Name -eq 'ForeverUI.lua' -or $_.Name -eq 'ForeverUI.lua.bak') }
+    $svFiles = @(Get-ChildItem -LiteralPath $accRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Name -eq 'SavedVariables' -and $_.Name -match '^(ForeverUI|kkowoUI)\.lua(\.bak)?$' })
     foreach ($f in $svFiles) {
-        $rel = $f.FullName.Substring($accRoot.Length).TrimStart('\')
-        $newPath = Join-Path $f.DirectoryName ($f.Name -replace '^ForeverUI', 'KkowoUI')
-        if (Test-Path -LiteralPath $newPath) {
-            Write-Host "未迁移 $rel：同目录已有 KkowoUI 存档，未覆盖（想改用旧配置就删掉 KkowoUI 存档后重新运行本脚本）。" -ForegroundColor Yellow
+        $suffix = $f.Name.Substring($f.Name.IndexOf('.'))           # .lua 或 .lua.bak
+        $newName = $name + $suffix
+        $isForever = $f.Name -like 'ForeverUI*'
+        $text = [System.IO.File]::ReadAllText($f.FullName, [System.Text.Encoding]::UTF8)
+        $newText = [regex]::Replace($text, '\b(ForeverUI|KkowoUI)(Char)?DB\b', 'kkowoUI${2}DB')   # 区分大小写，不碰已是 kkowoUIDB 的
+        if (-not $isForever -and $f.Name -ceq $newName -and $newText -ceq $text) { continue }   # 已是新名字
+        $newPath = Join-Path $f.DirectoryName $newName
+        if ($isForever -and (Test-Path -LiteralPath $newPath)) {
+            Write-Host "未迁移 $($f.FullName)：同目录已有 kkowoUI 存档，保持不动。" -ForegroundColor Yellow
             continue
         }
-        $bakPath = Join-Path $migBak $rel
-        New-Item -ItemType Directory -Path (Split-Path -Parent $bakPath) -Force | Out-Null
-        Copy-Item -LiteralPath $f.FullName -Destination $bakPath
-        $text = [System.IO.File]::ReadAllText($f.FullName, [System.Text.Encoding]::UTF8)
-        $text = [regex]::Replace($text, '\bForeverUI(Char)?DB\b', 'KkowoUI${1}DB')
-        [System.IO.File]::WriteAllText($newPath, $text, $utf8NoBom)
-        Remove-Item -LiteralPath $f.FullName -Force
-        Write-Host "已迁移存档：$rel（原文件备份在 $migBak）" -ForegroundColor Green
+        $rel = $f.FullName.Substring($accRoot.Length).TrimStart('\')
+        $bakPath = Join-Path $bk ('WTF\' + $rel)
+        Ensure-Dir (Split-Path -Parent $bakPath)
+        Move-Item -LiteralPath $f.FullName -Destination $bakPath          # 原文件移进备份
+        [System.IO.File]::WriteAllText($newPath, $newText, $utf8NoBom)   # 再写新文件（文件名大小写也一并改正）
+        Write-Host "已迁移存档：$rel -> $newName" -ForegroundColor Green
     }
-
-    # 3) 各角色 AddOns.txt：沿用旧名的启用 / 停用状态
-    $addonTxts = Get-ChildItem -LiteralPath $accRoot -Recurse -File -Filter 'AddOns.txt' -Force -ErrorAction SilentlyContinue
-    foreach ($t in $addonTxts) {
-        $text = [System.IO.File]::ReadAllText($t.FullName, [System.Text.Encoding]::UTF8)
-        if ($text -notmatch '(?m)^ForeverUI:' -or $text -match '(?m)^KkowoUI:') { continue }
+    $txts = @(Get-ChildItem -LiteralPath $accRoot -Recurse -File -Filter 'AddOns.txt' -Force -ErrorAction SilentlyContinue)
+    foreach ($t in $txts) {
+        $raw = [System.IO.File]::ReadAllText($t.FullName, [System.Text.Encoding]::UTF8)
+        if ($raw -cnotmatch '(?m)^(ForeverUI|KkowoUI):') { continue }
         $rel = $t.FullName.Substring($accRoot.Length).TrimStart('\')
-        $bakPath = Join-Path $migBak $rel
-        New-Item -ItemType Directory -Path (Split-Path -Parent $bakPath) -Force | Out-Null
+        $bakPath = Join-Path $bk ('WTF\' + $rel)
+        Ensure-Dir (Split-Path -Parent $bakPath)
         Copy-Item -LiteralPath $t.FullName -Destination $bakPath
-        $text = [regex]::Replace($text, '(?m)^ForeverUI:', 'KkowoUI:')
-        [System.IO.File]::WriteAllText($t.FullName, $text, $utf8NoBom)
+        $nl = if ($raw.Contains("`r`n")) { "`r`n" } else { "`n" }
+        $hasNew = $raw -cmatch '(?m)^kkowoUI:'
+        $out = New-Object System.Collections.Generic.List[string]
+        foreach ($ln in ($raw -split "`r?`n")) {
+            if ($ln -cmatch '^(ForeverUI|KkowoUI):(.*)$') {
+                if ($hasNew) { continue }                    # 已有 kkowoUI 一行：旧名那行不再需要
+                $ln = 'kkowoUI:' + $Matches[2]
+                $hasNew = $true
+            }
+            $out.Add($ln)
+        }
+        [System.IO.File]::WriteAllText($t.FullName, ($out -join $nl), $utf8NoBom)
         Write-Host "已更新插件启用列表：$rel" -ForegroundColor Green
     }
 }
 
-# 检查游戏进程是否在运行
-$wowRunning = [bool](Get-Process -Name "Wow*" -ErrorAction SilentlyContinue)
-if ($wowRunning) {
-    Write-Host "警告：检测到魔兽世界客户端正在运行！建议先退出游戏再执行部署。" -ForegroundColor Yellow
-    # 游戏退出时会用内存里的数据重写 KkowoUI.lua，此时迁移的存档会被覆盖
-    Write-Host "已跳过旧名 ForeverUI 的存档迁移与旧目录清理，退出游戏后重新运行本脚本即可完成。" -ForegroundColor Yellow
-} else {
-    Invoke-ForeverUIMigration
-}
-
-if (Test-Path $dst) {
-    $item = Get-Item $dst -Force
-    if ($item.LinkType -in @('Junction', 'SymbolicLink')) {
-        if ($Link -and ($item.Target -contains $src)) {
-            Write-Host "已链接：$dst -> $src" -ForegroundColor Green
-            exit 0
-        }
-        # 非递归删除只移除链接本身，绝不触碰链接指向的仓库目录（路径含空格也安全）
-        [System.IO.Directory]::Delete($dst, $false)
-    } else {
-        $bak = Join-Path $backupRoot "KkowoUI_deploybak_$stamp"
-        New-Item -ItemType Directory -Path (Split-Path -Parent $bak) -Force | Out-Null
-        Move-Item -Path $dst -Destination $bak
-        Write-Host "已将旧版 KkowoUI 备份至：$bak" -ForegroundColor Cyan
-    }
-}
-
-if ($Link) {
-    New-Item -ItemType Junction -Path $dst -Target $src | Out-Null
-    Write-Host "已创建目录链接：$dst -> $src" -ForegroundColor Green
-} else {
-    Copy-Item -Path $src -Destination $dst -Recurse -Force
-    Write-Host "已复制到：$dst" -ForegroundColor Green
-}
-
-Write-Host ""
-Write-Host "下一步（进游戏人物选择界面 → 插件列表）：" -ForegroundColor Cyan
-Write-Host "  1. 勾选启用 KkowoUI"
-Write-Host "  2. 停用已被替代/冗余插件：EUI_Haalandtool、ForeverLootSparkles、ArcUI、BlizzMove、BlizzMove_Debug、QuestieTrace"
-Write-Host "  3. （可选）如果想用 KkowoUI 内置的极简系统栏/鼠标提示，可停用 QFXSystemBar / PrettyTooltip"
-Write-Host "  4. 在 Leatrix_Maps 设置里关闭「显示区域等级」（ShowZoneLevels），保留船艇/飞点/副本图标"
-Write-Host "  5. 进游戏输入 /kk 打开设置，或 /kk status 查看全部模块运行状态"
+if (Test-Path -LiteralPath $bk) { Write-Host "备份位置：$bk" -ForegroundColor Cyan }
+Write-Host ''
+Write-Host '完成。进游戏输入 /kk status 查看版本与模块状态。' -ForegroundColor Cyan

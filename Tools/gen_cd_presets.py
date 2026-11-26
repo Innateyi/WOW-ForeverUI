@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Generate Addon/KkowoUI/Data/CooldownPresets.lua from DungeonsForever's WoW Forever spell data.
+"""Generate Addon/kkowoUI/Data/CooldownPresets.lua from DungeonsForever's WoW Forever spell data.
 
 Spell IDs on Forever differ from Classic Era (new talents, re-numbered ranks), so the IDs are
 read from the client's own DungeonsForeverSpell / DungeonsForeverClass data instead of
-Wowhead. Each preset lists every rank, highest first; KkowoUI tracks the highest rank the
+Wowhead. Each preset lists every rank, highest first; kkowoUI tracks the highest rank the
 character knows and upgrades the bar when a new rank is learned.
 
 Which cooldowns each class tracks follows common Classic-era cooldown packs (Luxthos-style
@@ -23,7 +23,7 @@ ADDONS = os.environ.get("WOW_ADDONS_DIR") or os.path.join(
 SPELLBOOK_EN = os.path.join(ADDONS, "DungeonsForeverSpell", "Core", "Data", "enUS", "Data_SpellBook.lua")
 SPELLBOOK_ZH = os.path.join(ADDONS, "DungeonsForeverSpell", "Core", "Data", "Data_SpellBook.lua")
 TALENTS = os.path.join(ADDONS, "DungeonsForeverClass", "Core", "Data", "Data_TalentTrees.lua")
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Addon", "KkowoUI", "Data", "CooldownPresets.lua")
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Addon", "kkowoUI", "Data", "CooldownPresets.lua")
 
 # (key, spellbook English name or None, talent zhCN name or None, custom bar label or None)
 PRESETS = {
@@ -207,7 +207,7 @@ def main():
     talents = parse_talents(TALENTS)
     lines = [
         "----------------------------------------------------------------------",
-        "--  KkowoUI — Data/CooldownPresets.lua（由 Tools/gen_cd_presets.py 生成，勿手改）",
+        "--  kkowoUI — Data/CooldownPresets.lua（由 Tools/gen_cd_presets.py 生成，勿手改）",
         "--  无限服各职业预设冷却条：法术 ID 取自客户端内 DungeonsForever 的无限服法术数据，",
         "--  每项列出全部等级（高 → 低），运行时取角色已学会的最高等级。",
         "----------------------------------------------------------------------",

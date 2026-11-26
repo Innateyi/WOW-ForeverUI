@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 r"""
-KkowoUI — 安全插件瘦身与 6 合 1 切换脚本
+kkowoUI — 安全插件瘦身与 6 合 1 切换脚本
 功能：
   1. 检测 WoW 客户端是否在运行（若运行中默认中止，防止退出游戏时覆盖 AddOns.txt）
   2. 自动备份 AddOns.txt 到 D:\code\wow\backups\PreSlim_<timestamp>\
-  3. 停用已合并进 KkowoUI 的 7 个插件 + 17 个确认闲置/重叠/重型子插件（共释放 ~36+ MB 常驻 Lua）
+  3. 停用已合并进 kkowoUI 的 7 个插件 + 17 个确认闲置/重叠/重型子插件（共释放 ~36+ MB 常驻 Lua）
   4. 完整保留全部核心玩法与界面布局插件（EllesmereUI 核心含冷却管理器、Polestar、Questie、BigWigs、Auctionator、Leatrix_Maps、WaypointUI、VSS、DungeonsForever 主体等）
      ArcAuras 已由 EUI 冷却管理器替代（两者冲突），一并停用
 用法：
@@ -18,10 +18,10 @@ import subprocess
 import sys
 
 ADDONS_TXT = os.environ.get("WOW_ADDONS_TXT", r"E:\Program Files\World of Warcraft\_forever_\WTF\Account\<YourAccountID>\<Realm>\<CharName>\AddOns.txt")
-KKOWOUI_SV = os.environ.get("WOW_KKOWOUI_SV", r"E:\Program Files\World of Warcraft\_forever_\WTF\Account\<YourAccountID>\SavedVariables\KkowoUI.lua")
+KKOWOUI_SV = os.environ.get("WOW_KKOWOUI_SV", r"E:\Program Files\World of Warcraft\_forever_\WTF\Account\<YourAccountID>\SavedVariables\kkowoUI.lua")
 BACKUP_ROOT = os.environ.get("WOW_BACKUP_ROOT", r"D:\code\wow\backups")
 
-# 已合并进 KkowoUI 的 6 个插件（PrettyTooltip 保留以完整呈现卡片提示）
+# 已合并进 kkowoUI 的 6 个插件（PrettyTooltip 保留以完整呈现卡片提示）
 MERGED_INTO_KKOWOUI = [
     "QFXSystemBar",
     "QFXSystemBar_Config",
@@ -59,7 +59,7 @@ IDLE_OR_REDUNDANT = [
 
 TO_DISABLE = set(MERGED_INTO_KKOWOUI + IDLE_OR_REDUNDANT)
 # 冷却显示改用 EUI 冷却管理器（替代 ArcAuras），与游戏内无效插件守卫一致
-TO_ENABLE = {"KkowoUI", "EllesmereUICooldownManager"}
+TO_ENABLE = {"kkowoUI", "EllesmereUICooldownManager"}
 
 
 def is_wow_running():
@@ -152,11 +152,11 @@ def main():
     if changed_disable:
         print("本次停用清单：" + ", ".join(changed_disable))
 
-    # 同步清理 SavedVariables\KkowoUI.lua 中旧版解锁模式写入的错位坐标与空服务器小号键
+    # 同步清理 SavedVariables\kkowoUI.lua 中旧版解锁模式写入的错位坐标与空服务器小号键
     if os.path.exists(KKOWOUI_SV):
-        sv_backup = os.path.join(bdir, "KkowoUI.lua")
+        sv_backup = os.path.join(bdir, "kkowoUI.lua")
         shutil.copy2(KKOWOUI_SV, sv_backup)
-        print(f"已备份 KkowoUI.lua -> {sv_backup}")
+        print(f"已备份 kkowoUI.lua -> {sv_backup}")
         sv_raw = open(KKOWOUI_SV, "rb").read()
         sv_crlf = b"\r\n" in sv_raw
         sv_text = sv_raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
@@ -184,9 +184,9 @@ def main():
         if removed_pos or empty_realm_n:
             final_sv = sv_new2.replace("\n", "\r\n") if sv_crlf else sv_new2
             open(KKOWOUI_SV, "wb").write(final_sv.encode("utf-8"))
-            print(f"已清理 KkowoUI.lua 损坏坐标：{removed_pos}，空服务器键：{empty_realm_n} 处。")
+            print(f"已清理 kkowoUI.lua 损坏坐标：{removed_pos}，空服务器键：{empty_realm_n} 处。")
         else:
-            print("KkowoUI.lua 无需清理，数据已洁净。")
+            print("kkowoUI.lua 无需清理，数据已洁净。")
 
 
 if __name__ == "__main__":

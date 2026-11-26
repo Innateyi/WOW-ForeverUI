@@ -45,7 +45,7 @@ def main():
     if apply_mode and wow_running():
         print('魔兽世界正在运行：请完全退出游戏后再打补丁（改名会动存档与 AddOns.txt，游戏退出时会覆盖它们）。')
         return 2
-    print('=== KkowoUI 补丁检查（只读） ===' if check_only else '=== KkowoUI 一键应用补丁 ===')
+    print('=== kkowoUI 补丁检查（只读） ===' if check_only else '=== kkowoUI 一键应用补丁 ===')
     failed = 0
     for name in PATCH_LIST:
         try:

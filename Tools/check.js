@@ -1,4 +1,4 @@
-// KkowoUI 严格静态检查器（基于 luaparse）
+// kkowoUI 严格静态检查器（基于 luaparse）
 // 检查：1) 语法正确性 2) 零未声明全局写入 3) 零先用后声明 local
 //       4) 禁止向暴雪核心全局框体表写字段 5) 顶层 local 数量上限
 'use strict';
@@ -26,8 +26,11 @@ if (!luaparse) {
   process.exit(2);
 }
 
-const ADDON_ROOT = path.join(__dirname, '..', 'Addon', 'KkowoUI');
+const ADDON_ROOT = path.join(__dirname, '..', 'Addon', 'kkowoUI');
 const ALLOWED_GLOBALS = new Set([
+  'kkowoUIDB',
+  'kkowoUICharDB',
+  // 改名前的旧存档变量（DB.Init 里搬到新名字后清空）
   'KkowoUIDB',
   'KkowoUICharDB',
   'SlashCmdList',

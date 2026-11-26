@@ -1,5 +1,5 @@
 /**
- * KkowoUI — HD Vector Icon Generator (Pure Node.js, 4x Supersampled SDF -> 128x128 32-bit BGRA TGA)
+ * kkowoUI — HD Vector Icon Generator (Pure Node.js, 4x Supersampled SDF -> 128x128 32-bit BGRA TGA)
  * Generates crisp modern dark-slate & tintable luminous flat-vector icons for WoW Forever:
  *   Badge icons (with baked obsidian glass frame):
  *     - Media\Icons\PetHappy.tga       (Emerald happy badge)
@@ -23,7 +23,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const OUT_DIR = path.resolve(__dirname, "..", "Addon", "KkowoUI", "Media", "Icons");
+const OUT_DIR = path.resolve(__dirname, "..", "Addon", "kkowoUI", "Media", "Icons");
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 const SIZE = 128;

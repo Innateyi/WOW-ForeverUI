@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Generate KkowoUI brand textures (run from anywhere; writes into Addon/KkowoUI/Media).
+"""Generate kkowoUI brand textures (run from anywhere; writes into Addon/kkowoUI/Media).
 
-  Media/Icons/KkowoUI.tga       128x128 addon-list / minimap logo (TOC IconTexture)
+  Media/Icons/kkowoUI.tga       128x128 addon-list / minimap logo (TOC IconTexture)
   Media/Textures/SoftGlow.tga    64x64 radial soft glow (white, alpha falloff) for text halos
 
-Both are 32-bit uncompressed TGA, the format the other KkowoUI icons use.
+Both are 32-bit uncompressed TGA, the format the other kkowoUI icons use.
 Usage:  python Tools/gen_brand_textures.py [--preview DIR]
 """
 import argparse
@@ -13,7 +13,7 @@ import os
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Addon", "KkowoUI", "Media")
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Addon", "kkowoUI", "Media")
 SS = 4            # supersampling factor for the logo
 SIZE = 128
 
@@ -192,7 +192,7 @@ def main():
     ap.add_argument("--preview", help="also write PNG previews into this directory")
     args = ap.parse_args()
     logo = make_logo()
-    save_tga(logo, os.path.join(ROOT, "Icons", "KkowoUI.tga"))
+    save_tga(logo, os.path.join(ROOT, "Icons", "kkowoUI.tga"))
     save_tga(make_soft_glow(), os.path.join(ROOT, "Textures", "SoftGlow.tga"))
     save_tga(make_pill_mask(3), os.path.join(ROOT, "Textures", "BarPillMask.tga"))
     save_tga(make_pill_rim(3), os.path.join(ROOT, "Textures", "BarPillRim.tga"))

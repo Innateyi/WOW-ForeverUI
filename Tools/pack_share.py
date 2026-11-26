@@ -37,7 +37,7 @@ BLANK_RULES = [
     ('EUI_Haalandtool.lua', 'contacts', ['favorites', 'alts']),
     ('EUI_Haalandtool.lua', 'general', ['_char']),
     ('EUI_Haalandtool.lua', 'warband', ['characters']),
-    ('KkowoUI.lua', 'socialTools', ['favorites', 'alts']),
+    ('kkowoUI.lua', 'socialTools', ['favorites', 'alts']),
 ]
 
 
@@ -115,7 +115,7 @@ def main():
             if not fn.endswith('.lua') or not os.path.isfile(full) or SKIP_ACC_SV.match(fn):
                 continue
             txt = open(full, encoding='utf-8', errors='replace').read()
-            rules = [r for r in BLANK_RULES if r[0] == fn]
+            rules = [r for r in BLANK_RULES if r[0].lower() == fn.lower()]
             if rules:
                 txt = scrub_sv(txt, rules)
             scrubbed_svs[fn] = txt
@@ -135,7 +135,7 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     stamp = time.strftime('%Y%m%d')
-    zpath = os.path.join(args.out, f'KkowoUI整合包_{stamp}.zip')
+    zpath = os.path.join(args.out, f'kkowoUI整合包_{stamp}.zip')
     with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for d in addons:
             base = os.path.join(addons_dir, d)

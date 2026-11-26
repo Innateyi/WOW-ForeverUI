@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 r"""
-给其他人的 KkowoUI 整合包（压缩包 + 安装脚本 + 简要说明）
+给其他人的 kkowoUI 整合包（压缩包 + 安装脚本 + 简要说明）
 
 用法（游戏开着也能打包：只读游戏目录，配置取自上次退出游戏时的存档）：
-  python -I Tools/make_friend_pack.py            # 生成 <仓库同级>\share\KkowoUI整合包_<版本>_<日期>.zip
+  python -I Tools/make_friend_pack.py            # 生成 <仓库同级>\share\kkowoUI整合包_<版本>_<日期>.zip
   python -I Tools/make_friend_pack.py --dry-run  # 只检查清单与隐私扫描，不写压缩包
 
 包里有什么：
@@ -11,7 +11,7 @@ r"""
                              极速导航按 vss_kkowo_rename 的规则改名为 VamoosesSlipstream_kkowo
   payload\Fonts              界面字体（*.ttf）
   payload\Interface\Icons    材质图标
-  payload\WTF\Account        账号级插件配置（先经 prepare_share_wtf 脱敏，再去掉只属于作者本机的 KkowoUI 状态）
+  payload\WTF\Account        账号级插件配置（先经 prepare_share_wtf 脱敏，再去掉只属于作者本机的 kkowoUI 状态）
   payload\WTF\Character      角色模板（启用插件列表、聊天框、按键等）
   安装.bat / install.ps1 / 说明.txt（Tools\friend_pack 下的模板）
 合并规则由 install.ps1 实现：对方已有的配置文件一律保留，只补对方没有的。
@@ -43,7 +43,7 @@ SKIP_ACC_SV = re.compile(r'^(!BugGrabber|BugSack|Auctionator|QuestieTrace|RXPGui
 ACC_FILES = ('bindings-cache.wtf', 'config-cache.wtf', 'edit-mode-cache-account.txt', 'macros-cache.txt')
 CHAR_FILES = ('AddOns.txt', 'chat-cache.txt', 'click-bindings-cache.txt', 'config-cache.wtf',
               'edit-mode-cache-character.txt', 'layout-local.txt', 'macros-cache.txt')
-# 只属于作者本机的 KkowoUI 状态：带给别人会误判（例如把对方的 ArcAuras 停掉、按作者的原值还原 EUI 设置）
+# 只属于作者本机的 kkowoUI 状态：带给别人会误判（例如把对方的 ArcAuras 停掉、按作者的原值还原 EUI 设置）
 KKOWO_DROP = [
     ('cdmReplacesArc',), ('slimBackup',),
     ('modules', 'modernChrome', 'euiSheetBackup'), ('modules', 'modernChrome', 'wmDisabledLeatrix'),
@@ -64,7 +64,7 @@ VSS = load('vss_kkowo_rename', os.path.join(ROOT, 'Patches', 'vss_kkowo_rename.p
 
 
 def kkowo_version():
-    toc = open(os.path.join(ROOT, 'Addon', 'KkowoUI', 'KkowoUI.toc'), encoding='utf-8').read()
+    toc = open(os.path.join(ROOT, 'Addon', 'kkowoUI', 'kkowoUI.toc'), encoding='utf-8').read()
     return re.search(r'^## Version:\s*(\S+)', toc, re.M).group(1)
 
 
@@ -84,9 +84,11 @@ def scrub_kkowo(text):
     tops = PSW.parse_sv(text)
     n = 0
     for name, v in tops:
-        if name == 'KkowoUIDB' and isinstance(v, PSW.Table):
+        if name in ('kkowoUIDB', 'KkowoUIDB') and isinstance(v, PSW.Table):
             for p in KKOWO_DROP:
                 n += drop_keys(v, p)
+    # 改名前的旧存档变量名统一成新名字（游戏里 DB.Init 也会搬，这里先改好）
+    tops = [(('kkowoUI' + name[7:]) if name in ('KkowoUIDB', 'KkowoUICharDB') else name, v) for name, v in tops]
     return PSW.write_sv(tops), n
 
 
@@ -133,10 +135,11 @@ def main():
     if VSS.OLD_NAME in addon_dirs and VSS.NEW_NAME in addon_dirs:
         addon_dirs.remove(VSS.OLD_NAME)          # 已有改名版就用改名版
     pack_addons = {VSS.NEW_NAME if d == VSS.OLD_NAME else d for d in addon_dirs}
+    pack_lower = {a.lower(): a for a in pack_addons}   # 存档文件名可能是改名前的大小写（KkowoUI.lua）
     print(f'插件 {len(pack_addons)} 个（排除：{"、".join(sorted(SKIP_ADDON_DIRS))}）')
 
     ver = kkowo_version()
-    top = f'KkowoUI整合包_{ver}'
+    top = f'kkowoUI整合包_{ver}'
     build = os.path.join(args.out, '_build_' + time.strftime('%Y%m%d_%H%M%S'))
     wtf_acc = os.path.join(build, 'acc')            # 按真实账号目录结构摆放，便于复用 residual_scan
     os.makedirs(os.path.join(wtf_acc, 'SavedVariables'))
@@ -151,12 +154,13 @@ def main():
             owner = fn[:-4]
             if owner == VSS.OLD_NAME:
                 owner = VSS.NEW_NAME
-            if owner not in pack_addons:
+            owner = pack_lower.get(owner.lower())
+            if not owner:
                 continue
             text = PSW.read_raw(os.path.join(sv_src, fn))
-            if owner == 'KkowoUI':
+            if owner == 'kkowoUI':
                 text, dropped = scrub_kkowo(text)
-                print(f'  KkowoUI.lua：去掉作者本机状态 {dropped} 项')
+                print(f'  kkowoUI.lua：去掉作者本机状态 {dropped} 项')
             PSW.write_raw(os.path.join(wtf_acc, 'SavedVariables', owner + '.lua'), text)
             n_sv += 1
         for fn in ACC_FILES:

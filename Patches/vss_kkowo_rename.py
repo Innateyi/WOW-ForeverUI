@@ -32,7 +32,7 @@ OLD_DIR = os.path.join(ADDONS, OLD_NAME)
 NEW_DIR = os.path.join(ADDONS, NEW_NAME)
 BACKUP_ROOT = os.environ.get('WOW_BACKUP_ROOT', os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backups')))
 TITLE = '|cFFFF007F极速导航|r |cffff559akkowo优化版|r'
-MARK = 'X-KkowoUI-RenamedFrom'
+MARK = 'X-kkowoUI-RenamedFrom'
 
 # 代码里写死的自身路径（.lua 里是转义后的双反斜杠，.xml/.toc 里是单反斜杠或正斜杠）
 PATH_FIXES = [

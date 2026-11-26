@@ -6,7 +6,7 @@ r"""
   1. 把整个 WTF\Account\<账号目录> 完整备份到 <备份目录>\WTF_分享前_<时间>\（WOW_BACKUP_ROOT 可覆盖）
   2. 账号级 SavedVariables：只保留「当前已安装插件」的配置，删除已卸载插件残留、暴雪自带面板配置与 .bak 备份；
      在保留的配置里清掉个人信息：本人及小号的角色名/服务器、角色 GUID、AceDB profileKeys（让别人的角色自动用 Default 方案）、
-     金币账本/离线背包快照、KkowoUI 快捷收件人（好友名）等
+     金币账本/离线背包快照、kkowoUI 快捷收件人（好友名）等
   3. 角色级 SavedVariables（任务进度、指南进度、聊天记录等）全部移走，只留 AddOns.txt、按键、宏、频道等角色设置；
      只保留设置最全/最近游玩的那个角色，文件夹改名为中性的 Kkowo-Share，其余角色文件夹整夹移走（分享包路径里不再有角色名）；
      config-cache.wtf 里的社群 ID（lastSelectedClubId）一并删掉
@@ -49,6 +49,11 @@ BACKUP_PREFIX = 'WTF_分享前_'
 
 # 这些容器整个清空（路径用 / 分隔，从 SavedVariables 顶层变量开始）
 CLEAR_PATHS = {
+    'kkowoUIDB/modules/socialTools/favorites',
+    'kkowoUIDB/modules/socialTools/alts',
+    'kkowoUIDB/modules/modernChrome/cdmConflictKeep',
+    'kkowoUIDB/modules/modernChrome/euiConflictKeep',
+    # 插件改名为 kkowoUI 前的旧存档变量名
     'KkowoUIDB/modules/socialTools/favorites',
     'KkowoUIDB/modules/socialTools/alts',
     'KkowoUIDB/modules/modernChrome/cdmConflictKeep',
@@ -61,7 +66,7 @@ CLEAR_PATHS = {
 GUID_RE = re.compile(r'^(Player|Pet|Creature|BNet)-\d+-[0-9A-Fa-f-]+$')
 GUID_IN_TEXT_RE = re.compile(r'Player-\d+-[0-9A-Fa-f]{8}')
 SHARE_CHAR_DIR = 'Kkowo-Share'  # 分享包里唯一保留的角色文件夹的中性名字
-ADDON_NAME_RE = re.compile(r'KkowoUI|migratedFromHaaland|Haalandtool', re.I)
+ADDON_NAME_RE = re.compile(r'kkowoUI|migratedFromHaaland|Haalandtool', re.I)
 
 
 # ---------------------------------------------------------------- Lua SavedVariables 解析 / 写回

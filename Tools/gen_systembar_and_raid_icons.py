@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 r"""
-KkowoUI — Ultra-Smooth Vector Icon & Global Raid Marker Generator
+kkowoUI — Ultra-Smooth Vector Icon & Global Raid Marker Generator
 1) Redraws all 10 active SystemBar Lucide icons using mathematical Signed Distance Fields (SDF)
    rendered at 512x512 -> premultiplied-alpha Lanczos mipmap chain (128->64->32->16->8->4->2->1)
    encoded as lossless 32-bit BGRA BLP2 (colorEncoding=3, alphaDepth=8, hasMips=1).
    Zero DXT5 block noise, zero jaggedness at 16-28px in-game!
 2) Composites MarkBar's Mark1.tga..Mark8.tga into a 512x512 4x4 sprite sheet
    UI-RaidTargetingIcons.blp (lossless BGRA BLP2 with full mipmaps) and deploys to:
-     - Addon/KkowoUI/Media/MarkBar/UI-RaidTargetingIcons.blp
+     - Addon/kkowoUI/Media/MarkBar/UI-RaidTargetingIcons.blp
      - E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame\UI-RaidTargetingIcons.blp
 3) Writes visual inspection contact sheets (PNG) to scratch directory for verification.
 """
@@ -18,8 +18,8 @@ import numpy as np
 from PIL import Image
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LUCIDE_OUT = os.path.join(REPO_ROOT, "Addon", "KkowoUI", "Media", "SystemBar", "Lucide")
-MARK_DIR = os.path.join(REPO_ROOT, "Addon", "KkowoUI", "Media", "MarkBar")
+LUCIDE_OUT = os.path.join(REPO_ROOT, "Addon", "kkowoUI", "Media", "SystemBar", "Lucide")
+MARK_DIR = os.path.join(REPO_ROOT, "Addon", "kkowoUI", "Media", "MarkBar")
 WOW_TARGETING_DIR = os.environ.get(
     "WOW_TARGETING_DIR",
     r"E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame",
@@ -490,7 +490,7 @@ def generate_raid_marker_atlas():
       Row 0: Mark1 (Star), Mark2 (Circle), Mark3 (Diamond), Mark4 (Triangle)
       Row 1: Mark5 (Moon), Mark6 (Square), Mark7 (Cross),   Mark8 (Skull)
       Rows 2-3: Transparent
-    Writes both Addon/KkowoUI/Media/MarkBar/UI-RaidTargetingIcons.blp
+    Writes both Addon/kkowoUI/Media/MarkBar/UI-RaidTargetingIcons.blp
     and client loose override Interface/TargetingFrame/UI-RaidTargetingIcons.blp
     """
     atlas = np.zeros((512, 512, 4), dtype=np.float32)

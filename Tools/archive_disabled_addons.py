@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-KkowoUI — 停用插件安全归档工具（方案 A）
+kkowoUI — 停用插件安全归档工具（方案 A）
 功能：
   1. 读取当前角色的 AddOns.txt（环境变量 WOW_ADDONS_TXT），识别全部已停用（disabled）的非 Blizzard 插件
   2. 校验所有已启用插件的 .toc RequiredDeps / Dependencies，确认无任何必需依赖
@@ -24,7 +24,7 @@ ARCHIVE_ROOT = os.path.join(
     "ArchivedAddOns",
 )
 
-PROTECTED_ALWAYS = {"KkowoUI", "EllesmereUI", "YaMedia"}
+PROTECTED_ALWAYS = {"kkowoUI", "EllesmereUI", "YaMedia"}
 
 
 def is_wow_running():
@@ -122,7 +122,7 @@ def main():
         if not os.path.exists(src):
             missing_dirs.append(name)
             continue
-        # NTFS 目录联接（deploy.ps1 -Link 创建的就是这种）在 os.path.islink 下返回 False，必须单独识别：
+        # NTFS 目录联接（旧版 deploy.ps1 -Link 创建的就是这种）在 os.path.islink 下返回 False，必须单独识别：
         # 跨盘 shutil.move 会把联接指向的仓库内容整份拷走再删掉联接
         is_junction = hasattr(os.path, "isjunction") and os.path.isjunction(src)
         if os.path.islink(src) or is_junction:

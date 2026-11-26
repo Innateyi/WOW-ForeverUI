@@ -1,4 +1,4 @@
-# KkowoUI — 魔兽世界：无限（Interface 16001）现代模块化整合工程
+# kkowoUI — 魔兽世界：无限（Interface 16001）现代模块化整合工程
 
 专为《魔兽世界：无限》实战环境打造的**零污染模块化增强插件 + 第三方幂等补丁 + 高清矢量素材与多字重字体工具链**。
 
@@ -32,9 +32,10 @@ python -I Tools\apply_patches.py --apply
 # 3b. 给其他人的整合包（压缩包 + 安装.bat + 说明.txt；安装时按插件合并，对方已有的配置优先），输出到仓库同级 share\
 python -I Tools\make_friend_pack.py
 
-# 4. 退出游戏后，部署 KkowoUI 到游戏 AddOns（推荐 -Link 目录链接便于随时 /reload）
-#    从旧名 ForeverUI 升级时会自动迁移 WTF 存档与 AddOns.txt 启用项，并移走旧的 AddOns\ForeverUI（原文件备份到 backups）
-powershell -ExecutionPolicy Bypass -File Tools\deploy.ps1 -Link
+# 4. 退出游戏后，把 kkowoUI 复制成游戏 AddOns 里的真实文件夹（不用目录链接；改完代码重新运行一次再进游戏）
+#    旧的 kkowoUI / KkowoUI / ForeverUI 文件夹移进 backups（旧目录链接只移除链接本身），
+#    存档与 AddOns.txt 里的旧名（KkowoUIDB / ForeverUIDB 等）自动改成 kkowoUI，原文件同样备份；全程不删除文件
+powershell -ExecutionPolicy Bypass -File Tools\deploy.ps1
 
 # 5. 部署 / 卸载全局 3D 团队标记图集（UI-RaidTargetingIcons.blp）
 python -I Tools\deploy_raid_markers.py --install
@@ -62,7 +63,7 @@ python -I Tools\gen_bow_sounds.py
 
 ## 目录结构
 
-- `Addon/KkowoUI/` — 统一模块化主插件（19 个独立模块 + 全套高清矢量图标与枪/弓音效素材）
+- `Addon/kkowoUI/` — 统一模块化主插件（19 个独立模块 + 全套高清矢量图标与枪/弓音效素材）
 - `Patches/` — 幂等第三方补丁（姓名板任务计数防重叠与字号同步、友方玩家名、EUI 聊天标签 0 帧极速切换、Polestar 中文补全、极速导航改名为 `VamoosesSlipstream_kkowo` + 跑尸提示开关）。网易 DD 更新 EUI / Polestar 后双击 `Tools/DD更新后重打补丁.bat`（= `apply_patches.py --apply`，需先退出游戏）
 - `Tools/` — 静态检查、补丁管理、素材与音效合成、全局团队标记与多字重字体部署、脱敏打包脚本
 - `Profiles/` — 现代 UI 切换与第三方插件搭配清单
