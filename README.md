@@ -22,11 +22,15 @@
 # 1. 静态语法与零污染检查（须保持 0 错误 0 警告）
 node Tools\check.js
 
-# 2. 只读检查 4 个第三方补丁状态（玩游戏时可安全运行）
+# 2. 只读检查第三方补丁状态（玩游戏时可安全运行）
 python -I Tools\apply_patches.py --check
 
-# 3. 退出游戏后，一键应用 4 个第三方补丁（带自动备份）
+# 3. 退出游戏后，一键应用第三方补丁（带自动备份；含极速导航改名为 VamoosesSlipstream_kkowo）
+#    网易 DD 更新 EUI / Polestar / 极速导航后也可直接双击 Tools\DD更新后重打补丁.bat
 python -I Tools\apply_patches.py --apply
+
+# 3b. 给其他人的整合包（压缩包 + 安装.bat + 说明.txt；安装时按插件合并，对方已有的配置优先），输出到仓库同级 share\
+python -I Tools\make_friend_pack.py
 
 # 4. 退出游戏后，部署 KkowoUI 到游戏 AddOns（推荐 -Link 目录链接便于随时 /reload）
 #    从旧名 ForeverUI 升级时会自动迁移 WTF 存档与 AddOns.txt 启用项，并移走旧的 AddOns\ForeverUI（原文件备份到 backups）
