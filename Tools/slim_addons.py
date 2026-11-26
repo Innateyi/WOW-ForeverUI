@@ -8,7 +8,7 @@ kkowoUI — 安全插件瘦身与 6 合 1 切换脚本
   4. 完整保留全部核心玩法与界面布局插件（EllesmereUI 核心含冷却管理器、Polestar、Questie、BigWigs、Auctionator、Leatrix_Maps、WaypointUI、VSS、DungeonsForever 主体等）
      ArcAuras 已由 EUI 冷却管理器替代（两者冲突），一并停用
 用法：
-  python D:\code\wow\forever-ui\Tools\slim_addons.py
+  python D:\code\wow\kkowoUI\Tools\slim_addons.py
 """
 import datetime
 import os
