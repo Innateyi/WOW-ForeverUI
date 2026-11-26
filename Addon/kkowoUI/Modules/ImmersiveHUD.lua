@@ -24,32 +24,40 @@ local C_Timer = C_Timer
 ----------------------------------------------------------------------
 do
     local mod = F.RegisterModule("immersiveHUD", {
-        title = "沉浸探索模式（智能 HUD 淡隐）",
-        desc = "非战斗、无目标且血蓝健康时自动柔淡次要 HUD（副动作条/任务栏/系统栏/伤害统计），进战、选目标或鼠标移上瞬间清晰。",
+        title = "脱战淡隐（统一开关）",
+        desc = "一个开关统一管理脱战淡隐：非战斗、无目标且血蓝健康时，动作条、冷却条、核心双翼、属性卡片、伤害统计、计时条、任务栏、系统栏一起柔和淡化；"
+            .. "进战、选目标、施法或鼠标移上瞬间清晰。聊天框鼠标移开后也会很快淡隐。",
         group = "visual",
         order = 20,
         defaults = {
             enabled = true,
             idleAlpha = 0.28,
             disableInInstance = true,
-            fadeSideBars = true,
+            fadeActionBars = true,    -- 全部 EUI 动作条（含主动作条、姿态条、宠物条）
+            fadeCooldowns = true,     -- EUI 冷却管理器的冷却 / 增益 / 追踪条
+            fadeCoreHUD = true,       -- kkowoUI 核心双翼与宠物条（原核心 HUD 自带的空闲淡隐并入这里）
+            fadeStats = true,         -- 人物属性 / 耐久卡片
+            fadeTimers = true,        -- 武器附魔 / 攻击特效计时条
             fadeQuestTracker = true,
             fadeDamageMeter = true,
             fadeSystemBar = true,
             fadeXPBar = false,
             fadeMinimap = false,
+            chatQuickFade = true,     -- 聊天框：鼠标移开后很快淡隐（新消息仍按 EUI 的闲置延迟）
+            chatLeaveDelay = 1.5,
             hpThreshold = 95,
             powerThreshold = 85,
         },
     })
 
-    local SIDE_BAR_NAMES = {
-        "EABBar_Bar4", "EABBar_Bar5", "EABBar_Bar6",
-        "EABBar_Bar7", "EABBar_Bar8",
-        "EABBar_StanceBar",
+    -- 全部 EUI 动作条（EABBar_<key>）；是否显示、是否「悬停才显示」、平时透明度都以 EUI 自己的设置为准
+    local EUI_BAR_KEYS = {
+        "MainBar", "Bar2", "Bar3", "Bar4", "Bar5", "Bar6", "Bar7", "Bar8", "Bar9", "Bar10",
+        "StanceBar", "PetBar",
     }
 
     local managed = setmetatable({}, { __mode = "k" })   -- frame -> true（本模块已接管过透明度）
+    local restAlpha = setmetatable({}, { __mode = "k" }) -- frame -> 恢复时的透明度（EUI 动作条按其自身设置，其余 1.0）
     local animTargets = {}                                -- frame -> targetAlpha
     local hoverTicker = nil
     local isImmersiveNow = false
@@ -106,28 +114,78 @@ do
     local activeSetBuf = {}
     local worldMapHooked = false
 
+    local function ModuleNS(name)
+        local EUI = _G.EllesmereUI
+        local reg = EUI and EUI._ModuleNS
+        return type(reg) == "table" and reg[name] or nil
+    end
+
+    -- EUI 动作条的「平时透明度」：悬停才显示的条交给 EUI 自己（返回 gated=true，不接管），
+    -- 其余按 EUI 设置的不透明度恢复，避免把你在 EUI 里调暗的条恢复成 100%
+    local function EUIBarRest(key)
+        local ns = ModuleNS("EllesmereUIActionBars")
+        local H = ns and ns.EAB_VTABLE and ns.EAB_VTABLE.Hover
+        if not (H and type(H.RestingAlpha) == "function") then return 1, false end
+        local ok, a, gated = pcall(H.RestingAlpha, key)
+        if not ok then return 1, false end
+        return F.PlainNumber(a, 1) or 1, gated == true
+    end
+
+    local seenBuf = {}
     local function CollectTargets()
         local db = mod:GetDB()
         for i = #targetBuf, 1, -1 do targetBuf[i] = nil end
-        local function addByName(name)
-            local f = _G[name]
-            if f and not (f.IsForbidden and f:IsForbidden()) and f.IsShown and f:IsShown() then
-                -- 不抢占被 EUI 自身 visibility="never" 隐藏（alpha==0 且未由本模块接管）的框体
-                local a = F.PlainNumber(f:GetAlpha(), 1)
-                if managed[f] or animTargets[f] ~= nil or a > 0.02 then
-                    targetBuf[#targetBuf + 1] = f
+        for k in pairs(seenBuf) do seenBuf[k] = nil end
+        local function addFrame(f, rest)
+            if not f or seenBuf[f] then return end
+            if (f.IsForbidden and f:IsForbidden()) or not (f.IsShown and f:IsShown()) then return end
+            -- 不抢占被 EUI 自身 visibility="never" 隐藏（alpha==0 且未由本模块接管）的框体
+            local a = F.PlainNumber(f:GetAlpha(), 1)
+            if managed[f] or animTargets[f] ~= nil or a > 0.02 then
+                seenBuf[f] = true
+                restAlpha[f] = rest or 1
+                targetBuf[#targetBuf + 1] = f
+            end
+        end
+        local function addByName(name, rest)
+            addFrame(_G[name], rest)
+        end
+
+        if db.fadeActionBars ~= false then
+            for _, key in ipairs(EUI_BAR_KEYS) do
+                local f = _G["EABBar_" .. key]
+                if f then
+                    local rest, gated = EUIBarRest(key)
+                    if not gated and rest > 0.02 then addFrame(f, rest) end
                 end
             end
         end
-
-        if db.fadeSideBars ~= false then
-            for _, n in ipairs(SIDE_BAR_NAMES) do addByName(n) end
+        if db.fadeCooldowns ~= false then
+            local cdm = ModuleNS("EllesmereUICooldownManager")
+            if cdm and type(cdm.cdmBarFrames) == "table" then
+                for _, f in pairs(cdm.cdmBarFrames) do
+                    if type(f) == "table" then addFrame(f) end
+                end
+            end
+            for i = 1, 30 do addByName("ECME_TBBWrap" .. i) end
+        end
+        if db.fadeCoreHUD ~= false then
+            addByName("kkowoUI_CoreHUD")
+            addByName("kkowoUI_PetHUD")
+        end
+        if db.fadeStats ~= false then
+            addByName("EUI_SecondaryStats")
+            addByName("kkowoUI_StatsCard")
+        end
+        if db.fadeTimers ~= false then
+            addByName("kkowoUI_WeaponProcBars")
+            addByName("kkowoUI_WeaponEnchantBars")
         end
         if db.fadeQuestTracker ~= false then
             addByName("EUI_CustomQuestTracker")
         end
         if db.fadeDamageMeter ~= false then
-            addByName("EllesmereUIDMFrame1")
+            for i = 1, 4 do addByName("EllesmereUIDMFrame" .. i) end
             addByName("EDM_Win1")
         end
         if db.fadeSystemBar ~= false then
@@ -138,6 +196,21 @@ do
         end
         if db.fadeMinimap == true then
             addByName("MinimapCluster")
+        end
+
+        -- 父子都在名单里时只淡父框体（否则透明度相乘，子框体会淡得过头，例如属性卡片挂在 EUI 属性面板上）
+        for i = #targetBuf, 1, -1 do
+            local f = targetBuf[i]
+            local p = f.GetParent and f:GetParent() or nil
+            local depth = 0
+            while p and depth < 10 do
+                if seenBuf[p] then
+                    table.remove(targetBuf, i)
+                    break
+                end
+                p = p.GetParent and p:GetParent() or nil
+                depth = depth + 1
+            end
         end
         return targetBuf
     end
@@ -224,7 +297,7 @@ do
             if IsYieldedToCombatFade(frame) then
                 animTargets[frame] = nil
             else
-                FadeFrameTo(frame, 1.0, instant)
+                FadeFrameTo(frame, restAlpha[frame] or 1.0, instant)
             end
         end
         if instant then
@@ -264,16 +337,17 @@ do
         for _, f in ipairs(targets) do
             activeSetBuf[f] = true
             managed[f] = true
+            local rest = restAlpha[f] or 1.0
             local over = f.IsMouseOver and f:IsMouseOver()
-            FadeFrameTo(f, over and 1.0 or idleA, instant)
+            FadeFrameTo(f, over and rest or math_min(rest, idleA), instant)
         end
-        -- 被用户在选项中取消勾选的框体立即恢复 1.0
+        -- 被用户在选项中取消勾选（或已隐藏 / 被父框体代淡）的框体立即恢复
         for f in pairs(managed) do
             if not activeSetBuf[f] then
                 if IsYieldedToCombatFade(f) then
                     animTargets[f] = nil
                 else
-                    FadeFrameTo(f, 1.0, instant)
+                    FadeFrameTo(f, restAlpha[f] or 1.0, instant)
                 end
                 managed[f] = nil
             end
@@ -287,13 +361,23 @@ do
                 end
                 local a = mod:GetDB().idleAlpha or 0.28
                 local curTargets = CollectTargets()
+                for k in pairs(activeSetBuf) do activeSetBuf[k] = nil end
                 for _, f in ipairs(curTargets) do
+                    activeSetBuf[f] = true
                     if not managed[f] then managed[f] = true end
+                end
+                -- 期间被隐藏 / 被父框体代淡 / 变成 EUI「悬停才显示」的框体交还原透明度
+                for f in pairs(managed) do
+                    if not activeSetBuf[f] then
+                        managed[f] = nil
+                        FadeFrameTo(f, restAlpha[f] or 1.0, false)
+                    end
                 end
                 for f in pairs(managed) do
                     if f and not (f.IsForbidden and f:IsForbidden()) and f.IsShown and f:IsShown() then
+                        local rest = restAlpha[f] or 1.0
                         local over = f.IsMouseOver and f:IsMouseOver()
-                        local want = over and 1.0 or a
+                        local want = over and rest or math_min(rest, a)
                         local curGoal = animTargets[f]
                         local curA = F.PlainNumber(f:GetAlpha(), 1)
                         if (curGoal and math_abs(curGoal - want) > 0.02)
@@ -321,10 +405,99 @@ do
         QueueRefresh()
     end
 
+    -- 统一开关：其它模块（核心双翼）问这里自己是否已被接管，被接管就不再自行淡化
+    F.UnifiedFade = {
+        Owns = function(what)
+            if not mod._active then return false end
+            local db = mod:GetDB()
+            if what == "coreHUD" then return db.fadeCoreHUD ~= false end
+            return false
+        end,
+    }
+
+    ----------------------------------------------------------------------
+    -- 聊天框快速淡隐：EUI 聊天的「闲置淡隐」在鼠标划过后会重新计满整个闲置延迟（默认 15 秒）才淡出，
+    -- 鼠标早就移开了它还亮着。这里在 EUI 每次重置闲置计时后判断：若不是新消息唤醒，
+    -- 就盯着鼠标，离开聊天区域（且输入框没在输入）满 chatLeaveDelay 秒立即让 EUI 淡出。
+    -- 新消息唤醒仍保持 EUI 原本的延迟，方便看完消息。
+    ----------------------------------------------------------------------
+    local CHAT_WAKE_EVENTS = {
+        "CHAT_MSG_SAY", "CHAT_MSG_YELL", "CHAT_MSG_EMOTE", "CHAT_MSG_TEXT_EMOTE",
+        "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM", "CHAT_MSG_BN_WHISPER", "CHAT_MSG_BN_WHISPER_INFORM",
+        "CHAT_MSG_PARTY", "CHAT_MSG_PARTY_LEADER", "CHAT_MSG_RAID", "CHAT_MSG_RAID_LEADER", "CHAT_MSG_RAID_WARNING",
+        "CHAT_MSG_INSTANCE_CHAT", "CHAT_MSG_INSTANCE_CHAT_LEADER", "CHAT_MSG_GUILD", "CHAT_MSG_OFFICER",
+        "CHAT_MSG_CHANNEL", "CHAT_MSG_COMMUNITIES_CHANNEL",
+    }
+    local chatHooked = false
+    local chatMsgAt = -10
+    local chatWatchToken = 0
+
+    local function ChatEditFocused()
+        local eb = _G.ChatFrame1EditBox
+        if not (eb and eb.HasFocus) then return false end
+        local ok, f = pcall(eb.HasFocus, eb)
+        return ok and not F.IsSecret(f) and f == true
+    end
+
+    local function ChatMouseOver(chatNS)
+        local overlay = chatNS and chatNS._chatHoverOverlay
+        local areas = { overlay, _G.GeneralDockManager, _G.ChatFrame1 }
+        for _, f in ipairs(areas) do
+            if f and f.IsMouseOver then
+                local ok, over = pcall(f.IsMouseOver, f)
+                if ok and not F.IsSecret(over) and over == true then return true end
+            end
+        end
+        return false
+    end
+
+    local function OnEUIChatIdleReset()
+        chatWatchToken = chatWatchToken + 1
+        if not mod._active then return end
+        local db = mod:GetDB()
+        if db.chatQuickFade == false then return end
+        -- 新消息唤醒（EUI 在收到消息的下一帧重置计时）：保持 EUI 的闲置延迟
+        if _G.GetTime() - chatMsgAt < 0.5 then return end
+        local chatNS = ModuleNS("EllesmereUIChat")
+        local E = chatNS and chatNS.ECHAT
+        if not (E and type(E.StartIdleFadeNow) == "function") then return end
+        local my = chatWatchToken
+        local cfg = type(E.DB) == "function" and E.DB() or nil
+        local maxWatch = (cfg and F.PlainNumber(cfg.idleFadeDelay, nil) or 15) + 1
+        local started = _G.GetTime()
+        local awaySince = nil
+        local function Tick()
+            if my ~= chatWatchToken or not mod._active then return end
+            local now = _G.GetTime()
+            if ChatMouseOver(chatNS) or ChatEditFocused() then
+                awaySince = nil
+            else
+                awaySince = awaySince or now
+                local delay = F.PlainNumber(mod:GetDB().chatLeaveDelay, 1.5) or 1.5
+                if now - awaySince >= delay then
+                    pcall(E.StartIdleFadeNow)
+                    return
+                end
+            end
+            if now - started < maxWatch then C_Timer.After(0.2, Tick) end
+        end
+        C_Timer.After(0.2, Tick)
+    end
+
+    local function HookEUIChat()
+        if chatHooked then return true end
+        local chatNS = ModuleNS("EllesmereUIChat")
+        local E = chatNS and chatNS.ECHAT
+        if not (E and type(E.ResetIdleTimer) == "function") then return false end
+        chatHooked = true
+        _G.hooksecurefunc(E, "ResetIdleTimer", OnEUIChatIdleReset)
+        return true
+    end
+
     function mod:ToggleImmersive()
         local db = self:GetDB()
         self:SetEnabled(not (db.enabled ~= false))
-        F.Print("沉浸探索模式已" .. (self:IsEnabled() and "|cff5fd3a6开启|r" or "|cff888888关闭|r") .. "。")
+        F.Print("脱战淡隐（统一开关）已" .. (self:IsEnabled() and "|cff5fd3a6开启|r" or "|cff888888关闭|r") .. "。")
     end
 
     function mod:OnEnable()
@@ -366,10 +539,16 @@ do
         self:RegisterEvent("ZONE_CHANGED_NEW_AREA", QueueRefresh)
         self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
             RefreshAlphas(true)
+            HookEUIChat()
             C_Timer.After(1.2, function()
                 if mod._active then RefreshAlphas(false) end
             end)
         end)
+        local function OnChatMsg() chatMsgAt = _G.GetTime() end
+        for _, ev in ipairs(CHAT_WAKE_EVENTS) do self:RegisterEvent(ev, OnChatMsg) end
+        if not HookEUIChat() then
+            C_Timer.After(2, HookEUIChat)
+        end
 
         C_Timer.After(1.0, function()
             if mod._active then RefreshAlphas(false) end
@@ -385,43 +564,71 @@ do
         RestoreAllManaged(true)
     end
 
+    function mod:OnRefresh()
+        RefreshAlphas(false)
+    end
+
     function mod:BuildOptions(W, parent, y, enableSlot, blank)
         local db = self:GetDB()
         local _, h
+        local function Toggle(key, text, tooltip, defaultOff)
+            return {
+                type = "toggle",
+                text = text,
+                tooltip = tooltip,
+                disabled = function() return not mod:IsEnabled() end,
+                getValue = function()
+                    if defaultOff then return db[key] == true end
+                    return db[key] ~= false
+                end,
+                setValue = function(v) db[key] = v == true; RefreshAlphas(false) end,
+            }
+        end
+        enableSlot.text = "启用脱战淡隐（总开关）"
+        enableSlot.tooltip = "一个开关管理下面所有框体的脱战淡隐。关闭后全部恢复 100% 清晰（也可输入 /kk hud 切换）。"
         _, h = W:DualRow(parent, y, enableSlot, {
             type = "slider",
-            text = "探索静默透明度",
-            tooltip = "非战斗无目标时的柔和可见度，鼠标移到对应区域瞬间恢复 100%。",
+            text = "淡隐后的透明度",
+            tooltip = "非战斗、无目标、血蓝健康时的可见度；鼠标移到对应框体上瞬间恢复。",
             min = 0.0, max = 0.75, step = 0.05,
+            disabled = function() return not mod:IsEnabled() end,
             getValue = function() return db.idleAlpha or 0.28 end,
             setValue = function(v) db.idleAlpha = v; RefreshAlphas(false) end,
         })
         y = y - h
 
-        _, h = W:DualRow(parent, y, {
-            type = "toggle",
-            text = "淡化副动作条 / 姿态条",
-            tooltip = "仅淡化 EUI 副栏（Bar4-Bar8 与姿态条），主技能栏始终清晰。",
-            getValue = function() return db.fadeSideBars ~= false end,
-            setValue = function(v) db.fadeSideBars = v == true; RefreshAlphas(false) end,
-        }, {
-            type = "toggle",
-            text = "淡化任务追踪栏",
-            getValue = function() return db.fadeQuestTracker ~= false end,
-            setValue = function(v) db.fadeQuestTracker = v == true; RefreshAlphas(false) end,
-        })
+        _, h = W:DualRow(parent, y,
+            Toggle("fadeActionBars", "动作条（全部 EUI 动作条）",
+                "含主动作条、姿态条、宠物条。EUI 里设为「鼠标悬停才显示」的条仍由 EUI 管理；调过不透明度的条恢复到你在 EUI 里设的值。"),
+            Toggle("fadeCooldowns", "冷却管理器（冷却 / 增益 / 追踪条）"))
         y = y - h
 
-        _, h = W:DualRow(parent, y, {
-            type = "toggle",
-            text = "淡化伤害统计窗口",
-            getValue = function() return db.fadeDamageMeter ~= false end,
-            setValue = function(v) db.fadeDamageMeter = v == true; RefreshAlphas(false) end,
-        }, {
-            type = "toggle",
-            text = "淡化底部系统栏",
-            getValue = function() return db.fadeSystemBar ~= false end,
-            setValue = function(v) db.fadeSystemBar = v == true; RefreshAlphas(false) end,
+        _, h = W:DualRow(parent, y,
+            Toggle("fadeCoreHUD", "核心双翼血蓝条与宠物条",
+                "原先核心 HUD 自带的「脱战满状态淡隐」已并入这里，统一用上面的透明度。"),
+            Toggle("fadeStats", "人物属性 / 耐久卡片"))
+        y = y - h
+
+        _, h = W:DualRow(parent, y,
+            Toggle("fadeDamageMeter", "伤害统计窗口"),
+            Toggle("fadeTimers", "武器附魔 / 攻击特效计时条"))
+        y = y - h
+
+        _, h = W:DualRow(parent, y,
+            Toggle("fadeQuestTracker", "任务追踪栏"),
+            Toggle("fadeSystemBar", "底部系统栏"))
+        y = y - h
+
+        _, h = W:DualRow(parent, y,
+            Toggle("chatQuickFade", "聊天框：鼠标移开后快速淡隐",
+                "EUI 聊天框的「闲置淡隐」在鼠标划过后要重新等满闲置时间（默认 15 秒）才淡出。开启后鼠标移开（且没在输入）"
+                .. "一小会儿就淡出；收到新消息时仍按 EUI 的闲置时间显示。需要 EUI 聊天设置里的「闲置淡隐」开着。"), {
+            type = "slider",
+            text = "移开后多久淡隐（秒）",
+            min = 0.5, max = 5, step = 0.5,
+            disabled = function() return not mod:IsEnabled() or db.chatQuickFade == false end,
+            getValue = function() return F.PlainNumber(db.chatLeaveDelay, 1.5) or 1.5 end,
+            setValue = function(v) db.chatLeaveDelay = v end,
         })
         y = y - h
 

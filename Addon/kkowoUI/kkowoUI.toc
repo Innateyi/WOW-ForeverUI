@@ -2,7 +2,7 @@
 ## Title: |cffdca77fkkowoUI|r 无限现代整合模块
 ## Notes: 面向《魔兽世界：无限》的零污染模块化增强与现代极简视觉统一插件（依赖 EllesmereUI）
 ## Author: Mei
-## Version: 1.4.0
+## Version: 1.5.0
 ## IconTexture: Interface\AddOns\kkowoUI\Media\Icons\kkowoUI
 ## Dependencies: EllesmereUI
 ## OptionalDeps: EllesmereUIQuestTracker, EllesmereUIBlizzardSkin, EllesmereUIBags, EllesmereUIDamageMeters, EllesmereUIChat, EllesmereUIMinimap, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, EllesmereUIForeverEssentials, Auctionator, Questie, Polestar, BugSack, WaypointUI, QFXSystemBar, PrettyTooltip, Leatrix_Maps
@@ -30,6 +30,7 @@ Modules\ZoneLabels.lua
 Modules\WorldNames.lua
 Modules\CombatAlert.lua
 Modules\CooldownPresets.lua
+Modules\WeaponProcs.lua
 Modules\SoulstoneAlert.lua
 Modules\SpellSounds.lua
 Modules\RollBars.lua

@@ -616,7 +616,15 @@ local function UpdateIdleFade(instant)
     if not mod._active then return end
     local unlockOn = _G.EllesmereUI and _G.EllesmereUI._unlockActive == true
     local targetA = 1.0
-    if db.idleFade ~= false and not unlockOn then
+    -- 脱战淡隐已统一到「脱战淡隐（统一开关）」：它接管时这里完全不碰透明度（两套淡隐会互相抢）；
+    -- 不接管（总开关或「核心双翼」项关掉）时保持 100%，不再走下面这套独立淡隐
+    local UF = F.UnifiedFade
+    if UF then
+        if UF.Owns("coreHUD") then
+            lastIdleAlpha = nil
+            return
+        end
+    elseif db.idleFade ~= false and not unlockOn then
         local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
             or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
         local hasTarget = (_G.UnitExists and _G.UnitExists("target")) == true
@@ -4154,18 +4162,24 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "脱战满状态柔和淡隐（默认开启）",
-        tooltip = "脱战、无目标、满血满蓝且无自身减益时自动淡化核心双翼与宠物条，进战/选目标/掉血/施法瞬间恢复 100%。",
-        getValue = function() return db.idleFade ~= false end,
-        setValue = function(v) db.idleFade = v == true; UpdateIdleFade(false) end,
-    }, {
-        type = "slider",
-        text = "空闲淡隐透明度",
-        min = 0.20, max = 0.85, step = 0.05,
-        disabled = function() return db.idleFade == false end,
-        getValue = function() return F.PlainNumber(db.idleAlpha, 0.50) or 0.50 end,
-        setValue = function(v) db.idleAlpha = v; UpdateIdleFade(false) end,
-    })
+        text = "脱战时淡隐核心双翼与宠物条",
+        tooltip = "已并入「现代视觉与性能 → 沉浸与系统栏 → 脱战淡隐（统一开关）」：透明度、触发条件与其它框体一致，总开关关掉时这里也不淡隐。",
+        disabled = function()
+            local um = F.Modules.Get("immersiveHUD")
+            return not (um and um:IsEnabled())
+        end,
+        getValue = function()
+            local um = F.Modules.Get("immersiveHUD")
+            return um ~= nil and um:GetDB().fadeCoreHUD ~= false
+        end,
+        setValue = function(v)
+            local um = F.Modules.Get("immersiveHUD")
+            if not um then return end
+            um:GetDB().fadeCoreHUD = v == true
+            um:Refresh()
+            UpdateIdleFade(false)
+        end,
+    }, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {

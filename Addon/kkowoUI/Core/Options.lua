@@ -23,10 +23,11 @@ local GROUPS = {
     {
         key   = "CombatAudio",
         title = "战斗与音效",
-        desc  = "职业预设冷却条、进/脱战剑盾提醒、术士灵魂石到期提醒、猎人技能音效、Roll 点条、快捷标记条。",
-        pages = { "战斗增强", "灵魂石提醒", "猎人音效" },
+        desc  = "职业预设冷却条、武器附魔与攻击特效计时条、进/脱战剑盾提醒、术士灵魂石到期提醒、猎人技能音效、Roll 点条、快捷标记条。",
+        pages = { "战斗增强", "武器特效", "灵魂石提醒", "猎人音效" },
         pageMap = {
             ["战斗增强"]   = { "cdPresets", "combatAlert", "rollBars", "markBar" },
+            ["武器特效"]   = { "weaponProcs" },
             ["灵魂石提醒"] = { "soulstoneAlert" },
             ["猎人音效"]   = { "spellSounds" },
         },
@@ -45,7 +46,7 @@ local GROUPS = {
     {
         key   = "ModernUI",
         title = "现代视觉与性能",
-        desc  = "全局视觉统一、人物面板装备一览、姓名板主城减卡、场景性能自动档位、沉浸探索淡隐、一体化系统栏与极简鼠标提示。",
+        desc  = "全局视觉统一、人物面板装备一览、姓名板主城减卡、场景性能自动档位、脱战淡隐统一开关、一体化系统栏与极简鼠标提示。",
         pages = { "视觉与性能", "沉浸与系统栏" },
         pageMap = {
             ["视觉与性能"]   = { "modernChrome", "gearList", "auctionSkin", "nameplateSmart", "perfAutoTier" },
@@ -512,6 +513,9 @@ _G.SlashCmdList.KKOWOUI = function(msg)
         end
     elseif cmd == "trainerdebug" then
         if F.DumpTrainerDebug then F.DumpTrainerDebug() end
+    elseif cmd == "wp" or cmd == "proc" then
+        local wp = F.Modules.Get("weaponProcs")
+        if wp and wp.TogglePreview then wp:TogglePreview() end
     elseif cmd == "keys" or cmd == "keybind" then
         local kb = F.Modules.Get("keybindBoard")
         if kb and kb.ToggleBoard then kb:ToggleBoard() end
