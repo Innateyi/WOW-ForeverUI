@@ -1259,11 +1259,26 @@ local function CreateFrames()
         label = "经验条",
         frame = xpFrame,
         order = 15,
-        -- 默认贴屏幕顶部居中（旧默认 CENTER -750,510 只适合超宽屏/小 UI 缩放，常规 16:9 会落在屏幕外）
+        -- 默认贴屏幕顶部视觉居中（计入左侧职业徽印宽度偏移，确保整体视觉中轴与屏幕中线对齐）
         defaultPoint = "TOP",
         defaultRelPoint = "TOP",
-        defaultX = 0,
+        defaultX = 25,
         defaultY = -36,
+        -- 告知 EUI 解锁模式包含左侧徽印与上下方文字的真实视觉包围盒，居中吸附时严格按整体视觉中心对齐
+        getInsets = function()
+            local db = mod:GetDB()
+            local fsSize = math_max(9, math_min(18, F.PlainNumber(db.fontSize, 12) or 12))
+            local pctSize = math_max(12, fsSize + 2)
+            local subSize = math_max(10, fsSize - 1)
+            local h = math_max(6, math_min(14, F.PlainNumber(db.height, 7) or 7))
+            local showEmblem = db.showEmblem ~= false
+            local showBottom = db.showBottomStats ~= false
+            local iconSz = math_max(28, math_min(34, h + pctSize + 10))
+            local leftExt = showEmblem and (math_max(40, iconSz + 6) + 9) or 0
+            local topExt = 6 + pctSize + (db.showTopTimers and (subSize + 6) or 2)
+            local botExt = (showBottom or showEmblem) and (math_max(subSize, 12) + 8) or 2
+            return -leftExt, 0, -topExt, -botExt
+        end,
     })
 
     updateXPFade = F.Theme.AttachCombatFade(xpFrame, function()
@@ -1297,6 +1312,11 @@ local function CreateFrames()
         defaultRelPoint = "TOP",
         defaultX = 0,
         defaultY = -64,
+        getInsets = function()
+            local db = mod:GetDB()
+            local fsSize = math_max(9, math_min(18, F.PlainNumber(db.fontSize, 12) or 12))
+            return 0, 0, -(fsSize + 7), 0
+        end,
     })
 end
 

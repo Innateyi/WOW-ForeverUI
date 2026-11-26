@@ -31,19 +31,21 @@ local mod = F.RegisterModule("durability", {
         enabled = true,
         unifiedPanel = true,       -- true = 一体化现代属性+耐久面板；false = 仅在 EUI 原次要属性下追加耐久行
         statPreset = "smart",      -- "smart" | "classic" | "ranged" | "melee" | "caster"
-        showBackdrop = false,      -- 默认纯透明无底板（调高下方透明度滑块即可开启玻璃底板）
-        backdropAlpha = 0,         -- 底板透明度（0.00 纯透明 ~ 0.85 深色，默认 0.00 纯透明）
-        showTopLine = false,       -- 默认关闭顶部装饰横线
+        showBackdrop = true,       -- 默认开启现代清透圆角玻璃卡片（与整体圆角 UI 风格统一）
+        backdropAlpha = 0.36,      -- 清透微熏玻璃透明度（0.00 纯透明 ~ 0.85 深色，推荐 0.36）
+        showTopLine = true,        -- 顶部极细职业/主题色流光点缀线
         v2TransparentMigrated = false,
+        v3GlassCardMigrated = false,
         useAverage = false,
+        flashOnStatGain = true,    -- 触发增益 Buff 导致属性提升时数值短暂高亮闪烁
         alignLabel = "攻击强度: ",
     },
 })
 
 local STATS_FRAME_NAME = "EUI_SecondaryStats"
 local DEFAULT_ROW_GAP = 3
-local CARD_WIDTH = 156
-local ROW_HEIGHT = 17
+local CARD_WIDTH = 172
+local ROW_HEIGHT = 18
 
 local SLOTS = {
     { 1,  _G.HEADSLOT or "头部" },
@@ -511,16 +513,48 @@ local function EnsureCard(parent)
         cardFrame:EnableMouse(true)
     end
 
+    local glassBg = cardFrame:CreateTexture(nil, "BACKGROUND", nil, -6)
+    glassBg:SetAllPoints(cardFrame)
+    glassBg:SetColorTexture(0.042, 0.048, 0.066, 0.36)
+    cardFrame._glassBg = glassBg
+
+    local glassSheen = cardFrame:CreateTexture(nil, "BACKGROUND", nil, -5)
+    glassSheen:SetPoint("TOPLEFT", cardFrame, "TOPLEFT", 0, 0)
+    glassSheen:SetPoint("TOPRIGHT", cardFrame, "TOPRIGHT", 0, 0)
+    glassSheen:SetHeight(26)
+    glassSheen:SetTexture(F.Theme.FLAT_TEX)
+    if F.StyleTokens then
+        F.StyleTokens.ApplyGradient(glassSheen, "VERTICAL", 1, 1, 1, 0.00, 1, 1, 1, 0.055)
+    else
+        glassSheen:SetVertexColor(1, 1, 1, 0.03)
+    end
+    cardFrame._glassSheen = glassSheen
+
     local topLine = cardFrame:CreateTexture(nil, "OVERLAY")
-    topLine:SetHeight(1)
-    topLine:SetPoint("TOPLEFT", cardFrame, "TOPLEFT", 1, -1)
-    topLine:SetPoint("TOPRIGHT", cardFrame, "TOPRIGHT", -1, -1)
+    topLine:SetHeight(2)
+    topLine:SetPoint("TOPLEFT", cardFrame, "TOPLEFT", 10, -1)
+    topLine:SetPoint("TOPRIGHT", cardFrame, "TOPRIGHT", -10, -1)
     cardFrame._topLine = topLine
 
     local divider = cardFrame:CreateTexture(nil, "ARTWORK")
     divider:SetHeight(1)
-    divider:SetColorTexture(1, 1, 1, 0.08)
+    divider:SetColorTexture(1, 1, 1, 0.09)
     cardFrame._divider = divider
+
+    -- 底部装备耐久微型圆角进度条（直观呈现当前最低/平均耐久健康度）
+    local durBarBg = cardFrame:CreateTexture(nil, "ARTWORK", nil, 1)
+    durBarBg:SetHeight(3)
+    durBarBg:SetColorTexture(1, 1, 1, 0.10)
+    durBarBg:Hide()
+    cardFrame._durBarBg = durBarBg
+
+    local durBarFill = cardFrame:CreateTexture(nil, "OVERLAY", nil, 2)
+    durBarFill:SetHeight(3)
+    durBarFill:SetPoint("TOPLEFT", durBarBg, "TOPLEFT", 0, 0)
+    durBarFill:SetPoint("BOTTOMLEFT", durBarBg, "BOTTOMLEFT", 0, 0)
+    durBarFill:SetColorTexture(0.32, 0.84, 0.42, 0.92)
+    durBarFill:Hide()
+    cardFrame._durBarFill = durBarFill
 
     cardFrame:SetScript("OnEnter", ShowDurabilityTooltip)
     cardFrame:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -533,8 +567,22 @@ local function AcquireCardRow(index)
     row = CreateFrame("Frame", nil, cardFrame)
     row:SetHeight(ROW_HEIGHT)
 
+    local zebra = row:CreateTexture(nil, "BACKGROUND", nil, -2)
+    zebra:SetPoint("TOPLEFT", row, "TOPLEFT", -4, 0)
+    zebra:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 4, 0)
+    zebra:SetColorTexture(1, 1, 1, 0.032)
+    if F.StyleTokens then F.StyleTokens.MaskTexture(row, zebra, 4) end
+    zebra:Hide()
+    row._zebra = zebra
+
+    local dot = row:CreateTexture(nil, "ARTWORK")
+    dot:SetSize(4, 4)
+    dot:SetPoint("LEFT", row, "LEFT", 0, 0)
+    dot:SetTexture(F.StyleTokens and F.StyleTokens.TEX.CIRCLE_MASK or F.Theme.FLAT_TEX)
+    row._dot = dot
+
     local lbl = row:CreateFontString(nil, "OVERLAY")
-    lbl:SetPoint("LEFT", row, "LEFT", 0, 0)
+    lbl:SetPoint("LEFT", dot, "RIGHT", 6, 0)
     lbl:SetJustifyH("LEFT")
     lbl:SetWordWrap(false)
     row._label = lbl
@@ -559,39 +607,46 @@ local function RenderUnifiedPanel(stats, refText)
         refText:SetAlpha(0)
     end
 
+    local ST = F.StyleTokens
     local ar, ag, ab = F.Theme.GetAccent()
-    local bgAlpha = (db.showBackdrop == false) and 0 or (F.PlainNumber(db.backdropAlpha, 0))
+    local bgAlpha = (db.showBackdrop == false) and 0 or (F.PlainNumber(db.backdropAlpha, 0.36) or 0.36)
     if bgAlpha < 0 then bgAlpha = 0 elseif bgAlpha > 0.85 then bgAlpha = 0.85 end
     local showBg = bgAlpha >= 0.03
-    local padX = showBg and 9 or 2
-    local padTop = showBg and 7 or 2
-    local padBot = showBg and 7 or 2
-    local fontOutline = (bgAlpha < 0.22) and "OUTLINE" or ""
+    local padX = showBg and 11 or 2
+    local padTop = showBg and 9 or 2
+    local padBot = showBg and 8 or 2
+    local fontOutline = (bgAlpha < 0.24) and "OUTLINE" or ""
+    local rad = ST and ST.GetCornerRadius(8) or 8
 
-    local chromeSig = string_format("%.2f:%d:%d:%.2f:%.2f:%.2f:%s",
-        bgAlpha, showBg and 1 or 0, db.showTopLine == true and 1 or 0, ar, ag, ab, fontOutline)
+    local chromeSig = string_format("%.2f:%d:%d:%d:%.2f:%.2f:%.2f:%s",
+        bgAlpha, showBg and 1 or 0, db.showTopLine ~= false and 1 or 0, rad, ar, ag, ab, fontOutline)
     local chromeDirty = (card._chromeSig ~= chromeSig)
     if chromeDirty then
         card._chromeSig = chromeSig
+        if card._fuiBg then card._fuiBg:Hide() end
+        if card._fuiBorders then
+            for _, ln in ipairs(card._fuiBorders) do ln:Hide() end
+        end
         if showBg then
-            local borderAlpha = (bgAlpha * 0.78 > 0.48) and 0.48 or (bgAlpha * 0.78)
-            F.Theme.StylePanel(card, bgAlpha, borderAlpha)
-            if card._fuiBg then card._fuiBg:Show() end
-            if card._fuiBorders then
-                for _, ln in ipairs(card._fuiBorders) do ln:Show() end
+            card._glassBg:SetColorTexture(0.042, 0.048, 0.066, bgAlpha)
+            card._glassBg:Show()
+            card._glassSheen:Show()
+            if ST then
+                ST.MaskTexture(card, card._glassBg, rad)
+                ST.MaskTexture(card, card._glassSheen, rad)
+                ST.ApplyRoundedBorder(card, rad, 0.20, 0.24, 0.32, math_max(0.42, bgAlpha * 1.15), 5)
             end
-            if db.showTopLine == true then
-                local lineAlpha = (bgAlpha + 0.22 > 0.65) and 0.65 or (bgAlpha + 0.22)
-                card._topLine:SetColorTexture(ar, ag, ab, lineAlpha)
+            if db.showTopLine ~= false then
+                card._topLine:SetColorTexture(ar, ag, ab, 0.72)
+                if ST then ST.MaskTexture(card, card._topLine, 2) end
                 card._topLine:Show()
             else
                 card._topLine:Hide()
             end
         else
-            if card._fuiBg then card._fuiBg:Hide() end
-            if card._fuiBorders then
-                for _, ln in ipairs(card._fuiBorders) do ln:Hide() end
-            end
+            card._glassBg:Hide()
+            card._glassSheen:Hide()
+            if ST then ST.ClearRoundedMask(card) end
             card._topLine:Hide()
         end
     end
@@ -621,15 +676,32 @@ local function RenderUnifiedPanel(stats, refText)
                 end
                 if chromeDirty or row._lastKey ~= k then
                     row._lastKey = k
-                    F.Theme.ApplyFont(row._label, 12, fontOutline, 0.68, 0.72, 0.78, 0.96)
+                    F.Theme.ApplyFont(row._label, 11, fontOutline, 0.72, 0.76, 0.82, 0.96)
                     local vr, vg, vb = ToneColor(def.tone)
                     F.Theme.ApplyFont(row._value, 12, fontOutline, vr, vg, vb, 1)
+                    if fontOutline == "" then
+                        row._label:SetShadowColor(0, 0, 0, 0.85); row._label:SetShadowOffset(1, -1)
+                        row._value:SetShadowColor(0, 0, 0, 0.90); row._value:SetShadowOffset(1, -1)
+                    end
+                    if row._dot then row._dot:SetVertexColor(vr, vg, vb, 0.88) end
+                    if row._zebra then row._zebra:SetShown(showBg and (count % 2 == 0)) end
                     row._label:SetText(def.label)
                 end
                 local valText = num ~= nil and def.fmt(num) or "--"
                 if row._lastVal ~= valText then
+                    local prevNum = row._lastNum
                     row._lastVal = valText
+                    row._lastNum = num
                     row._value:SetText(valText)
+                    if db.flashOnStatGain ~= false and F.Motion and F.Motion.PlayStatBlink
+                        and type(prevNum) == "number" and type(num) == "number" then
+                        local gained = (k == "rspeed") and (num < prevNum - 0.02) or (num > prevNum + 0.01)
+                        if gained then
+                            F.Motion.PlayStatBlink(row._value, 0.36)
+                        end
+                    end
+                elseif num ~= nil and row._lastNum == nil then
+                    row._lastNum = num
                 end
                 if not row:IsShown() then row:Show() end
                 if k == "movespeed" then
@@ -667,15 +739,36 @@ local function RenderUnifiedPanel(stats, refText)
             row._lastKey = "__dur__"
             row._lastVal = durValText
             local dr, dg, dbCol = DurabilityColor(pct)
-            F.Theme.ApplyFont(row._label, 12, fontOutline, 0.68, 0.72, 0.78, 0.96)
+            F.Theme.ApplyFont(row._label, 11, fontOutline, 0.72, 0.76, 0.82, 0.96)
             F.Theme.ApplyFont(row._value, 12, fontOutline, dr, dg, dbCol, 1)
+            if fontOutline == "" then
+                row._label:SetShadowColor(0, 0, 0, 0.85); row._label:SetShadowOffset(1, -1)
+                row._value:SetShadowColor(0, 0, 0, 0.90); row._value:SetShadowOffset(1, -1)
+            end
+            if row._dot then row._dot:SetVertexColor(dr, dg, dbCol, 0.95) end
+            if row._zebra then row._zebra:Hide() end
             row._label:SetText("装备耐久")
             row._value:SetText(durValText)
         end
         if not row:IsShown() then row:Show() end
         y = y - ROW_HEIGHT
+        -- 底部微型圆角耐久健康度进度条
+        if card._durBarBg and card._durBarFill then
+            local dr, dg, dbCol = DurabilityColor(pct)
+            local barW = math_max(40, CARD_WIDTH - padX * 2)
+            card._durBarBg:ClearAllPoints()
+            card._durBarBg:SetPoint("TOPLEFT", card, "TOPLEFT", padX, y - 1)
+            card._durBarBg:SetPoint("TOPRIGHT", card, "TOPRIGHT", -padX, y - 1)
+            card._durBarBg:Show()
+            card._durBarFill:SetColorTexture(dr, dg, dbCol, 0.90)
+            card._durBarFill:SetWidth(math_max(2, math_floor(barW * pct + 0.5)))
+            card._durBarFill:Show()
+            y = y - 6
+        end
     else
         card._divider:Hide()
+        if card._durBarBg then card._durBarBg:Hide() end
+        if card._durBarFill then card._durBarFill:Hide() end
     end
 
     for i = count + 1, #cardRows do
@@ -818,9 +911,12 @@ function mod:OnEnable()
     -- 一次性迁移：自动切换至纯透明无边框、无顶部横线状态
     if not db.v2TransparentMigrated then
         db.v2TransparentMigrated = true
-        db.showBackdrop = false
-        db.backdropAlpha = 0
-        db.showTopLine = false
+    end
+    if not db.v3GlassCardMigrated then
+        db.v3GlassCardMigrated = true
+        db.showBackdrop = true
+        db.backdropAlpha = 0.36
+        db.showTopLine = true
     end
     durDirty = true
 
@@ -932,6 +1028,14 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         getValue = function() return db.showTopLine == true end,
         setValue = function(v) db.showTopLine = v == true; UpdateAll() end,
     })
+    y = y - h
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "触发增益属性提升时数字短暂高亮闪烁",
+        tooltip = "当触发饰品、嗜血、光环或增益 Buff 令攻强/暴击/法强/移速上升时，对应属性数字短促高亮回弹提示。",
+        getValue = function() return db.flashOnStatGain ~= false end,
+        setValue = function(v) db.flashOnStatGain = v == true end,
+    }, blank)
     y = y - h
     return y
 end

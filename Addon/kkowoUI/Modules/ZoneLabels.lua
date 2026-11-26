@@ -1,22 +1,27 @@
 ----------------------------------------------------------------------
 --  kkowoUI — Modules/ZoneLabels.lua
---  世界地图零污染区域等级标签：
+--  世界地图区域等级标签 + 飞艇/航船航线三维清晰指引（零污染）：
 --    1) 大陆地图各子区域常驻名称 + 等级区间（内置 21 个已精调偏移）
---    2) 世界地图底部鼠标悬停区域等级条（现代暗底浮胶囊）
---    3) /zlmap 微调命令：/zlmap <mapID> <x> <y> 或 /zlmap reset
---  • 绝不向 WorldMapFrame 写字段，绝不挂钩地图 Pin 方法，延迟一帧重绘零污染
+--    2) 世界地图底部鼠标悬停区域等级条（现代暗底圆角浮胶囊）
+--    3) 世界地图区域页分离式「飞艇 / 航船航线」圆角标牌（彻底解决双飞艇图标重叠看不清去哪的问题）
+--    4) 飞艇塔 / 码头「当前泊位」顶部悬浮胶囊（站上平台即显示本侧与对侧分别前往何地，离开零开销）
+--    5) 飞艇管理员头顶姓名板航线胶囊 + 鼠标悬停提示补充（走上塔楼一眼分清弗雷萨/斯努尔克去哪）
+--    6) /zlmap 微调命令：/zlmap <mapID> <x> <y> 或 /zlmap reset
 ----------------------------------------------------------------------
 local _, F = ...
 
 local _G = _G
-local ipairs, pcall, tonumber, tostring, type = ipairs, pcall, tonumber, tostring, type
+local ipairs, math_abs, math_floor, math_max, math_sqrt, pairs, pcall, setmetatable, tonumber, tostring, type =
+    ipairs, math.abs, math.floor, math.max, math.sqrt, pairs, pcall, setmetatable, tonumber, tostring, type
 local string_format = string.format
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 
+local ST = F.StyleTokens
+
 local mod = F.RegisterModule("zoneLabels", {
-    title = "地图区域等级",
-    desc = "在大陆地图上为每个区域标注名称与等级区间，并在地图底部显示鼠标悬停区域的等级（零污染，与 Leatrix_Maps 兼容）。",
+    title = "地图区域等级与飞艇航线指引",
+    desc = "在大陆地图标注区域名称与等级；并在区域地图、飞艇塔/码头站台及飞艇管理员头顶清晰标出每班飞艇与航船的目的地（零污染）。",
     group = "quest",
     order = 60,
     defaults = {
@@ -27,13 +32,137 @@ local mod = F.RegisterModule("zoneLabels", {
         colorByDifficulty = true,
         fontSize = 11,
         customOffsets = {},
+        showTransportMap = true,
+        showTransportBanner = true,
+        showTransportNameplates = true,
     },
 })
+
+----------------------------------------------------------------------
+--  WoW Forever 全量飞艇与航船航线数据（坐标源自客户端地图基准，双向对齐）
+----------------------------------------------------------------------
+local TRANSPORT_MAP_ROUTES = {
+    -- 杜隆塔尔（奥格瑞玛城外飞艇塔）
+    [1411] = {
+        { x = 50.5, y = 12.7, kind = "飞艇", dest = "格罗姆高（荆棘谷）", short = "飞艇 · 格罗姆高", side = "西侧泊位", dx = -68, dy = 20, color = { 0.96, 0.64, 0.24 } },
+        { x = 51.0, y = 13.9, kind = "飞艇", dest = "幽暗城（提瑞斯法）", short = "飞艇 · 幽暗城", side = "东侧泊位", dx = 68, dy = -18, color = { 0.32, 0.84, 0.42 } },
+    },
+    -- 提瑞斯法林地（幽暗城外飞艇塔）
+    [1420] = {
+        { x = 60.6, y = 58.9, kind = "飞艇", dest = "奥格瑞玛（杜隆塔尔）", short = "飞艇 · 奥格瑞玛", side = "西侧泊位", dx = -66, dy = 18, color = { 0.95, 0.44, 0.38 } },
+        { x = 61.9, y = 58.9, kind = "飞艇", dest = "格罗姆高（荆棘谷）", short = "飞艇 · 格罗姆高", side = "东侧泊位", dx = 66, dy = -18, color = { 0.96, 0.64, 0.24 } },
+    },
+    -- 荆棘谷（格罗姆高飞艇塔 + 藏宝海湾码头）
+    [1434] = {
+        { x = 31.5, y = 29.1, kind = "飞艇", dest = "幽暗城（提瑞斯法）", short = "飞艇 · 幽暗城", side = "北侧泊位", dx = 66, dy = 18, color = { 0.32, 0.84, 0.42 } },
+        { x = 31.2, y = 30.4, kind = "飞艇", dest = "奥格瑞玛（杜隆塔尔）", short = "飞艇 · 奥格瑞玛", side = "南侧泊位", dx = -66, dy = -18, color = { 0.95, 0.44, 0.38 } },
+        { x = 25.7, y = 73.1, kind = "航船", dest = "棘齿城（贫瘠之地）", short = "航船 · 棘齿城", side = "藏宝海湾码头", dx = -60, dy = -16, color = { 0.36, 0.78, 0.98 } },
+    },
+    -- 莫高雷（雷霆崖飞艇）
+    [1412] = {
+        { x = 34.3, y = 26.1, kind = "飞艇", dest = "泽弗拉斯岛", short = "飞艇 · 泽弗拉斯岛", side = "雷霆崖泊位", dx = -62, dy = 16, color = { 0.32, 0.84, 0.42 } },
+    },
+    -- 泽弗拉斯岛（Forever 新增双航线）
+    [2521] = {
+        { x = 57.7, y = 81.0, kind = "飞艇", dest = "雷霆崖（莫高雷）", short = "飞艇 · 雷霆崖", side = "飞艇泊位", dx = -64, dy = 16, color = { 0.96, 0.64, 0.24 } },
+        { x = 65.8, y = 83.8, kind = "航船", dest = "奥特兰克山脉", short = "航船 · 奥特兰克", side = "码头泊位", dx = 64, dy = -16, color = { 0.36, 0.78, 0.98 } },
+    },
+    -- 贫瘠之地（棘齿城码头）
+    [1413] = {
+        { x = 63.8, y = 38.8, kind = "航船", dest = "藏宝海湾（荆棘谷）", short = "航船 · 藏宝海湾", side = "棘齿城码头", dx = 62, dy = -14, color = { 0.36, 0.78, 0.98 } },
+    },
+    -- 湿地（米奈希尔港双码头）
+    [1437] = {
+        { x = 4.5, y = 56.7, kind = "航船", dest = "南海镇 / 奥伯丁", short = "航船 · 南海/奥伯丁", side = "北侧码头", dx = 72, dy = 18, color = { 0.36, 0.78, 0.98 } },
+        { x = 4.7, y = 63.8, kind = "航船", dest = "塞拉摩（尘泥沼泽）", short = "航船 · 塞拉摩", side = "南侧码头", dx = 66, dy = -18, color = { 0.32, 0.84, 0.42 } },
+    },
+    -- 黑海岸（奥伯丁三码头）
+    [1439] = {
+        { x = 33.3, y = 39.8, kind = "航船", dest = "鲁瑟兰村（泰达希尔）", short = "航船 · 鲁瑟兰村", side = "北侧码头", dx = 66, dy = 20, color = { 0.32, 0.84, 0.42 } },
+        { x = 30.5, y = 40.9, kind = "航船", dest = "暴风城", short = "航船 · 暴风城", side = "西侧码头", dx = -64, dy = 6, color = { 0.46, 0.72, 1.00 } },
+        { x = 32.3, y = 44.1, kind = "航船", dest = "米奈希尔港 / 南海镇", short = "航船 · 米奈希尔", side = "南侧码头", dx = 66, dy = -18, color = { 0.96, 0.74, 0.30 } },
+    },
+    -- 泰达希尔（鲁瑟兰村码头）
+    [1438] = {
+        { x = 54.8, y = 97.2, kind = "航船", dest = "奥伯丁（黑海岸）", short = "航船 · 奥伯丁", side = "鲁瑟兰码头", dx = -60, dy = 16, color = { 0.36, 0.78, 0.98 } },
+    },
+    -- 尘泥沼泽（塞拉摩码头）
+    [1445] = {
+        { x = 71.7, y = 56.7, kind = "航船", dest = "米奈希尔港（湿地）", short = "航船 · 米奈希尔", side = "塞拉摩码头", dx = 62, dy = -14, color = { 0.36, 0.78, 0.98 } },
+    },
+    -- 暴风城港口
+    [1453] = {
+        { x = 21.8, y = 56.9, kind = "航船", dest = "奥伯丁（黑海岸）", short = "航船 · 奥伯丁", side = "暴风城港口", dx = 60, dy = 14, color = { 0.36, 0.78, 0.98 } },
+    },
+    -- 希尔斯布莱德丘陵（南海镇码头）
+    [1424] = {
+        { x = 50.7, y = 70.4, kind = "航船", dest = "奥伯丁 / 米奈希尔港", short = "航船 · 奥伯丁/米奈", side = "南海镇码头", dx = 68, dy = -14, color = { 0.36, 0.78, 0.98 } },
+    },
+    -- 塔纳利斯 / 河谷地（Forever 航船）
+    [1446] = {
+        { x = 68.6, y = 23.0, kind = "航船", dest = "河谷地", short = "航船 · 河谷地", side = "热砂港码头", dx = 56, dy = 14, color = { 0.36, 0.78, 0.98 } },
+    },
+    [2548] = {
+        { x = 80.6, y = 54.6, kind = "航船", dest = "塔纳利斯", short = "航船 · 塔纳利斯", side = "河谷地码头", dx = -56, dy = -14, color = { 0.36, 0.78, 0.98 } },
+    },
+}
+
+-- 飞艇管理员 NPC 精准匹配（优先按中文/英文名字匹配，次选确定 ID，杜绝不同服务端译名误差）
+local TRANSPORT_NPC_ENTRIES = {
+    { names = { "弗雷萨", "Frezza" },                                           ids = { [9564] = true }, kind = "飞艇", dest = "幽暗城（提瑞斯法）", short = "飞艇 · 前往 幽暗城", color = { 0.32, 0.84, 0.42 } },
+    { names = { "斯努尔克", "斯纳尔克", "思娜克", "Snurk Bucksquick", "Snurk" }, ids = { [12136] = true }, kind = "飞艇", dest = "格罗姆高（荆棘谷）", short = "飞艇 · 前往 格罗姆高", color = { 0.96, 0.64, 0.24 } },
+    { names = { "萨匹塔", "扎佩塔", "Zapetta" },                                 ids = { [9566] = true }, kind = "飞艇", dest = "奥格瑞玛（杜隆塔尔）", short = "飞艇 · 前往 奥格瑞玛", color = { 0.95, 0.44, 0.38 } },
+    { names = { "兴登堡", "欣登堡", "辛登堡", "Hin Denburg" },                   ids = {},                 kind = "飞艇", dest = "格罗姆高（荆棘谷）", short = "飞艇 · 前往 格罗姆高", color = { 0.96, 0.64, 0.24 } },
+    { names = { "内兹拉斯", "奈兹拉兹", "Nez'raz" },                             ids = {},                 kind = "飞艇", dest = "奥格瑞玛（杜隆塔尔）", short = "飞艇 · 前往 奥格瑞玛", color = { 0.95, 0.44, 0.38 } },
+    { names = { "斯奎比", "思奎比", "Squibby Overspeck", "Squibby" },            ids = {},                 kind = "飞艇", dest = "幽暗城（提瑞斯法）", short = "飞艇 · 前往 幽暗城", color = { 0.32, 0.84, 0.42 } },
+}
+
+local function GetUnitCreatureID(unit)
+    if not (unit and _G.UnitGUID) then return nil end
+    local ok, guid = pcall(_G.UnitGUID, unit)
+    if not ok then return nil end
+    guid = F.PlainString(guid, nil)
+    if not guid then return nil end
+    local idStr = guid:match("^Creature%-%d+%-%d+%-%d+%-%d+%-(%d+)%-")
+    return idStr and tonumber(idStr) or nil
+end
+
+local function ResolveTransportNPC(unit)
+    if not (unit and _G.UnitExists and _G.UnitExists(unit)) then return nil end
+    if _G.UnitIsPlayer and _G.UnitIsPlayer(unit) then return nil end
+    local okN, rawName = pcall(_G.UnitName, unit)
+    local name = okN and F.PlainString(rawName, nil) or nil
+    local cid = GetUnitCreatureID(unit)
+
+    if name then
+        for _, entry in ipairs(TRANSPORT_NPC_ENTRIES) do
+            for _, kw in ipairs(entry.names) do
+                if name == kw or name:find(kw, 1, true) then
+                    return entry
+                end
+            end
+        end
+    end
+    if cid then
+        for _, entry in ipairs(TRANSPORT_NPC_ENTRIES) do
+            if entry.ids[cid] then
+                return entry
+            end
+        end
+    end
+    return nil
+end
 
 local overlayLayer = nil
 local bottomBar = nil
 local labelPool = {}
+local routePinPool = {}
 local hookedMap = false
+local hookedTooltip = false
+
+local platformBanner = nil
+local npBadgeMap = setmetatable({}, { __mode = "k" })
+local npBadgeList = {}
 
 local function GetZoneLevels(mapID, name)
     local data = F.ZoneLevelData
@@ -73,6 +202,14 @@ local function HideAllLabels()
     end
 end
 
+local function HideAllRoutePins()
+    for _, pin in ipairs(routePinPool) do
+        pin:Hide()
+        if pin._line then pin._line:Hide() end
+        if pin._anchorDot then pin._anchorDot:Hide() end
+    end
+end
+
 local function AcquireLabel(idx)
     local fs = labelPool[idx]
     if not fs then
@@ -81,6 +218,47 @@ local function AcquireLabel(idx)
         labelPool[idx] = fs
     end
     return fs
+end
+
+local function AcquireRoutePin(idx)
+    local pin = routePinPool[idx]
+    if pin then return pin end
+
+    pin = CreateFrame("Frame", nil, overlayLayer)
+    pin:SetSize(110, 20)
+    pin:EnableMouse(false)
+    pin:SetFrameLevel(overlayLayer:GetFrameLevel() + 12)
+
+    local bg = pin:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(pin)
+    bg:SetColorTexture(0.05, 0.058, 0.08, 0.90)
+    ST.MaskTexture(pin, bg, 6)
+    ST.ApplyRoundedBorder(pin, 6, 0.24, 0.30, 0.38, 0.92, 4)
+
+    local dot = pin:CreateTexture(nil, "ARTWORK")
+    dot:SetSize(7, 7)
+    dot:SetPoint("LEFT", pin, "LEFT", 7, 0)
+    dot:SetTexture(ST.TEX.CIRCLE_MASK)
+
+    local txt = pin:CreateFontString(nil, "OVERLAY")
+    F.Theme.ApplyFont(txt, 11, "OUTLINE", 0.95, 0.97, 0.99, 1)
+    txt:SetPoint("LEFT", dot, "RIGHT", 5, 0)
+    txt:SetJustifyH("LEFT")
+
+    local anchorDot = overlayLayer:CreateTexture(nil, "ARTWORK", nil, 5)
+    anchorDot:SetSize(6, 6)
+    anchorDot:SetTexture(ST.TEX.CIRCLE_MASK)
+
+    local line = overlayLayer:CreateLine(nil, "ARTWORK", nil, 4)
+    line:SetThickness(1.4)
+
+    pin._bg = bg
+    pin._dot = dot
+    pin._txt = txt
+    pin._anchorDot = anchorDot
+    pin._line = line
+    routePinPool[idx] = pin
+    return pin
 end
 
 -- 鼠标静止时（地图编号与归一化坐标都没变）跳过整套查询/排版：轮询频率 12.5Hz，地图开着时大部分时间鼠标并不动
@@ -116,7 +294,7 @@ local function UpdateBottomHoverBar()
         bottomBar:Hide()
         return
     end
-    if mapID == lastHoverMap and lastHoverX and math.abs(cx - lastHoverX) < 0.001 and math.abs(cy - lastHoverY) < 0.001 then
+    if mapID == lastHoverMap and lastHoverX and math_abs(cx - lastHoverX) < 0.001 and math_abs(cy - lastHoverY) < 0.001 then
         return
     end
     lastHoverMap, lastHoverX, lastHoverY = mapID, cx, cy
@@ -183,9 +361,47 @@ local function EnsureMapLayers()
     return true
 end
 
+local function RedrawTransportMapPins(mapID, cw, ch)
+    HideAllRoutePins()
+    local db = mod:GetDB()
+    if not (mod._active and db.showTransportMap ~= false) then return end
+    local routes = TRANSPORT_MAP_ROUTES[mapID]
+    if not routes then return end
+
+    for i, r in ipairs(routes) do
+        local pin = AcquireRoutePin(i)
+        local px = (r.x / 100) * cw
+        local py = -(r.y / 100) * ch
+        local bx = px + (r.dx or 56)
+        local by = py + (r.dy or 14)
+        local cr, cg, cb = r.color[1], r.color[2], r.color[3]
+
+        pin._dot:SetVertexColor(cr, cg, cb, 1)
+        pin._txt:SetText(r.short)
+        local tw = F.PlainNumber(pin._txt:GetStringWidth(), 82) or 82
+        pin:SetSize(math_max(86, math_floor(tw + 24)), 20)
+        ST.ApplyRoundedBorder(pin, 6, cr, cg, cb, 0.78, 4)
+
+        pin:ClearAllPoints()
+        pin:SetPoint("CENTER", overlayLayer, "TOPLEFT", bx, by)
+        pin:Show()
+
+        pin._anchorDot:SetVertexColor(cr, cg, cb, 0.95)
+        pin._anchorDot:ClearAllPoints()
+        pin._anchorDot:SetPoint("CENTER", overlayLayer, "TOPLEFT", px, py)
+        pin._anchorDot:Show()
+
+        pin._line:SetColorTexture(cr, cg, cb, 0.72)
+        pin._line:SetStartPoint("TOPLEFT", overlayLayer, px, py)
+        pin._line:SetEndPoint("CENTER", pin, 0, 0)
+        pin._line:Show()
+    end
+end
+
 local function RedrawMapLabels()
     if not mod._active then
         HideAllLabels()
+        HideAllRoutePins()
         if bottomBar then bottomBar:Hide() end
         return
     end
@@ -197,32 +413,40 @@ local function RedrawMapLabels()
         return
     end
     HideAllLabels()
+    HideAllRoutePins()
 
     local db = mod:GetDB()
-    if not db.showLabels then
-        UpdateBottomHoverBar()
-        return
-    end
-
     local mapID = wmf.GetMapID and wmf:GetMapID()
-    if not (mapID and _G.C_Map and _G.C_Map.GetMapChildrenInfo and _G.C_Map.GetMapRectOnMap) then
-        return
-    end
-
-    local mapInfo = _G.C_Map.GetMapInfo and _G.C_Map.GetMapInfo(mapID)
-    if not (mapInfo and mapInfo.mapType == 2) then
+    if not (mapID and _G.C_Map and _G.C_Map.GetMapInfo) then
         UpdateBottomHoverBar()
-        return
-    end
-
-    local children = _G.C_Map.GetMapChildrenInfo(mapID, 3, true)
-    if type(children) ~= "table" then
         return
     end
 
     local cw = F.PlainNumber(overlayLayer:GetWidth(), 0)
     local ch = F.PlainNumber(overlayLayer:GetHeight(), 0)
     if cw <= 10 or ch <= 10 then
+        return
+    end
+
+    local mapInfo = _G.C_Map.GetMapInfo(mapID)
+    -- 区域地图（mapType == 3）：渲染分离式飞艇 / 航船航线圆角标签
+    if mapInfo and mapInfo.mapType == 3 then
+        RedrawTransportMapPins(mapID, cw, ch)
+        UpdateBottomHoverBar()
+        return
+    end
+
+    if not db.showLabels then
+        UpdateBottomHoverBar()
+        return
+    end
+    if not (mapInfo and mapInfo.mapType == 2 and _G.C_Map.GetMapChildrenInfo and _G.C_Map.GetMapRectOnMap) then
+        UpdateBottomHoverBar()
+        return
+    end
+
+    local children = _G.C_Map.GetMapChildrenInfo(mapID, 3, true)
+    if type(children) ~= "table" then
         return
     end
 
@@ -267,6 +491,278 @@ ScheduleRedraw = function()
     end)
 end
 
+----------------------------------------------------------------------
+--  飞艇塔 / 码头「当前泊位」悬浮胶囊（仅在含航线区域内按 0.45s 低频检测，其它区域零开销）
+----------------------------------------------------------------------
+local function EnsurePlatformBanner()
+    if platformBanner then return platformBanner end
+    local f = CreateFrame("Frame", "kkowoUI_TransportBanner", _G.UIParent)
+    f:SetSize(280, 44)
+    f:SetPoint("TOP", _G.UIParent, "TOP", 0, -112)
+    f:SetFrameStrata("MEDIUM")
+    f:SetFrameLevel(80)
+    f:EnableMouse(false)
+
+    local bg = f:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(f)
+    bg:SetColorTexture(0.045, 0.052, 0.072, 0.88)
+    ST.MaskTexture(f, bg, 8)
+    ST.ApplyRoundedBorder(f, 8, 0.32, 0.84, 0.42, 0.76, 5)
+
+    local dot = f:CreateTexture(nil, "ARTWORK")
+    dot:SetSize(8, 8)
+    dot:SetPoint("LEFT", f, "LEFT", 13, 6)
+    dot:SetTexture(ST.TEX.CIRCLE_MASK)
+
+    local title = f:CreateFontString(nil, "OVERLAY")
+    F.Theme.ApplyFont(title, 13, "OUTLINE", 0.96, 0.98, 1.0, 1)
+    title:SetPoint("TOP", f, "TOP", 5, -7)
+    title:SetJustifyH("CENTER")
+
+    local sub = f:CreateFontString(nil, "OVERLAY")
+    F.Theme.ApplyFont(sub, 10, "OUTLINE", 0.72, 0.77, 0.84, 0.95)
+    sub:SetPoint("BOTTOM", f, "BOTTOM", 0, 6)
+    sub:SetJustifyH("CENTER")
+
+    f._bg = bg
+    f._dot = dot
+    f._title = title
+    f._sub = sub
+    f:Hide()
+    platformBanner = f
+    return f
+end
+
+local platformPoller = CreateFrame("Frame")
+platformPoller:Hide()
+local platformElapsed = 0
+local lastBannerKey = nil
+
+local function UpdatePlatformProximity()
+    local db = mod:GetDB()
+    if not (mod._active and db.showTransportBanner ~= false and _G.C_Map and _G.C_Map.GetBestMapForUnit and _G.C_Map.GetPlayerMapPosition) then
+        if platformBanner then platformBanner:Hide() end
+        lastBannerKey = nil
+        return
+    end
+    local mapID = _G.C_Map.GetBestMapForUnit("player")
+    local routes = mapID and TRANSPORT_MAP_ROUTES[mapID] or nil
+    if not routes then
+        if platformBanner then platformBanner:Hide() end
+        platformPoller:Hide()
+        lastBannerKey = nil
+        return
+    end
+    local pos = _G.C_Map.GetPlayerMapPosition(mapID, "player")
+    if not pos then
+        if platformBanner then platformBanner:Hide() end
+        lastBannerKey = nil
+        return
+    end
+    local px, py = pos:GetXY()
+    px, py = F.PlainNumber(px, nil), F.PlainNumber(py, nil)
+    if not (px and py) then
+        if platformBanner then platformBanner:Hide() end
+        lastBannerKey = nil
+        return
+    end
+    px, py = px * 100, py * 100
+
+    local best, bestDist = nil, 999
+    for _, r in ipairs(routes) do
+        local dx = px - r.x
+        local dy = py - r.y
+        local d = math_sqrt(dx * dx + dy * dy)
+        if d < bestDist then
+            bestDist = d
+            best = r
+        end
+    end
+
+    -- 2.6 地图坐标内（完整覆盖飞艇塔与码头区域）自动弹出当前泊位提示
+    if not best or bestDist > 2.6 then
+        if platformBanner then platformBanner:Hide() end
+        lastBannerKey = nil
+        return
+    end
+
+    local other = nil
+    local otherDist = 999
+    for _, r in ipairs(routes) do
+        if r ~= best then
+            local dx = best.x - r.x
+            local dy = best.y - r.y
+            local d = math_sqrt(dx * dx + dy * dy)
+            if d < 10 and d < otherDist then
+                otherDist = d
+                other = r
+            end
+        end
+    end
+
+    local key = tostring(mapID) .. ":" .. best.dest .. ":" .. (other and other.dest or "")
+    local f = EnsurePlatformBanner()
+    if key ~= lastBannerKey or not f:IsShown() then
+        lastBannerKey = key
+        local cr, cg, cb = best.color[1], best.color[2], best.color[3]
+        local hex = F.RGBToHex(cr, cg, cb)
+        f._dot:SetVertexColor(cr, cg, cb, 1)
+        ST.ApplyRoundedBorder(f, 8, cr, cg, cb, 0.78, 5)
+        f._title:SetText(string_format("%s · %s前往 |cff%s%s|r", best.side or "当前泊位", best.kind, hex, best.dest))
+        if other then
+            local oHex = F.RGBToHex(other.color[1], other.color[2], other.color[3])
+            f._sub:SetText(string_format("另一侧（%s）：前往 |cff%s%s|r", other.side or "对侧", oHex, other.dest))
+            f._sub:Show()
+            f._title:ClearAllPoints()
+            f._title:SetPoint("TOP", f, "TOP", 6, -7)
+            f._dot:ClearAllPoints()
+            f._dot:SetPoint("RIGHT", f._title, "LEFT", -6, 0)
+            local w = math_max(F.PlainNumber(f._title:GetStringWidth(), 180) or 180, F.PlainNumber(f._sub:GetStringWidth(), 180) or 180)
+            f:SetSize(math_max(230, math_floor(w + 38)), 44)
+        else
+            f._sub:Hide()
+            f._title:ClearAllPoints()
+            f._title:SetPoint("CENTER", f, "CENTER", 6, 0)
+            f._dot:ClearAllPoints()
+            f._dot:SetPoint("RIGHT", f._title, "LEFT", -6, 0)
+            local w = F.PlainNumber(f._title:GetStringWidth(), 180) or 180
+            f:SetSize(math_max(210, math_floor(w + 38)), 30)
+        end
+        f:Show()
+    end
+end
+
+platformPoller:SetScript("OnUpdate", function(_, elapsed)
+    platformElapsed = platformElapsed + elapsed
+    if platformElapsed < 0.45 then return end
+    platformElapsed = 0
+    UpdatePlatformProximity()
+end)
+
+local function SyncPlatformZoneWatch()
+    local db = mod:GetDB()
+    if not (mod._active and db.showTransportBanner ~= false and _G.C_Map and _G.C_Map.GetBestMapForUnit) then
+        platformPoller:Hide()
+        if platformBanner then platformBanner:Hide() end
+        lastBannerKey = nil
+        return
+    end
+    local mapID = _G.C_Map.GetBestMapForUnit("player")
+    if mapID and TRANSPORT_MAP_ROUTES[mapID] then
+        platformElapsed = 0.45
+        platformPoller:Show()
+        UpdatePlatformProximity()
+    else
+        platformPoller:Hide()
+        if platformBanner then platformBanner:Hide() end
+        lastBannerKey = nil
+    end
+end
+
+----------------------------------------------------------------------
+--  飞艇管理员头顶姓名板航线标牌 + 鼠标提示航线说明（零污染弱表托管）
+----------------------------------------------------------------------
+local function HideNameplateBadge(np)
+    local b = np and npBadgeMap[np]
+    if b then b:Hide() end
+end
+
+local function HideAllNameplateBadges()
+    for _, b in ipairs(npBadgeList) do
+        b:Hide()
+    end
+end
+
+local function UpdateTransportNameplate(unit)
+    if not (unit and _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit) then return end
+    local np = _G.C_NamePlate.GetNamePlateForUnit(unit)
+    if not np or (np.IsForbidden and np:IsForbidden()) then return end
+    local db = mod:GetDB()
+    if not (mod._active and db.showTransportNameplates ~= false) then
+        HideNameplateBadge(np)
+        return
+    end
+    local info = ResolveTransportNPC(unit)
+    if not info then
+        HideNameplateBadge(np)
+        return
+    end
+
+    local b = npBadgeMap[np]
+    if not b then
+        b = CreateFrame("Frame", nil, _G.UIParent)
+        b:SetFrameStrata("LOW")
+        b:SetFrameLevel(20)
+        b:EnableMouse(false)
+
+        local bg = b:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints(b)
+        bg:SetColorTexture(0.045, 0.055, 0.075, 0.90)
+        ST.MaskTexture(b, bg, 6)
+
+        local dot = b:CreateTexture(nil, "ARTWORK")
+        dot:SetSize(7, 7)
+        dot:SetPoint("LEFT", b, "LEFT", 7, 0)
+        dot:SetTexture(ST.TEX.CIRCLE_MASK)
+
+        local txt = b:CreateFontString(nil, "OVERLAY")
+        F.Theme.ApplyFont(txt, 11, "OUTLINE", 0.96, 0.99, 1.0, 1)
+        txt:SetPoint("LEFT", dot, "RIGHT", 5, 0)
+
+        b._dot = dot
+        b._txt = txt
+        npBadgeMap[np] = b
+        npBadgeList[#npBadgeList + 1] = b
+    end
+
+    local cr, cg, cb = info.color[1], info.color[2], info.color[3]
+    b._dot:SetVertexColor(cr, cg, cb, 1)
+    b._txt:SetText(info.short)
+    local tw = F.PlainNumber(b._txt:GetStringWidth(), 96) or 96
+    b:SetSize(math_max(98, math_floor(tw + 24)), 22)
+    ST.ApplyRoundedBorder(b, 6, cr, cg, cb, 0.88, 5)
+    b:ClearAllPoints()
+    b:SetPoint("BOTTOM", np, "TOP", 0, 22)
+    b:Show()
+end
+
+local function SweepTransportNameplates()
+    HideAllNameplateBadges()
+    if not (mod._active and mod:GetDB().showTransportNameplates ~= false and _G.C_NamePlate and _G.C_NamePlate.GetNamePlates) then
+        return
+    end
+    local plates = _G.C_NamePlate.GetNamePlates()
+    if type(plates) ~= "table" then return end
+    for _, np in ipairs(plates) do
+        local u = np.namePlateUnitToken or (np.UnitFrame and np.UnitFrame.unit)
+        if u then UpdateTransportNameplate(u) end
+    end
+end
+
+local function AppendTransportTooltip(tip)
+    if not (mod._active and tip and tip.GetUnit) then return end
+    local ok, _, unit = pcall(tip.GetUnit, tip)
+    if not (ok and unit) then return end
+    local info = ResolveTransportNPC(unit)
+    if not info then return end
+    local cr, cg, cb = info.color[1], info.color[2], info.color[3]
+    local hex = F.RGBToHex(cr, cg, cb)
+    tip:AddLine(string_format("|cff52d669kkowoUI 航线：|r本泊位%s前往 |cff%s%s|r", info.kind, hex, info.dest), 0.92, 0.95, 0.98)
+end
+
+local function InstallTransportTooltipHook()
+    if hookedTooltip then return end
+    hookedTooltip = true
+    if _G.TooltipDataProcessor and _G.TooltipDataProcessor.AddTooltipPostCall
+        and _G.Enum and _G.Enum.TooltipDataType and _G.Enum.TooltipDataType.Unit then
+        _G.TooltipDataProcessor.AddTooltipPostCall(_G.Enum.TooltipDataType.Unit, function(tip)
+            if tip == _G.GameTooltip then AppendTransportTooltip(tip) end
+        end)
+    elseif _G.GameTooltip and _G.GameTooltip.HookScript then
+        _G.GameTooltip:HookScript("OnTooltipSetUnit", AppendTransportTooltip)
+    end
+end
+
 -- 独立轻量轮询帧：仅在 WorldMapFrame 显示时以 0.08s 间隔刷新底部悬停区域等级
 local hoverPoller = CreateFrame("Frame")
 hoverPoller:Hide()
@@ -299,17 +795,46 @@ function mod:OnEnable()
             _G.hooksecurefunc(wmf, "OnMapChanged", ScheduleRedraw)
         end
     end
+    InstallTransportTooltipHook()
+
     self:RegisterEvent("PLAYER_LEVEL_UP", ScheduleRedraw)
+    self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        SyncPlatformZoneWatch()
+        C_Timer.After(0.3, function()
+            if mod._active then
+                SyncPlatformZoneWatch()
+                SweepTransportNameplates()
+            end
+        end)
+    end)
+    self:RegisterEvent("ZONE_CHANGED_NEW_AREA", SyncPlatformZoneWatch)
+    self:RegisterEvent("ZONE_CHANGED", SyncPlatformZoneWatch)
+    self:RegisterEvent("NAME_PLATE_UNIT_ADDED", function(_, _, unit)
+        if mod._active and unit then UpdateTransportNameplate(unit) end
+    end)
+    self:RegisterEvent("NAME_PLATE_UNIT_REMOVED", function(_, _, unit)
+        if unit and _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit then
+            HideNameplateBadge(_G.C_NamePlate.GetNamePlateForUnit(unit))
+        end
+    end)
+
     if wmf and wmf:IsShown() then
         hoverPoller:Show()
         ScheduleRedraw()
     end
+    SyncPlatformZoneWatch()
+    SweepTransportNameplates()
 end
 
 function mod:OnDisable()
     hoverPoller:Hide()
+    platformPoller:Hide()
     HideAllLabels()
+    HideAllRoutePins()
+    HideAllNameplateBadges()
     if bottomBar then bottomBar:Hide() end
+    if platformBanner then platformBanner:Hide() end
+    lastBannerKey = nil
 end
 
 function mod:OnThemeChanged()
@@ -340,7 +865,7 @@ _G.SlashCmdList.KKOWOUIZLMAP = function(msg)
     end
 end
 
-function mod:BuildOptions(W, parent, y, enableSlot, blank)
+function mod:BuildOptions(W, parent, y, enableSlot)
     local db = self:GetDB()
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
@@ -354,9 +879,25 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "标签包含区域名称",
-        getValue = function() return db.showName ~= false end,
-        setValue = function(v) db.showName = v == true; ScheduleRedraw() end,
+        text = "区域地图分离式飞艇 / 航船航线标签",
+        tooltip = "打开杜隆塔尔、提瑞斯法、荆棘谷、黑海岸、湿地等区域地图时，用不重叠的圆角胶囊与引线清晰标出每班飞艇与航船的目的地。",
+        getValue = function() return db.showTransportMap ~= false end,
+        setValue = function(v) db.showTransportMap = v == true; ScheduleRedraw() end,
+    }, {
+        type = "toggle",
+        text = "站上飞艇塔/码头弹出当前泊位指引",
+        tooltip = "靠近飞艇塔或码头时在顶部弹出圆角胶囊，即时标出当前泊位与对侧泊位分别前往何地（离开自动隐藏，其它区域零开销）。",
+        getValue = function() return db.showTransportBanner ~= false end,
+        setValue = function(v) db.showTransportBanner = v == true; SyncPlatformZoneWatch() end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "飞艇管理员头顶姓名板显示目的地标牌",
+        tooltip = "靠近弗雷萨、斯努尔克、萨匹塔等飞艇管理员时，直接在其姓名板上方显示前往目的地的圆角胶囊（同时补充鼠标提示）。",
+        getValue = function() return db.showTransportNameplates ~= false end,
+        setValue = function(v) db.showTransportNameplates = v == true; SweepTransportNameplates() end,
     }, {
         type = "toggle",
         text = "地图底部悬停区域等级条",
@@ -368,9 +909,9 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "按难度着色",
-        getValue = function() return db.colorByDifficulty ~= false end,
-        setValue = function(v) db.colorByDifficulty = v == true; ScheduleRedraw() end,
+        text = "标签包含区域名称与难度着色",
+        getValue = function() return db.showName ~= false end,
+        setValue = function(v) db.showName = v == true; db.colorByDifficulty = v == true; ScheduleRedraw() end,
     }, {
         type = "slider",
         text = "标签字号",

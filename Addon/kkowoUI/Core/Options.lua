@@ -52,6 +52,18 @@ local GROUPS = {
             ["沉浸与系统栏"] = { "immersiveHUD", "systemBar", "tooltipStyle" },
         },
     },
+    {
+        key   = "MotionFX",
+        title = "动效与视觉增强",
+        desc  = "全局圆角渐变、核心双翼血蓝条与动态旋转技能球、独立宠物与顶部目标条、低血量红暗角、施法/挥砍/动作条/姓名板动效及可视化键位图。",
+        pages = { "总控与圆角", "核心双翼与预警", "施法挥砍与技能条", "姓名板与键位图" },
+        pageMap = {
+            ["总控与圆角"]       = { "motionFX", "auraBarSkin" },
+            ["核心双翼与预警"]   = { "coreHUD", "lowHealthAlert" },
+            ["施法挥砍与技能条"] = { "castbarMotion", "swingTimerMotion", "actionBarMotion" },
+            ["姓名板与键位图"]   = { "nameplateMotion", "keybindBoard" },
+        },
+    },
 }
 
 local function BuildModuleSection(mod, W, parent, y)
@@ -500,6 +512,9 @@ _G.SlashCmdList.KKOWOUI = function(msg)
         end
     elseif cmd == "trainerdebug" then
         if F.DumpTrainerDebug then F.DumpTrainerDebug() end
+    elseif cmd == "keys" or cmd == "keybind" then
+        local kb = F.Modules.Get("keybindBoard")
+        if kb and kb.ToggleBoard then kb:ToggleBoard() end
     elseif cmd == "unlock" then
         local EUI = _G.EllesmereUI
         if EUI and EUI.ToggleUnlockMode then

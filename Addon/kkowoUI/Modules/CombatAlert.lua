@@ -18,6 +18,8 @@ local mod = F.RegisterModule("combatAlert", {
     order = 10,
     defaults = {
         enabled = true,
+        alertStyle = "modern", -- "modern" = 现代粗斜体缩放发光 | "classic" = 经典剑盾 | "both" = 剑盾+斜体发光
+        textPreset = "en",     -- "en" = Entering/Leaving Combat | "zh" = 进入/脱离战斗
         animation = true,
         text = true,
         sound = false,
@@ -26,7 +28,7 @@ local mod = F.RegisterModule("combatAlert", {
         animationSize = 0.55,
         animationAlpha = 0.65,
         speed = 1.0,
-        fontSize = 22,
+        fontSize = 24,
         enterText = "进入战斗",
         leaveText = "脱离战斗",
     },
@@ -89,6 +91,7 @@ local function StopAllAnimations()
     if textFrame then
         textFrame.enter:Stop()
         textFrame.leave:Stop()
+        if textFrame.modernPop then textFrame.modernPop:Stop() end
         textFrame:Hide()
     end
 end
@@ -170,14 +173,24 @@ local function BuildFrames()
     animFrame.swordL = BuildSword(false, true)
     animFrame.swordR = BuildSword(true, false)
 
-    -- 现代阴影文字帧
+    -- 现代阴影文字帧（含现代粗斜体发光弹入动效）
     textFrame = CreateAnimChild(alertFrame, 4, nil, false)
+    local halo = textFrame:CreateTexture(nil, "BACKGROUND")
+    halo:SetTexture(F.MEDIA .. "Textures\\SoftGlow.tga")
+    halo:SetBlendMode("ADD")
+    halo:SetPoint("CENTER", textFrame, "CENTER", 0, 0)
+    halo:SetSize(220, 56)
+    halo:Hide()
+    textFrame.halo = halo
+
     textFrame.text = textFrame:CreateFontString(nil, "OVERLAY")
     textFrame.text:SetPoint("CENTER", 0, 0)
 
     local function onTextFinished()
         textFrame:Hide()
-        if mod:GetDB().animation == false then
+        local db = mod:GetDB()
+        local style = db.alertStyle or "modern"
+        if style == "modern" or db.animation == false then
             FinishCurrent()
         end
     end
@@ -195,6 +208,15 @@ local function BuildFrames()
     local ltout = AddAnim(textFrame.leave, "Alpha", 0.55, 0.55); ltout:SetFromAlpha(1); ltout:SetToAlpha(0); ltout:SetSmoothing("OUT")
     textFrame.leave:SetScript("OnFinished", onTextFinished)
 
+    -- 现代粗斜体缩放弹入 + 平滑淡出动效（零 OnUpdate，分段 Order 防止缩放重叠冲突）
+    textFrame.modernPop = textFrame:CreateAnimationGroup()
+    local mIn = AddAnim(textFrame.modernPop, "Alpha", 0.14, 0); mIn:SetOrder(1); mIn:SetFromAlpha(0); mIn:SetToAlpha(1); mIn:SetSmoothing("OUT")
+    local mSc1 = AddAnim(textFrame.modernPop, "Scale", 0.16, 0); mSc1:SetOrder(1); mSc1:SetOrigin("CENTER", 0, 0); mSc1:SetScaleFrom(0.72, 0.72); mSc1:SetScaleTo(1.06, 1.06); mSc1:SetSmoothing("OUT")
+    local mSc2 = AddAnim(textFrame.modernPop, "Scale", 0.10, 0); mSc2:SetOrder(2); mSc2:SetOrigin("CENTER", 0, 0); mSc2:SetScaleFrom(1.06, 1.06); mSc2:SetScaleTo(1.0, 1.0); mSc2:SetSmoothing("IN")
+    local mLift = AddAnim(textFrame.modernPop, "Translation", 0.32, 0.52); mLift:SetOrder(3); mLift:SetOffset(0, 14); mLift:SetSmoothing("IN")
+    local mOut = AddAnim(textFrame.modernPop, "Alpha", 0.32, 0.52); mOut:SetOrder(3); mOut:SetFromAlpha(1); mOut:SetToAlpha(0); mOut:SetSmoothing("IN")
+    textFrame.modernPop:SetScript("OnFinished", onTextFinished)
+
     animGroups = {
         animFrame.shield.enter, animFrame.shield.leave,
         animFrame.swordL.enter, animFrame.swordL.leave,
@@ -204,7 +226,7 @@ local function BuildFrames()
         animFrame.shield.enter, animFrame.shield.leave,
         animFrame.swordL.enter, animFrame.swordL.leave,
         animFrame.swordR.enter, animFrame.swordR.leave,
-        textFrame.enter, textFrame.leave,
+        textFrame.enter, textFrame.leave, textFrame.modernPop,
     }
 end
 
@@ -231,7 +253,23 @@ local function ApplySizes()
     animFrame.swordR.enter.move:SetOffset(-swordRange, swordRange)
     animFrame.swordR.leave.move:SetOffset(-swordRange, swordRange)
 
-    F.Theme.ApplyFont(textFrame.text, db.fontSize or 22, "", 1, 1, 1, 1)
+    local style = db.alertStyle or "modern"
+    if style == "modern" then
+        alertFrame:SetSize(220, 48)
+    else
+        alertFrame:SetSize(160, 140)
+    end
+    local fsz = db.fontSize or 24
+    if style == "modern" or style == "both" then
+        local italicFont = F.MEDIA .. "Fonts\\YouSheBiaoTiHei.ttf"
+        local okF = pcall(textFrame.text.SetFont, textFrame.text, italicFont, fsz, "OUTLINE")
+        if not okF then
+            F.Theme.ApplyFont(textFrame.text, fsz, "OUTLINE", 1, 1, 1, 1)
+        end
+        textFrame.text:SetShadowOffset(2, -2)
+    else
+        F.Theme.ApplyFont(textFrame.text, fsz, "", 1, 1, 1, 1)
+    end
     textFrame.enter.up:SetOffset(0, 150 * sz)
     textFrame.enter.down:SetOffset(0, -36 * sz)
     textFrame.leave.up:SetOffset(0, 36 * sz)
@@ -253,8 +291,9 @@ PlayAlert = function(alertType, preview)
     end
     if not alertFrame:IsShown() then alertFrame:Show() end
     local db = mod:GetDB()
-    local useAnim = db.animation ~= false
-    local useText = db.text ~= false
+    local style = db.alertStyle or "modern"
+    local useAnim = (style ~= "modern") and (db.animation ~= false)
+    local useText = (style == "modern") or (db.text ~= false)
     if not preview and not useAnim and not useText and not db.sound then
         return
     end
@@ -302,15 +341,33 @@ PlayAlert = function(alertType, preview)
         end
         if useText then
             local c = F.Theme.COLORS.danger
-            textFrame.text:SetText(db.enterText or "进入战斗")
-            textFrame.text:SetTextColor(c[1], c[2], c[3], 1)
-            local tw = F.PlainNumber(textFrame.text:GetStringWidth(), 100)
-            local th = F.PlainNumber(textFrame.text:GetStringHeight(), 24)
-            textFrame:SetSize(math.max(80, tw + 8), math.max(24, th + 4))
+            local label = (db.textPreset == "en") and "Entering Combat" or (db.enterText or "进入战斗")
+            textFrame.text:SetText(label)
+            if style == "modern" or style == "both" then
+                textFrame.text:SetTextColor(1, 0.96, 0.96, 1)
+                textFrame.text:SetShadowColor(c[1], c[2], c[3], 0.95)
+                if textFrame.halo then
+                    textFrame.halo:SetVertexColor(c[1], c[2], c[3], 0.55)
+                    textFrame.halo:Show()
+                end
+            else
+                textFrame.text:SetTextColor(c[1], c[2], c[3], 1)
+                if textFrame.halo then textFrame.halo:Hide() end
+            end
+            local tw = F.PlainNumber(textFrame.text:GetStringWidth(), 120)
+            local th = F.PlainNumber(textFrame.text:GetStringHeight(), 26)
+            textFrame:SetSize(math.max(100, tw + 16), math.max(28, th + 8))
+            if textFrame.halo then textFrame.halo:SetSize(math.max(160, tw + 72), math.max(44, th + 28)) end
             textFrame:ClearAllPoints()
-            textFrame:SetPoint("TOP", useAnim and animFrame or alertFrame, "BOTTOM", 0, -110 * sz)
-            textFrame:Show()
-            textFrame.enter:Restart()
+            if style == "modern" then
+                textFrame:SetPoint("CENTER", alertFrame, "CENTER", 0, 0)
+                textFrame:Show()
+                textFrame.modernPop:Restart()
+            else
+                textFrame:SetPoint("TOP", useAnim and animFrame or alertFrame, "BOTTOM", 0, -110 * sz)
+                textFrame:Show()
+                textFrame.enter:Restart()
+            end
         end
     else
         if useAnim then
@@ -329,15 +386,33 @@ PlayAlert = function(alertType, preview)
         end
         if useText then
             local c = F.Theme.COLORS.good
-            textFrame.text:SetText(db.leaveText or "脱离战斗")
-            textFrame.text:SetTextColor(c[1], c[2], c[3], 1)
-            local tw = F.PlainNumber(textFrame.text:GetStringWidth(), 100)
-            local th = F.PlainNumber(textFrame.text:GetStringHeight(), 24)
-            textFrame:SetSize(math.max(80, tw + 8), math.max(24, th + 4))
+            local label = (db.textPreset == "en") and "Leaving Combat" or (db.leaveText or "脱离战斗")
+            textFrame.text:SetText(label)
+            if style == "modern" or style == "both" then
+                textFrame.text:SetTextColor(0.95, 1.0, 0.98, 1)
+                textFrame.text:SetShadowColor(c[1], c[2], c[3], 0.95)
+                if textFrame.halo then
+                    textFrame.halo:SetVertexColor(c[1], c[2], c[3], 0.50)
+                    textFrame.halo:Show()
+                end
+            else
+                textFrame.text:SetTextColor(c[1], c[2], c[3], 1)
+                if textFrame.halo then textFrame.halo:Hide() end
+            end
+            local tw = F.PlainNumber(textFrame.text:GetStringWidth(), 120)
+            local th = F.PlainNumber(textFrame.text:GetStringHeight(), 26)
+            textFrame:SetSize(math.max(100, tw + 16), math.max(28, th + 8))
+            if textFrame.halo then textFrame.halo:SetSize(math.max(160, tw + 72), math.max(44, th + 28)) end
             textFrame:ClearAllPoints()
-            textFrame:SetPoint("TOP", useAnim and animFrame or alertFrame, "BOTTOM", 0, -18 * sz)
-            textFrame:Show()
-            textFrame.leave:Restart()
+            if style == "modern" then
+                textFrame:SetPoint("CENTER", alertFrame, "CENTER", 0, 0)
+                textFrame:Show()
+                textFrame.modernPop:Restart()
+            else
+                textFrame:SetPoint("TOP", useAnim and animFrame or alertFrame, "BOTTOM", 0, -18 * sz)
+                textFrame:Show()
+                textFrame.leave:Restart()
+            end
         end
     end
 
@@ -377,19 +452,30 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local db = self:GetDB()
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
-        type = "toggle",
-        text = "显示经典剑盾动画",
-        tooltip = "进/脱战时播放柔和尺寸与透明度的剑盾动效。",
-        getValue = function() return db.animation ~= false end,
-        setValue = function(v) db.animation = v == true end,
+        type = "dropdown",
+        text = "进/脱战提醒风格",
+        tooltip = "现代粗斜体：暖红/青绿柔光弹入淡出；经典剑盾：保留原有双剑与盾动画；或两者叠加。",
+        values = {
+            modern  = "现代粗斜体发光（推荐）",
+            classic = "经典剑盾动画",
+            both    = "剑盾 + 现代斜体发光",
+        },
+        order = { "modern", "classic", "both" },
+        getValue = function() return db.alertStyle or "modern" end,
+        setValue = function(v) db.alertStyle = v; ApplySizes() end,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "显示提示文字",
-        getValue = function() return db.text ~= false end,
-        setValue = function(v) db.text = v == true end,
+        type = "dropdown",
+        text = "提示文案预设",
+        values = {
+            en = "英文（Entering / Leaving Combat）",
+            zh = "中文（进入战斗 / 脱离战斗）",
+        },
+        order = { "en", "zh" },
+        getValue = function() return db.textPreset or "en" end,
+        setValue = function(v) db.textPreset = v end,
     }, {
         type = "toggle",
         text = "启用提示音效",

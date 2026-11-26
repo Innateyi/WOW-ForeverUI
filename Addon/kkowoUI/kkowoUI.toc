@@ -2,15 +2,17 @@
 ## Title: |cffdca77fkkowoUI|r 无限现代整合模块
 ## Notes: 面向《魔兽世界：无限》的零污染模块化增强与现代极简视觉统一插件（依赖 EllesmereUI）
 ## Author: Mei
-## Version: 1.3.1
+## Version: 1.4.0
 ## IconTexture: Interface\AddOns\kkowoUI\Media\Icons\kkowoUI
 ## Dependencies: EllesmereUI
-## OptionalDeps: EllesmereUIQuestTracker, EllesmereUIBlizzardSkin, EllesmereUIBags, EllesmereUIDamageMeters, EllesmereUIChat, EllesmereUIMinimap, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIForeverEssentials, Auctionator, Questie, Polestar, BugSack, WaypointUI, QFXSystemBar, PrettyTooltip, Leatrix_Maps
+## OptionalDeps: EllesmereUIQuestTracker, EllesmereUIBlizzardSkin, EllesmereUIBags, EllesmereUIDamageMeters, EllesmereUIChat, EllesmereUIMinimap, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, EllesmereUIForeverEssentials, Auctionator, Questie, Polestar, BugSack, WaypointUI, QFXSystemBar, PrettyTooltip, Leatrix_Maps
 ## SavedVariables: kkowoUIDB, KkowoUIDB
 ## SavedVariablesPerCharacter: kkowoUICharDB, KkowoUICharDB
 
 Core\Init.lua
 Core\Theme.lua
+Core\StyleTokens.lua
+Core\MotionEngine.lua
 Core\DB.lua
 Core\Modules.lua
 Core\Mover.lua
@@ -44,5 +46,14 @@ Modules\AuctionSkin.lua
 Modules\ImmersiveHUD.lua
 Modules\SystemBar.lua
 Modules\TooltipStyle.lua
+Modules\MotionControl.lua
+Modules\AuraBarSkin.lua
+Modules\CoreHUD.lua
+Modules\LowHealthAlert.lua
+Modules\CastbarMotion.lua
+Modules\SwingTimerMotion.lua
+Modules\ActionBarMotion.lua
+Modules\NameplateMotion.lua
+Modules\KeybindBoard.lua
 
 Core\Options.lua

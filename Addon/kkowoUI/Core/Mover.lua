@@ -172,6 +172,8 @@ function Mover.Register(opts)
             isAnchored = opts.isAnchored,
             ownsPosition = opts.ownsPosition,
             noInitHook = opts.noInitHook,
+            getInsets = opts.getInsets,
+            getBottomExtra = opts.getBottomExtra,
         })
         registeredElements[key] = el
         pendingUnlock[#pendingUnlock + 1] = el

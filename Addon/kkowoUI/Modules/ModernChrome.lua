@@ -4247,6 +4247,177 @@ do
     local hookedWin  = setmetatable({}, { __mode = "k" })
     local hookedSF   = setmetatable({}, { __mode = "k" })
     local skillsBoxHooked = false
+    local gossipScrollHooked = false
+    local questDialogHooked = false
+
+    -- 修复 NPC 对话窗（GossipFrame）与任务对话/邮件/书信窗在鸿蒙大字号下的文字与选项重叠问题：
+    -- 12.x GossipFrame 使用 ScrollBox，GreetingText 换行高度在大字号下常超过预估行高，导致下方对话选项压在正文上。
+    local function MeasureRowContentHeight(row, isGreeting)
+        local maxH = 0
+        local function CheckFS(fs)
+            if not (IsSafeObj(fs) and fs.GetStringHeight) then return end
+            if fs.IsShown and not fs:IsShown() then return end
+            local txt = fs.GetText and F.PlainString(fs:GetText(), "") or ""
+            if txt == "" then return end
+            if fs.CanWordWrap and fs:CanWordWrap() and fs.SetHeight then
+                -- 释放固定高度裁切，让 GetStringHeight 返回真实多行渲染高度
+                local curFh = F.PlainNumber(fs:GetHeight(), 0) or 0
+                local curSh = F.PlainNumber(fs:GetStringHeight(), 0) or 0
+                if curFh > 0 and (curSh >= curFh - 2 or isGreeting) then
+                    pcall(fs.SetHeight, fs, 0)
+                end
+            end
+            local sh = F.PlainNumber(fs:GetStringHeight(), 0) or 0
+            if sh > maxH then maxH = sh end
+        end
+        if row.GreetingText then CheckFS(row.GreetingText) end
+        if row.GetFontString then CheckFS(row:GetFontString()) end
+        if row.Title then CheckFS(row.Title) end
+        if row.GetRegions then
+            for _, reg in ipairs({ row:GetRegions() }) do
+                if IsSafeObj(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                    CheckFS(reg)
+                end
+            end
+        end
+        if maxH <= 0 then return nil end
+        return math_floor(maxH + (isGreeting and 14 or 8) + 0.5)
+    end
+
+    local gossipReflowBusy = false
+    local function ReflowGossipScrollBox()
+        if gossipReflowBusy then return end
+        local gf = _G.GossipFrame
+        local gp = gf and gf.GreetingPanel
+        local sb = gp and gp.ScrollBox
+        if not (IsSafeObj(gf) and gf:IsShown() and IsSafeObj(sb) and sb:IsShown()) then return end
+        local target = sb.ScrollTarget
+        if not IsSafeObj(target) then return end
+
+        local rows = {}
+        if sb.ForEachFrame then
+            pcall(sb.ForEachFrame, sb, function(fr)
+                if IsSafeObj(fr) and fr:IsShown() then
+                    rows[#rows + 1] = fr
+                end
+            end)
+        end
+        if #rows == 0 and target.GetChildren then
+            for _, ch in ipairs({ target:GetChildren() }) do
+                if IsSafeObj(ch) and ch:IsShown() then
+                    rows[#rows + 1] = ch
+                end
+            end
+        end
+        if #rows == 0 then return end
+
+        -- 按元素索引优先、其次按当前屏幕 Y 坐标从上到下排序
+        table.sort(rows, function(a, b)
+            local ia = a.GetElementDataIndex and F.PlainNumber(a:GetElementDataIndex(), nil)
+            local ib = b.GetElementDataIndex and F.PlainNumber(b:GetElementDataIndex(), nil)
+            if ia and ib and ia ~= ib then return ia < ib end
+            local ta = a.GetTop and F.PlainNumber(a:GetTop(), 0) or 0
+            local tb = b.GetTop and F.PlainNumber(b:GetTop(), 0) or 0
+            return ta > tb
+        end)
+
+        local tTop = target.GetTop and F.PlainNumber(target:GetTop(), nil)
+        local cursorY = 0
+        local needShift = false
+        local plan = {}
+
+        for i, row in ipairs(rows) do
+            local isGreeting = (row.GreetingText ~= nil)
+            local curH = F.PlainNumber(row.GetHeight and row:GetHeight(), 0) or 0
+            local needH = MeasureRowContentHeight(row, isGreeting) or curH
+            if needH < curH then needH = curH end
+
+            -- 读取行当前相对 target 顶部的 y 偏移（负数表示向下）
+            local okP, pt, rel, rpt, px, py = pcall(row.GetPoint, row, 1)
+            local curTopY = (okP and rel == target and IsTopPoint(pt) and F.PlainNumber(py, nil)) or nil
+            if not curTopY and tTop and row.GetTop then
+                local rTop = F.PlainNumber(row:GetTop(), nil)
+                if rTop then curTopY = rTop - tTop end
+            end
+            if i == 1 then
+                cursorY = math_min(-4, curTopY or -4)
+            else
+                local expectedMaxTop = cursorY - 4
+                if (curTopY and curTopY > expectedMaxTop) or needShift then
+                    needShift = true
+                else
+                    cursorY = curTopY or expectedMaxTop
+                end
+            end
+
+            if needH > curH + 1 then
+                needShift = true
+            end
+            plan[i] = {
+                row = row,
+                x = (okP and F.PlainNumber(px, 0)) or 0,
+                y = cursorY,
+                h = needH,
+                grew = needH > curH + 1,
+            }
+            cursorY = cursorY - needH - (isGreeting and 10 or 4)
+        end
+
+        if not needShift then return end
+        gossipReflowBusy = true
+        for _, item in ipairs(plan) do
+            local row = item.row
+            if item.grew and row.SetHeight then
+                pcall(row.SetHeight, row, item.h)
+            end
+            if row.ClearAllPoints and row.SetPoint then
+                pcall(row.ClearAllPoints, row)
+                pcall(row.SetPoint, row, "TOPLEFT", target, "TOPLEFT", item.x, item.y)
+                pcall(row.SetPoint, row, "TOPRIGHT", target, "TOPRIGHT", 0, item.y)
+            end
+        end
+        local reqTargetH = math_abs(cursorY) + 16
+        local curTargetH = F.PlainNumber(target.GetHeight and target:GetHeight(), 0) or 0
+        if reqTargetH > curTargetH and target.SetHeight then
+            pcall(target.SetHeight, target, reqTargetH)
+        end
+        gossipReflowBusy = false
+    end
+
+    -- 同类对话/任务/邮件/书信多行正文防固定高度裁切与重叠
+    local MULTILINE_DIALOG_FS = {
+        "GreetingText",
+        "QuestInfoDescriptionText",
+        "QuestInfoObjectivesText",
+        "QuestInfoRewardText",
+        "QuestProgressText",
+        "OpenMailBodyText",
+        "ItemTextPageText",
+    }
+
+    local function FixSimilarDialogOverlaps()
+        for _, name in ipairs(MULTILINE_DIALOG_FS) do
+            local fs = _G[name]
+            if IsSafeObj(fs) and fs.SetHeight and fs.GetStringHeight then
+                local curH = F.PlainNumber(fs.GetHeight and fs:GetHeight(), 0) or 0
+                local strH = F.PlainNumber(fs:GetStringHeight(), 0) or 0
+                if curH > 0 and strH >= curH - 2 then
+                    pcall(fs.SetHeight, fs, 0)
+                end
+            end
+        end
+        -- 任务问候页（QuestFrameGreetingPanel）：确保水平分隔线与第一个任务按钮严禁压在 GreetingText 上
+        local qgp = _G.QuestFrameGreetingPanel
+        local gt = _G.GreetingText
+        if IsSafeObj(qgp) and qgp:IsShown() and IsSafeObj(gt) and gt:IsShown() then
+            pcall(gt.SetHeight, gt, 0)
+            local hBreak = _G.QuestGreetingFrameHorizontalBreak
+            if IsSafeObj(hBreak) and hBreak:IsShown() and hBreak.ClearAllPoints then
+                pcall(hBreak.ClearAllPoints, hBreak)
+                pcall(hBreak.SetPoint, hBreak, "TOPLEFT", gt, "BOTTOMLEFT", 0, -10)
+            end
+        end
+    end
 
     local FONT_GUARD_WINDOWS = {
         "CharacterFrame", "PaperDollFrame", "SkillsFrame", "ReputationFrame",
@@ -4340,7 +4511,8 @@ do
         if want then
             local wrapped = fs.CanWordWrap and fs:CanWordWrap()
             local txt = fs.GetText and F.PlainString(fs:GetText(), "") or ""
-            local isLong = wrapped and #txt > 32
+            local strH = F.PlainNumber(fs.GetStringHeight and fs:GetStringHeight(), 0) or 0
+            local isLong = wrapped and (#txt > 18 or strH > sz * 1.55)
             if isLong then
                 pcall(fs.SetHeight, fs, 0)
             else
@@ -4508,6 +4680,45 @@ do
                     PolishSkillsDetailDescription(mod._active and mod:GetDB().harmonyFontGuard ~= false)
                 end)
             end)
+        end
+
+        -- GossipFrame ScrollBox 实时防重叠重排钩子（NPC 问候语与下方对话/商店选项绝不重叠）
+        local gf = _G.GossipFrame
+        local gsb = gf and gf.GreetingPanel and gf.GreetingPanel.ScrollBox
+        if IsSafeObj(gsb) and not gossipScrollHooked and type(gsb.Update) == "function" then
+            gossipScrollHooked = true
+            local QueueGossipReflow = function()
+                if not (mod._active and mod:GetDB().harmonyFontGuard ~= false) then return end
+                ReflowGossipScrollBox()
+                C_Timer.After(0, function()
+                    if mod._active and mod:GetDB().harmonyFontGuard ~= false then
+                        ReflowGossipScrollBox()
+                    end
+                end)
+            end
+            _G.hooksecurefunc(gsb, "Update", QueueGossipReflow)
+            if gf.HookScript then
+                gf:HookScript("OnShow", QueueGossipReflow)
+            end
+        end
+        if want then
+            ReflowGossipScrollBox()
+            FixSimilarDialogOverlaps()
+        end
+
+        -- 任务对话页/邮件/书信页防多行文字重叠钩子
+        if not questDialogHooked then
+            questDialogHooked = true
+            for _, qName in ipairs({ "QuestFrameGreetingPanel", "QuestFrameDetailPanel", "QuestFrameProgressPanel", "QuestFrameRewardPanel", "OpenMailFrame", "ItemTextFrame" }) do
+                local qf = _G[qName]
+                if IsSafeObj(qf) and qf.HookScript then
+                    qf:HookScript("OnShow", function()
+                        if mod._active and mod:GetDB().harmonyFontGuard ~= false then
+                            C_Timer.After(0, FixSimilarDialogOverlaps)
+                        end
+                    end)
+                end
+            end
         end
         for _, winName in ipairs(FONT_GUARD_WINDOWS) do
             local w = _G[winName]

@@ -6,7 +6,7 @@ local _, F = ...
 
 local _G = _G
 local pairs, ipairs, pcall, type = pairs, ipairs, pcall, type
-local math_abs, math_max, math_min = math.abs, math.max, math.min
+local math_abs, math_floor, math_max, math_min = math.abs, math.floor, math.max, math.min
 local setmetatable = setmetatable
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
@@ -806,7 +806,25 @@ function Theme.PaintPrettyCardOverlay(host, r, g, b, headerMaxH, opts)
     local lvl = F.PlainNumber(host.GetFrameLevel and host:GetFrameLevel(), 200)
     ov:SetFrameLevel(math_max(1, lvl - 1))
 
-    SyncPrettyRoundedState(ov, opts.rounded == true, opts.radius or 8)
+    local defRound = true
+    local defRadius = 8
+    local tsMod = F.Modules and F.Modules.Get and F.Modules.Get("tooltipStyle")
+    if tsMod then
+        local tsDB = tsMod:GetDB()
+        if tsDB and tsDB.roundedPrettyTips == false then
+            defRound = false
+        end
+        local tr = tsDB and F.PlainNumber(tsDB.roundedRadius, nil) or nil
+        if tr and tr >= 0 then defRadius = math_floor(tr + 0.5) end
+    end
+    local wantRound
+    if opts.rounded ~= nil then
+        wantRound = (opts.rounded == true)
+    else
+        wantRound = (defRound and defRadius > 0)
+    end
+    local wantRadius = opts.radius or defRadius
+    SyncPrettyRoundedState(ov, wantRound, wantRadius)
 
     local defBody, defGlow, defHeadTop, defHeadBot = ReadPrettyLiveMetrics()
     local bodyA = opts.alpha or defBody

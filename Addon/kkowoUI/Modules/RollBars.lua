@@ -165,6 +165,21 @@ local function AcquireBar()
     icon:SetAllPoints()
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     bar.icon = icon
+
+    if F.StyleTokens then
+        local ST = F.StyleTokens
+        local rad = ST.GetCornerRadius(6)
+        if rad > 0 then
+            if bar._fuiBg then ST.MaskTexture(bar, bar._fuiBg, rad) end
+            if bar._fuiBorders then
+                for _, ln in ipairs(bar._fuiBorders) do ln:Hide() end
+            end
+            local ft = sb:GetStatusBarTexture()
+            if ft then ST.MaskTexture(bar, ft, rad) end
+            ST.ApplyRoundedBorder(bar, rad, 0.04, 0.045, 0.06, 0.92, 6)
+            ST.MaskTexture(iconBtn, icon, 4)
+        end
+    end
     iconBtn:SetScript("OnEnter", function(self)
         if bar.rollID then
             GameTooltip:SetOwner(self, "ANCHOR_LEFT")

@@ -105,6 +105,12 @@ function ModuleProto:Enable()
     if self._active then
         return
     end
+    if self.masterKey then
+        local master = registry[self.masterKey]
+        if master and not master:IsEnabled() then
+            return
+        end
+    end
     local yielded, byAddon = self:IsYielded()
     if yielded then
         self._yieldedBy = byAddon

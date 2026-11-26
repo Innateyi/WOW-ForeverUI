@@ -35,6 +35,8 @@ local mod = F.RegisterModule("tooltipStyle", {
         prettyOriginalKey = "NONE", -- 默认关闭按 Alt 切回原版面板，防止按 Alt 组合键时误切（可选 NONE / ALT / CTRL）
         prettyDetailsKey = "SHIFT", -- NPC ID / 分解等扩展信息默认按住 Shift 展示，平时卡片更紧凑（可选 SHIFT / ALWAYS）
         unifyEUICards = true,     -- 默认开启：100% 复刻 PrettyTooltip 样式统一全界面所有悬浮提示与小地图卡片
+        roundedPrettyTips = true, -- 默认开启：PrettyTooltip 与全部 100% 复刻卡片统一 GPU 抗锯齿圆角
+        roundedRadius = 8,        -- 圆角半径（4~12px，默认 8px）
         frostedGlass = true,      -- 仅在关闭 PrettyTooltip 全面统一时作为磨砂玻璃备用风格
         glassOpacity = 0.82,      -- 磨砂备用浓度
         plainWorldTipsFrosted = false, -- 默认关闭：场景牌子/草药/矿点/小地图/鸟点全部交回 PrettyTooltip 统一绘制
@@ -973,6 +975,252 @@ local function HookEUIMinimapCards()
     end
 end
 
+----------------------------------------------------------------------
+--  2b) 为原版 PrettyTooltip 面板非侵入注入 GPU 9 宫格圆角与同步彩色圆角边框
+--      • 绝不改动 PrettyTooltip 文件、文本排版、行宽或金币/图标对齐
+--      • 停用开关或关闭模块时彻底卸载遮罩并还原原生 4 条直边
+----------------------------------------------------------------------
+local roundedPrettyPanels = setmetatable({}, { __mode = "k" })
+local prettyPanelList = {}
+local prettyRoundHooksInstalled = false
+local EUI_ROUND_DIR_TT = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
+
+local function WantRoundedPrettyTips()
+    if not mod._active then return false end
+    local db = mod:GetDB()
+    return db.roundedPrettyTips ~= false and (F.PlainNumber(db.roundedRadius, 8) or 8) >= 2
+end
+
+local function GetPrettyRoundRadius()
+    local db = mod:GetDB()
+    return math_floor(Clamp(F.PlainNumber(db.roundedRadius, 8) or 8, 3, 12) + 0.5)
+end
+
+local function SetSliceMask(obj, path, r, wrap)
+    if not obj then return end
+    if wrap then
+        pcall(obj.SetTexture, obj, path, wrap, wrap)
+    else
+        pcall(obj.SetTexture, obj, path)
+    end
+    if obj.SetTextureSliceMargins then
+        pcall(obj.SetTextureSliceMargins, obj, r, r, r, r)
+    end
+    local sm = _G.Enum and _G.Enum.UITextureSliceMode and _G.Enum.UITextureSliceMode.Stretched
+    if sm and obj.SetTextureSliceMode then
+        pcall(obj.SetTextureSliceMode, obj, sm)
+    end
+end
+
+local function MirrorPrettyEdgeColor(panel, st)
+    if not (panel and st and st.borderTex and st.topTex) then return end
+    local e1 = panel.edges and panel.edges[1]
+    local e2 = panel.edges and panel.edges[2]
+    local r1, g1, b1 = 0.78, 0.66, 0.46
+    local r2, g2, b2 = 0.38, 0.32, 0.24
+    if e1 and e1.GetVertexColor then
+        local ok, r, g, b = pcall(e1.GetVertexColor, e1)
+        if ok and F.PlainNumber(r, nil) then r1, g1, b1 = r, g, b end
+    end
+    if e2 and e2.GetVertexColor then
+        local ok, r, g, b = pcall(e2.GetVertexColor, e2)
+        if ok and F.PlainNumber(r, nil) then r2, g2, b2 = r, g, b end
+    end
+    if not st.borderHasGrad then
+        st.borderTex:SetVertexColor(r2 * 0.95 + 0.05, g2 * 0.95 + 0.05, b2 * 0.95 + 0.05, 0.90)
+    end
+    if not st.topHasGrad then
+        st.topTex:SetVertexColor(r1, g1, b1, 0.80)
+    end
+end
+
+local function ApplyRoundToPrettyPanel(panel)
+    if not (IsSafeFrame(panel) and panel.CreateMaskTexture and panel.background and type(panel.edges) == "table") then
+        return
+    end
+    local st = roundedPrettyPanels[panel]
+    local want = WantRoundedPrettyTips() and (panel.backdropMode == nil or panel.backdropMode == "flat")
+    local hasEUI = (_G.EllesmereUI ~= nil or F.IsAddOnLoaded("EllesmereUI"))
+
+    if not want or not hasEUI then
+        if st then
+            if st.bodyMask then
+                if panel.background.RemoveMaskTexture then pcall(panel.background.RemoveMaskTexture, panel.background, st.bodyMask) end
+                if panel.header and panel.header.RemoveMaskTexture then pcall(panel.header.RemoveMaskTexture, panel.header, st.bodyMask) end
+                for _, sh in ipairs(panel.shades or {}) do
+                    if sh.RemoveMaskTexture then pcall(sh.RemoveMaskTexture, sh, st.bodyMask) end
+                end
+            end
+            if st.iconMask then
+                if panel.icon and panel.icon.RemoveMaskTexture then pcall(panel.icon.RemoveMaskTexture, panel.icon, st.iconMask) end
+                if panel.iconBorder and panel.iconBorder.RemoveMaskTexture then pcall(panel.iconBorder.RemoveMaskTexture, panel.iconBorder, st.iconMask) end
+            end
+            if st.borderTex then st.borderTex:Hide() end
+            if st.topTex then st.topTex:Hide() end
+            st.active = false
+            st.radius = 0
+            for _, edge in ipairs(panel.edges) do
+                if edge and edge.SetAlpha then pcall(edge.SetAlpha, edge, 1) end
+            end
+        end
+        return
+    end
+
+    local r = GetPrettyRoundRadius()
+    if not st then
+        st = {
+            bodyMask = panel:CreateMaskTexture(),
+            holeMask = panel:CreateMaskTexture(),
+            iconMask = panel:CreateMaskTexture(),
+            borderTex = panel:CreateTexture(nil, "OVERLAY", nil, 4),
+            topTex = panel:CreateTexture(nil, "OVERLAY", nil, 5),
+            radius = 0,
+            active = false,
+            hooked = false,
+        }
+        st.bodyMask:SetAllPoints(panel)
+        st.borderTex:SetAllPoints(panel)
+        st.borderTex:SetTexture(F.Theme.FLAT_TEX)
+        pcall(st.borderTex.AddMaskTexture, st.borderTex, st.bodyMask)
+        pcall(st.borderTex.AddMaskTexture, st.borderTex, st.holeMask)
+
+        st.topTex:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
+        st.topTex:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
+        st.topTex:SetHeight(2)
+        st.topTex:SetTexture(F.Theme.FLAT_TEX)
+        pcall(st.topTex.AddMaskTexture, st.topTex, st.bodyMask)
+
+        if panel.icon then
+            st.iconMask:SetAllPoints(panel.icon)
+            SetSliceMask(st.iconMask, EUI_ROUND_DIR_TT .. "rounded-4.tga", 4, "CLAMPTOBLACKADDITIVE")
+        end
+
+        roundedPrettyPanels[panel] = st
+        prettyPanelList[#prettyPanelList + 1] = panel
+    end
+
+    if st.radius ~= r or not st.active then
+        st.radius = r
+        st.active = true
+        local maskPath = EUI_ROUND_DIR_TT .. "rounded-" .. r .. ".tga"
+        local holePath = EUI_ROUND_DIR_TT .. "rounded-inv-" .. math_max(1, r - 1) .. ".tga"
+        SetSliceMask(st.bodyMask, maskPath, r, "CLAMPTOBLACKADDITIVE")
+        SetSliceMask(st.holeMask, holePath, math_max(1, r - 1), "CLAMPTOWHITE")
+        st.holeMask:ClearAllPoints()
+        st.holeMask:SetPoint("TOPLEFT", panel, "TOPLEFT", 1, -1)
+        st.holeMask:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -1, 1)
+
+        if panel.background.AddMaskTexture then pcall(panel.background.AddMaskTexture, panel.background, st.bodyMask) end
+        if panel.header and panel.header.AddMaskTexture then pcall(panel.header.AddMaskTexture, panel.header, st.bodyMask) end
+        for _, sh in ipairs(panel.shades or {}) do
+            if sh.AddMaskTexture then pcall(sh.AddMaskTexture, sh, st.bodyMask) end
+        end
+        if panel.icon and panel.icon.AddMaskTexture then
+            pcall(panel.icon.AddMaskTexture, panel.icon, st.iconMask)
+        end
+        if panel.iconBorder and panel.iconBorder.AddMaskTexture then
+            pcall(panel.iconBorder.AddMaskTexture, panel.iconBorder, st.iconMask)
+        end
+    end
+
+    for _, edge in ipairs(panel.edges) do
+        if edge and edge.SetAlpha then pcall(edge.SetAlpha, edge, 0) end
+    end
+    st.borderTex:Show()
+    st.topTex:Show()
+    MirrorPrettyEdgeColor(panel, st)
+
+    if not st.hooked then
+        st.hooked = true
+        if panel.HookScript then
+            panel:HookScript("OnShow", function(self)
+                ApplyRoundToPrettyPanel(self)
+            end)
+        end
+        for idx, edge in ipairs(panel.edges) do
+            if edge then
+                local eIdx = idx
+                if edge.SetVertexColor then
+                    _G.hooksecurefunc(edge, "SetVertexColor", function(self)
+                        if st.active then
+                            if self.SetAlpha then pcall(self.SetAlpha, self, 0) end
+                            if eIdx == 1 or eIdx == 2 then
+                                if eIdx == 1 then st.topHasGrad = false end
+                                if eIdx == 2 then st.borderHasGrad = false end
+                                MirrorPrettyEdgeColor(panel, st)
+                            end
+                        end
+                    end)
+                end
+                if edge.SetGradient then
+                    _G.hooksecurefunc(edge, "SetGradient", function(self, orient, minC, maxC)
+                        if st.active then
+                            if self.SetAlpha then pcall(self.SetAlpha, self, 0) end
+                            if eIdx == 1 and st.topTex and st.topTex.SetGradient and minC and maxC then
+                                st.topHasGrad = true
+                                pcall(st.topTex.SetGradient, st.topTex, orient or "HORIZONTAL", minC, maxC)
+                            elseif eIdx == 2 and st.borderTex and st.borderTex.SetGradient and minC and maxC then
+                                st.borderHasGrad = true
+                                pcall(st.borderTex.SetGradient, st.borderTex, orient or "HORIZONTAL", minC, maxC)
+                            end
+                        end
+                    end)
+                end
+                if edge.SetShown then
+                    _G.hooksecurefunc(edge, "SetShown", function(self, shown)
+                        if st.active and shown and self.SetAlpha then
+                            pcall(self.SetAlpha, self, 0)
+                        end
+                    end)
+                end
+            end
+        end
+    end
+end
+
+local function ScanAndRoundPrettyPanels()
+    if not HasPrettyTooltip() then return end
+    local ui = _G.UIParent
+    if not (ui and ui.GetChildren) then return end
+    local okC, hosts = pcall(function() return { ui:GetChildren() } end)
+    if not (okC and type(hosts) == "table") then return end
+    for _, host in ipairs(hosts) do
+        if IsSafeFrame(host) and not (host.GetName and host:GetName()) and host.GetChildren then
+            local okK, kids = pcall(function() return { host:GetChildren() } end)
+            if okK and type(kids) == "table" then
+                for _, p in ipairs(kids) do
+                    if IsSafeFrame(p) and p.halo and p.background and p.header
+                        and type(p.edges) == "table" and #p.edges == 4
+                        and type(p.shades) == "table" and type(p.pool) == "table" then
+                        ApplyRoundToPrettyPanel(p)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function RefreshAllPrettyPanels()
+    ScanAndRoundPrettyPanels()
+    for _, p in ipairs(prettyPanelList) do
+        ApplyRoundToPrettyPanel(p)
+    end
+end
+
+local function HookPrettyPanelRounder()
+    if prettyRoundHooksInstalled or not HasPrettyTooltip() then return end
+    prettyRoundHooksInstalled = true
+    local triggerScan = F.Debounce(0.02, ScanAndRoundPrettyPanels)
+    for _, name in ipairs(TARGET_TIPS) do
+        local tip = _G[name]
+        if IsSafeFrame(tip) and tip.HookScript then
+            tip:HookScript("OnShow", function()
+                if mod._active then triggerScan() end
+            end)
+        end
+    end
+end
+
 local function RefreshAllEUICards()
     SyncPrettyTooltipSettings()
     SyncBlizzTooltipFontObjects()
@@ -1517,6 +1765,8 @@ function mod:OnEnable()
     HookScalesTooltipPolish()
     HookEUIWidgetTooltip()
     HookEUIMinimapCards()
+    HookPrettyPanelRounder()
+    RefreshAllPrettyPanels()
 
     if not HasPrettyTooltip() then
         PaintFallbackTooltip(GameTooltip)
@@ -1529,6 +1779,8 @@ function mod:OnEnable()
         HookNativeTipFrost()
         HookEUIWidgetTooltip()
         HookEUIMinimapCards()
+        HookPrettyPanelRounder()
+        RefreshAllPrettyPanels()
     end)
 
     -- 过图/读条不再重写 PrettyTooltipDB（登录/重载时 OnEnable 已同步一次；每次过图都覆盖会抹掉玩家在 /ptip 里的改动）
@@ -1549,6 +1801,7 @@ function mod:OnDisable()
     SuppressEUITooltipConflict(false)
     RestoreTooltipFontObjects()
     RefreshAllEUICards()
+    RefreshAllPrettyPanels()
     SetTooltipBgOverride(false)
     local E = _G.EllesmereUI
     for tip in _G.pairs(frostTipHookedMap) do
@@ -1581,6 +1834,16 @@ end
 function mod:OnThemeChanged()
     RefreshAllEUICards()
     RefreshNativeTipFrost()
+    RefreshAllPrettyPanels()
+    if not HasPrettyTooltip() then
+        PaintFallbackTooltip(GameTooltip)
+    end
+end
+
+function mod:OnRefresh()
+    RefreshAllEUICards()
+    RefreshNativeTipFrost()
+    RefreshAllPrettyPanels()
     if not HasPrettyTooltip() then
         PaintFallbackTooltip(GameTooltip)
     end
@@ -1608,6 +1871,35 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             db.unifyEUICards = v == true
             RefreshAllEUICards()
             RefreshNativeTipFrost()
+        end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "PrettyTooltip 及全部悬浮卡片启用圆角",
+        tooltip = "默认开启：通过无损 GPU 9 宫格圆角遮罩为 PrettyTooltip 及所有同源悬浮提示卡片施加柔和抗锯齿圆角（不改文字排版与对齐）。",
+        getValue = function() return db.roundedPrettyTips ~= false end,
+        setValue = function(v)
+            db.roundedPrettyTips = v == true
+            RefreshAllPrettyPanels()
+            RefreshAllEUICards()
+            RefreshNativeTipFrost()
+            if not HasPrettyTooltip() then PaintFallbackTooltip(GameTooltip) end
+        end,
+    }, {
+        type = "slider",
+        text = "悬浮卡片圆角半径（px）",
+        tooltip = "调节 PrettyTooltip 与全部复刻卡片的圆角弧度（推荐 6~8px）。",
+        min = 3, max = 12, step = 1,
+        disabled = function() return db.roundedPrettyTips == false end,
+        getValue = function() return GetPrettyRoundRadius() end,
+        setValue = function(v)
+            db.roundedRadius = math_floor(v + 0.5)
+            RefreshAllPrettyPanels()
+            RefreshAllEUICards()
+            RefreshNativeTipFrost()
+            if not HasPrettyTooltip() then PaintFallbackTooltip(GameTooltip) end
         end,
     })
     y = y - h

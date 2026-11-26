@@ -156,25 +156,44 @@ local function AcquireToast()
     t = CreateFrame("Frame", nil, container)
     t:SetSize(236, 26)
     t:EnableMouse(true)
-    F.Theme.StylePanel(t, 0.88, 0.78)
+    F.Theme.StylePanel(t, 0.80, 0.72)
+
+    local ST = F.StyleTokens
+    if ST then
+        if t._fuiBg then ST.MaskTexture(t, t._fuiBg, 6) end
+        if t._fuiBorders then
+            for _, ln in ipairs(t._fuiBorders) do ln:Hide() end
+        end
+        ST.ApplyRoundedBorder(t, 6, 0.22, 0.25, 0.32, 0.78, 5)
+    end
 
     local leftBar = t:CreateTexture(nil, "OVERLAY")
-    leftBar:SetWidth(2)
-    leftBar:SetPoint("TOPLEFT", t, "TOPLEFT", 1, -1)
-    leftBar:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 1, 1)
+    leftBar:SetWidth(3)
+    leftBar:SetPoint("TOPLEFT", t, "TOPLEFT", 1, -2)
+    leftBar:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 1, 2)
+    if ST then ST.MaskTexture(t, leftBar, 6) end
     t._leftBar = leftBar
 
     local glow = t:CreateTexture(nil, "BACKGROUND", nil, -4)
-    glow:SetWidth(54)
+    glow:SetWidth(64)
     glow:SetPoint("TOPLEFT", t, "TOPLEFT", 1, -1)
     glow:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 1, 1)
     glow:SetTexture(F.Theme.FLAT_TEX)
+    if ST then ST.MaskTexture(t, glow, 6) end
     t._glow = glow
 
-    local icon = t:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(20, 20)
-    icon:SetPoint("LEFT", t, "LEFT", 6, 0)
+    local iconWrap = CreateFrame("Frame", nil, t)
+    iconWrap:SetSize(20, 20)
+    iconWrap:SetPoint("LEFT", t, "LEFT", 7, 0)
+    iconWrap:EnableMouse(false)
+    local icon = iconWrap:CreateTexture(nil, "ARTWORK")
+    icon:SetAllPoints(iconWrap)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    if ST then
+        ST.MaskTexture(iconWrap, icon, 4)
+        ST.ApplyRoundedBorder(iconWrap, 4, 0.08, 0.10, 0.14, 0.85, 3)
+    end
+    t._iconWrap = iconWrap
     t._icon = icon
 
     local rightFS = t:CreateFontString(nil, "OVERLAY")
@@ -315,7 +334,12 @@ local function PaintToastVisual(t, r, g, b)
     else
         t._glow:SetVertexColor(r, g, b, 0.14)
     end
-    if t._fuiBorders then
+    if F.StyleTokens then
+        F.StyleTokens.ApplyRoundedBorder(t, 6, r * 0.45 + 0.14, g * 0.45 + 0.14, b * 0.45 + 0.16, 0.76, 5)
+        if t._iconWrap then
+            F.StyleTokens.ApplyRoundedBorder(t._iconWrap, 4, r * 0.75 + 0.10, g * 0.75 + 0.10, b * 0.75 + 0.10, 0.86, 3)
+        end
+    elseif t._fuiBorders then
         for _, ln in ipairs(t._fuiBorders) do
             ln:SetColorTexture(r * 0.40 + 0.15, g * 0.40 + 0.15, b * 0.40 + 0.17, 0.72)
         end

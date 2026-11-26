@@ -136,6 +136,7 @@ end
 -- 这里把它改成「地区名 ＋」（全角加号放在名字后面、调暗），名字不再移动，行高按中文排版。
 -- 只改显示文字，点击折叠 / 展开仍由 EUI 处理（它按行记的是地区 ID，不看文字）。
 local zoneLineHooked = setmetatable({}, { __mode = "k" })
+local scrollTopOrig = setmetatable({}, { __mode = "k" })
 local zoneTrackerHooked = false
 local zoneFixing = false
 
@@ -166,9 +167,36 @@ end
 local function HookZoneLines()
     local tracker = _G.EUI_CustomQuestTracker
     if not (tracker and tracker.GetChildren) then return end
+    local ST = F.StyleTokens
+    if ST and tracker.bg then
+        local rad = ST.GetCornerRadius(8)
+        if mod._active and rad > 0 then
+            ST.MaskTexture(tracker, tracker.bg, rad)
+        else
+            ST.ClearRoundedMask(tracker)
+        end
+    end
     for _, sf in ipairs({ tracker:GetChildren() }) do
         local child = sf and sf.GetScrollChild and sf:GetScrollChild()
-        if child then SyncTrackerClip(sf, child) end
+        if child then
+            SyncTrackerClip(sf, child)
+            -- 修复图 8：EUI 任务追踪器的 ScrollFrame 紧贴 header 底边（-HEADER_H），鸿蒙大字号下
+            -- 「任务」与快捷钮下划线会遮挡首行区域名（如「希尔斯布莱德丘陵」）。这里为 ScrollFrame 顶部下移 7px 留出呼吸间距。
+            if sf.GetPoint and sf.SetPoint then
+                local okP, pt, rel, rpt, x, y = pcall(sf.GetPoint, sf, 1)
+                if okP and pt == "TOPLEFT" and type(y) == "number" and not F.IsSecret(y) then
+                    local origY = scrollTopOrig[sf]
+                    if origY == nil then
+                        origY = y
+                        scrollTopOrig[sf] = origY
+                    end
+                    local wantY = origY - 7
+                    if math.abs(y - wantY) > 0.5 then
+                        pcall(sf.SetPoint, sf, pt, rel, rpt, x, wantY)
+                    end
+                end
+            end
+        end
         if child and child.GetChildren then
             for _, line in ipairs({ child:GetChildren() }) do
                 local fs = line and line.text
@@ -182,13 +210,20 @@ local function HookZoneLines()
     end
 end
 
--- 停用模块时把已改过的地区标题还原成 EUI 原本的「+ 地区名」
+-- 停用模块时把已改过的地区标题还原成 EUI 原本的「+ 地区名」，并恢复滚动区顶部偏移
 local ZONE_SUFFIX = "  |cff8a8f9a＋|r"
 local function RestoreZoneLines()
     local tracker = _G.EUI_CustomQuestTracker
     if tracker and tracker.GetChildren then
+        if F.StyleTokens then F.StyleTokens.ClearRoundedMask(tracker) end
         for _, sf in ipairs({ tracker:GetChildren() }) do
             if sf and sf.GetScrollChild and sf.SetClipsChildren then pcall(sf.SetClipsChildren, sf, true) end
+            if sf and scrollTopOrig[sf] ~= nil and sf.GetPoint and sf.SetPoint then
+                local okP, pt, rel, rpt, x = pcall(sf.GetPoint, sf, 1)
+                if okP and pt == "TOPLEFT" then
+                    pcall(sf.SetPoint, sf, pt, rel, rpt, x, scrollTopOrig[sf])
+                end
+            end
         end
     end
     for fs in pairs(zoneLineHooked) do
@@ -425,14 +460,17 @@ RefreshButtons = function()
         if isDockedNow then
             SetPanelChromeShown(b, false)
             F.Theme.SetGlassShown(b, false)
+            if F.StyleTokens and b._pillBg then
+                F.StyleTokens.MaskTexture(b, b._pillBg, 4)
+            end
             if on then
-                b._pillBg:SetColorTexture(ar, ag, ab, 0.14)
+                b._pillBg:SetColorTexture(ar, ag, ab, 0.16)
                 b._pillBg:Show()
                 b._accentLine:SetHeight(1.5)
                 b._accentLine:ClearAllPoints()
-                b._accentLine:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 2, 0)
-                b._accentLine:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -2, 0)
-                b._accentLine:SetColorTexture(ar, ag, ab, 0.95)
+                b._accentLine:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 4, 1)
+                b._accentLine:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -4, 1)
+                b._accentLine:SetColorTexture(ar, ag, ab, 0.92)
                 b._accentLine:Show()
                 b._label:SetTextColor(ar, ag, ab, 1)
             else
