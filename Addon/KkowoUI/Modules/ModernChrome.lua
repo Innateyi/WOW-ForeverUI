@@ -29,7 +29,11 @@ local mod = F.RegisterModule("modernChrome", {
         enabled = true,
         flatCharBars = true,
         charFramePolish = true,
-        charStatFontSize = 12,          -- 角色面板右侧属性栏字号（EUI 默认硬编码 10px 偏小，默认提至 12px，支持 10-14 调节）
+        charStatFontSize = 13,          -- 角色面板右侧属性栏字号（EUI 默认硬编码 10px 偏小，默认提至 13px，支持 11-16 调节）
+        v4CharStatSizeMigrated = false,
+        cleanCharSheet = true,          -- 重设计角色属性面板（去除遮挡人物的绿字堆叠、装等归位槽内、右侧升级装等/耐久卡片与清爽大号属性列表）
+        centerModelControls = true,     -- 角色 3D 模型控制按钮仅在鼠标移入中间人物区域时显示，滑过装备栏绝不闪烁
+        harmonyFontGuard = true,        -- 鸿蒙字体全界面防顶部裁切与垂直居中修正（角色/技能/声望/任务/邮件/商人等）
         hdPetHappy = true,
         damageFont = "youshe",          -- "youshe" | "smiley" | "default"（仅修改战斗伤害/治疗浮动字体）
         smartCombatText = true,         -- 战斗飘字智能分级（受伤大字 / 2D 经验小字 + 3D 缩放）
@@ -49,6 +53,9 @@ local mod = F.RegisterModule("modernChrome", {
         hideBlizzDurability = true,
         flightTimerMode = "keep_eui", -- "keep_eui" | "keep_polestar" | "both"
         dedupMinimapNPC = true,       -- 与 Polestar 共存时自动关闭 Questie 城镇 NPC 标记，统一由 Polestar 显示小地图 NPC（保留 Questie 任务感叹号/问号）
+        dedupWorldMapCoords = true,   -- 与 Polestar 共存时自动隐藏 Leatrix_Maps / 暴雪重复的世界地图底部坐标，保留 Polestar 单套清晰坐标栏
+        muteAttackGrunts = true,      -- 静音角色射箭/攻击时的「啊/哈」发声（仅静音角色战斗发声，不影响拉弓/技能音效与 NPC 语音）
+        muteBowPullback = false,      -- 可选：同时静音拉弓吱嘎声
         hudSkinSeeded = false,
         fitBuffTimers = true,
         expandFriends = true,
@@ -1282,10 +1289,6 @@ do
                     db.euiConflictKeep[ck] = type(db.euiConflictKeep[ck]) == "table" and db.euiConflictKeep[ck] or {}
                     for _, addonName in ipairs(pendingDisableList) do
                         db.euiConflictKeep[ck][addonName] = true
-                        if addonName == CDM_ADDON then
-                            db.cdmConflictKeep = type(db.cdmConflictKeep) == "table" and db.cdmConflictKeep or {}
-                            db.cdmConflictKeep[ck] = true
-                        end
                     end
                 end
             end,
@@ -1303,7 +1306,6 @@ do
         end
         local ck = F.GetCharKey()
         local charKeep = type(db.euiConflictKeep) == "table" and type(db.euiConflictKeep[ck]) == "table" and db.euiConflictKeep[ck] or nil
-        local legacyCdmKeep = type(db.cdmConflictKeep) == "table" and db.cdmConflictKeep[ck] == true
 
         for i = #pendingDisableList, 1, -1 do pendingDisableList[i] = nil end
         local reasons = {}
@@ -1316,10 +1318,20 @@ do
             end
         end
 
+        -- EUI 冷却管理器与 ArcAuras 都接管暴雪冷却显示，同时开启会冲突：
+        --   • 选择了「ArcAuras 换成 EUI 冷却管理器」（/kk deadguard arc on）：守卫开着时登录就会处理，否则建议停用 ArcAuras；
+        --   • 默认（例如朋友装了整合包、自己本来在用 ArcAuras）：以对方的 ArcAuras 为准，建议停用 EUI 冷却管理器。
         if F.IsAddOnLoaded(CDM_ADDON) and F.IsAddOnLoaded("ArcAuras") then
-            if not (legacyCdmKeep or (charKeep and charKeep[CDM_ADDON])) then
+            local guardOn = F.db and F.db.autoDisableDeadAddons ~= false
+            local preferCDM = F.db and F.db.cdmReplacesArc == true
+            if preferCDM then
+                if not guardOn and not (charKeep and charKeep.ArcAuras) then
+                    pendingDisableList[#pendingDisableList + 1] = "ArcAuras"
+                    reasons[#reasons + 1] = "• ArcAuras 与 EUI 冷却管理器冲突（都接管暴雪冷却显示），已改用 EUI 冷却管理器"
+                end
+            elseif not (charKeep and charKeep[CDM_ADDON]) then
                 pendingDisableList[#pendingDisableList + 1] = CDM_ADDON
-                reasons[#reasons + 1] = "• EUI 冷却管理器（EllesmereUICooldownManager）与 ArcAuras 冲突"
+                reasons[#reasons + 1] = "• EUI 冷却管理器与你的 ArcAuras 冲突（都接管暴雪冷却显示），保留 ArcAuras、停用 EUI 冷却管理器"
             end
         end
 
@@ -1334,12 +1346,6 @@ do
             end)
         end
 
-        if F.IsAddOnLoaded("QuestieTrace") or F.IsAddOnLoaded("BlizzMove_Debug") then
-            F.PrintOnce("debug_addons", "|cffffcc00性能提示：|r检测到调试插件 QuestieTrace 或 BlizzMove_Debug 仍在启用，建议停用或输入 /kk slim 一键清理。")
-        end
-        if F.IsAddOnLoaded("ArcUI") then
-            F.PrintOnce("arcui_stub", "|cffffcc00精简提示：|rArcUI 是一次性迁移存根，数据已迁至 ArcAuras 后可直接停用。")
-        end
     end
 end
 
@@ -2770,8 +2776,34 @@ do
         return ok and shown == true
     end
 
+    -- 系统对话框（StaticPopup 确认框、组队邀请、副本就位、团队确认等）绝不当作刷新横幅：
+    -- 游戏的「立即刷新世界」确认框就是 StaticPopup，一旦被当成横幅，它会被改样式、挪位置、
+    -- 文字被拉到同一行叠字、按钮底图被抹掉；而 StaticPopup1 之后还会被组队邀请等对话框复用，
+    -- 于是这些对话框也跟着坏掉，甚至在与真横幅同时出现时被当作「重复横幅」静音成点不到。
+    local DIALOG_PREFIXES = {
+        "StaticPopup", "LFGDungeonReady", "LFGInvitePopup", "LFGListInviteDialog", "LFDRoleCheckPopup",
+        "ReadyCheckFrame", "PVPReadyDialog", "GroupInvite", "PartyInvite", "RolePollPopup",
+        "PetBattleQueueReadyFrame", "ElvUI_StaticPopup",
+    }
+    local function IsDialogFrame(f)
+        if not IsSafeReadableFrame(f) then return false end
+        local okD, isDlg = pcall(function() return f.which ~= nil and f.button1 ~= nil end)
+        if okD and isDlg then return true end
+        if f.GetName then
+            local okN, raw = pcall(f.GetName, f)
+            local nm = okN and F.PlainString(raw, nil) or nil
+            if nm then
+                for _, p in ipairs(DIALOG_PREFIXES) do
+                    if nm:sub(1, #p) == p then return true end
+                end
+            end
+        end
+        return false
+    end
+
     local function ShouldSkipFrame(f)
         if not IsSafeReadableFrame(f) then return true end
+        if IsDialogFrame(f) then return true end
         if f.GetFrameStrata then
             local okS, strata = pcall(f.GetFrameStrata, f)
             if okS and F.PlainString(strata, nil) == "TOOLTIP" then
@@ -2846,11 +2878,14 @@ do
 
     local function ResolveOuterBanner(hitF)
         local cur = hitF
+        if IsDialogFrame(cur) then return nil end
         for _ = 1, 3 do
             local okP, p = pcall(function() return cur and cur.GetParent and cur:GetParent() end)
             if not okP or not p or p == _G.UIParent or p == _G.WorldFrame or not IsSafeReadableFrame(p) then
                 break
             end
+            -- 文字落在对话框里：整段都不是横幅
+            if IsDialogFrame(p) then return nil end
             local okW, rawW = pcall(p.GetWidth, p)
             local okH, rawH = pcall(p.GetHeight, p)
             local pw = okW and F.PlainNumber(rawW, 9999) or 9999
@@ -2895,6 +2930,24 @@ do
         local w = F.PlainNumber(ch.GetWidth and ch:GetWidth(), 0)
         local h = F.PlainNumber(ch.GetHeight and ch:GetHeight(), 0)
         return w >= 16 and w <= 48 and h >= 16 and h <= 48 and math_abs(w - h) <= 10
+    end
+
+    -- 横幅里带文字的普通按钮（如「立即刷新」）：不是左侧小图标钮，自身有底图和文字标签
+    local function IsTextButton(ch)
+        if not IsSafeReadableFrame(ch) or IsSmallActionButton(ch) then return false end
+        local okT, ot = pcall(ch.GetObjectType, ch)
+        return okT and (ot == "Button" or ot == "CheckButton")
+    end
+
+    -- 文字按钮交给 EUI 官方皮肤（扁平暗底 + 细边框 + 白字），保留可点击外观；没有 EUI 皮肤接口时保持原版
+    local wrTextBtnSkinned = setmetatable({}, { __mode = "k" })
+    local function SkinBannerTextButton(btn)
+        if wrTextBtnSkinned[btn] then return end
+        local S = F.Theme.GetSkinAPI and F.Theme.GetSkinAPI()
+        if not (S and S.Button) then return end
+        wrTextBtnSkinned[btn] = true
+        pcall(S.Button, btn)
+        if S.StateButtonLabel then pcall(S.StateButtonLabel, btn) end
     end
 
     local function MuteButtonStockTextures(btn, alpha)
@@ -3010,7 +3063,7 @@ do
         end
         for _, field in ipairs({ "Border", "Bg", "Background", "Center", "TopEdge", "BottomEdge", "LeftEdge", "RightEdge", "Glow", "Shine" }) do
             local part = box[field]
-            if part and part.SetAlpha then pcall(part.SetAlpha, part, alpha) end
+            if type(part) == "table" and part.SetAlpha then pcall(part.SetAlpha, part, alpha) end
         end
         if box.GetRegions then
             for _, reg in ipairs({ box:GetRegions() }) do
@@ -3021,7 +3074,8 @@ do
         end
         if (depth or 0) < 2 and box.GetChildren then
             for _, ch in ipairs({ box:GetChildren() }) do
-                if ch and ch ~= wrSkin[box] and ch ~= wrBtnSkin[box] and not IsSmallActionButton(ch) then
+                if ch and ch ~= wrSkin[box] and ch ~= wrBtnSkin[box]
+                    and not IsSmallActionButton(ch) and not IsTextButton(ch) then
                     MuteNativeBannerArt(ch, alpha, (depth or 0) + 1)
                 end
             end
@@ -3029,7 +3083,7 @@ do
     end
 
     local function StyleBannerFontsAndButtons(box, want)
-        local hasLeftBtn = false
+        local hasLeftBtn, hasTextBtn = false, false
         local mainFS = {}
 
         local function walk(f, depth)
@@ -3058,6 +3112,10 @@ do
                         if IsSmallActionButton(ch) then
                             hasLeftBtn = true
                             SkinBannerLeftButton(ch, box, want)
+                        elseif IsTextButton(ch) then
+                            -- 不进入按钮内部：它的文字标签属于按钮，绝不能被拉到横幅正中（会与正文叠字）
+                            hasTextBtn = true
+                            if want then SkinBannerTextButton(ch) end
                         else
                             walk(ch, depth + 1)
                         end
@@ -3067,8 +3125,20 @@ do
         end
         walk(box, 0)
 
-        -- 真正居中排版：清除原版左偏锚点，左右对称留白使标题在玻璃卡片正中显示
-        if want and #mainFS > 0 then
+        -- 真正居中排版只用于「单行倒计时 + 左侧小刷新钮」的简单横幅；
+        -- 带文字按钮或多段文字的状态（如「立即刷新世界。」）保持暴雪原排版，避免几段文字挤到同一行重叠
+        local simpleLayout = (not hasTextBtn) and #mainFS == 1
+        if want and #mainFS > 0 and not simpleLayout then
+            for _, fs in ipairs(mainFS) do
+                local o = wrOrigFS[fs]
+                if o then
+                    pcall(fs.ClearAllPoints, fs)
+                    pcall(fs.SetPoint, fs, o[1], o[2], o[3], o[4], o[5])
+                    if fs.SetJustifyH and o[6] then pcall(fs.SetJustifyH, fs, o[6]) end
+                end
+            end
+        end
+        if want and simpleLayout then
             local sidePad = hasLeftBtn and 42 or 16
             for _, fs in ipairs(mainFS) do
                 if not wrOrigFS[fs] and fs.GetPoint then
@@ -3284,6 +3354,19 @@ do
             wrPrimary = nil
             return
         end
+        -- 旧版本登记过的系统对话框：还原成原样并从横幅列表剔除
+        for i = #wrList, 1, -1 do
+            local b = wrList[i]
+            if IsDialogFrame(b) then
+                SilenceDuplicateBanner(b, false)
+                local ov = wrSkin[b]
+                if ov then ov:Hide() end
+                MuteNativeBannerArt(b, 1, 0)
+                StyleBannerFontsAndButtons(b, false)
+                if wrPrimary == b then wrPrimary = nil end
+                table.remove(wrList, i)
+            end
+        end
         local shownList = {}
         for _, b in ipairs(wrList) do
             if IsFrameShownSafe(b) then
@@ -3385,8 +3468,38 @@ do
     local ahPolishQueued = false
     local mailHooked = false
     local mailPolishQueued = false
+    local merchantHooked = false
+    local merchantPolishQueued = false
 
-    local function SkinCopperEditBox(eb, refBox)
+    local function FindMoneyCoinTexture(eb)
+        local coin = eb.texture or eb.Icon
+        if coin and coin.IsObjectType and coin:IsObjectType("Texture") then
+            return coin
+        end
+        if eb.GetRegions then
+            for _, r in ipairs({ eb:GetRegions() }) do
+                if r and r.IsObjectType and r:IsObjectType("Texture") then
+                    local atlas = r.GetAtlas and F.PlainString(r:GetAtlas(), "") or ""
+                    if atlas:lower():find("coin", 1, true) then return r end
+                    local tex = r.GetTexture and r:GetTexture()
+                    if type(tex) == "string" and (tex:find("Coin", 1, true) or tex:find("MoneyFrame", 1, true)) then
+                        return r
+                    end
+                    local rw = F.PlainNumber(r.GetWidth and r:GetWidth(), 0)
+                    local rh = F.PlainNumber(r.GetHeight and r:GetHeight(), 0)
+                    if rw >= 8 and rw <= 18 and rh >= 8 and rh <= 18 and math_abs(rw - rh) <= 3 then
+                        return r
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    -- 统一拍卖行金/银/铜币输入框：
+    --   • EUI 的 WSkin.EditBox -> FadeRegions 会把 GoldBox/SilverBox 的金币、银币图标透明度清零，
+    --     且未换肤 CopperBox；这里为 CopperBox 补同款暗底边框，同时恢复三格的币标显示并让数字与币标居中对齐。
+    local function PolishMoneyEditBox(eb, refBox, skinChrome)
         if not eb or (eb.IsForbidden and eb:IsForbidden()) then return end
         if refBox and refBox.GetHeight and eb.GetHeight and eb.SetHeight then
             local rh = F.PlainNumber(refBox:GetHeight(), 0)
@@ -3395,52 +3508,88 @@ do
                 pcall(eb.SetHeight, eb, rh)
             end
         end
-        if ahSkinnedCopper[eb] then return end
-        ahSkinnedCopper[eb] = true
+        local coin = FindMoneyCoinTexture(eb)
+        if skinChrome and not ahSkinnedCopper[eb] then
+            ahSkinnedCopper[eb] = true
 
-        -- 隐藏暴雪三段式金属边框，保留右侧铜币图标
-        for _, k in ipairs({ "Left", "Right", "Middle", "Mid" }) do
-            local r = eb[k]
-            if r and r.SetAlpha then pcall(r.SetAlpha, r, 0) end
-        end
-        local name = eb.GetName and eb:GetName()
-        if type(name) == "string" and name ~= "" then
-            for _, suf in ipairs({ "Left", "Middle", "Right" }) do
-                local t = _G[name .. suf]
-                if t and t.SetAlpha then pcall(t.SetAlpha, t, 0) end
+            -- 隐藏暴雪三段式金属边框，保留右侧铜币图标
+            for _, k in ipairs({ "Left", "Right", "Middle", "Mid" }) do
+                local r = eb[k]
+                if r and r.SetAlpha then pcall(r.SetAlpha, r, 0) end
             end
-        end
-        if eb.GetRegions then
-            local keepIcon = eb.texture or eb.Icon
-            for _, r in ipairs({ eb:GetRegions() }) do
-                if r and r ~= keepIcon and r.IsObjectType and r:IsObjectType("Texture") then
-                    local rw = F.PlainNumber(r.GetWidth and r:GetWidth(), 0)
-                    local rh = F.PlainNumber(r.GetHeight and r:GetHeight(), 0)
-                    -- 铜币圆图标通常 <= 16x16 且接近正方形，保留它；其余背景/边框贴图静音
-                    local looksLikeCoin = rw > 4 and rw <= 18 and rh > 4 and rh <= 18 and math_abs(rw - rh) <= 4
-                    if not looksLikeCoin and r.SetAlpha then
-                        pcall(r.SetAlpha, r, 0)
+            local name = eb.GetName and eb:GetName()
+            if type(name) == "string" and name ~= "" then
+                for _, suf in ipairs({ "Left", "Middle", "Right" }) do
+                    local t = _G[name .. suf]
+                    if t and t.SetAlpha then pcall(t.SetAlpha, t, 0) end
+                end
+            end
+            if eb.GetRegions then
+                for _, r in ipairs({ eb:GetRegions() }) do
+                    if r and r ~= coin and r.IsObjectType and r:IsObjectType("Texture") then
+                        local rw = F.PlainNumber(r.GetWidth and r:GetWidth(), 0)
+                        local rh = F.PlainNumber(r.GetHeight and r:GetHeight(), 0)
+                        local looksLikeCoin = rw > 4 and rw <= 18 and rh > 4 and rh <= 18 and math_abs(rw - rh) <= 4
+                        if not looksLikeCoin and r.SetAlpha then
+                            pcall(r.SetAlpha, r, 0)
+                        end
                     end
                 end
             end
+
+            local bg = eb:CreateTexture(nil, "BACKGROUND", nil, -6)
+            bg:SetColorTexture(0.02, 0.02, 0.02, 1)
+            bg:SetAllPoints(eb)
+            local borders = {
+                { "TOPLEFT",    "TOPRIGHT",    0, 0, nil, 1 },
+                { "BOTTOMLEFT", "BOTTOMRIGHT", 0, 0, nil, 1 },
+                { "TOPLEFT",    "BOTTOMLEFT",  0, 0, 1, nil },
+                { "TOPRIGHT",   "BOTTOMRIGHT", 0, 0, 1, nil },
+            }
+            for _, sp in ipairs(borders) do
+                local ln = eb:CreateTexture(nil, "BORDER", nil, -7)
+                ln:SetPoint(sp[1], eb, sp[1], sp[3], sp[4])
+                ln:SetPoint(sp[2], eb, sp[2], sp[3], sp[4])
+                if sp[5] then ln:SetWidth(sp[5]) end
+                if sp[6] then ln:SetHeight(sp[6]) end
+                ln:SetColorTexture(0.2, 0.2, 0.2, 1)
+            end
         end
 
-        local bg = eb:CreateTexture(nil, "BACKGROUND", nil, -6)
-        bg:SetColorTexture(0.02, 0.02, 0.02, 1)
-        bg:SetAllPoints(eb)
-        local borders = {
-            { "TOPLEFT",    "TOPRIGHT",    0, 0, nil, 1 },
-            { "BOTTOMLEFT", "BOTTOMRIGHT", 0, 0, nil, 1 },
-            { "TOPLEFT",    "BOTTOMLEFT",  0, 0, 1, nil },
-            { "TOPRIGHT",   "BOTTOMRIGHT", 0, 0, 1, nil },
-        }
-        for _, sp in ipairs(borders) do
-            local ln = eb:CreateTexture(nil, "BORDER", nil, -7)
-            ln:SetPoint(sp[1], eb, sp[1], sp[3], sp[4])
-            ln:SetPoint(sp[2], eb, sp[2], sp[3], sp[4])
-            if sp[5] then ln:SetWidth(sp[5]) end
-            if sp[6] then ln:SetHeight(sp[6]) end
-            ln:SetColorTexture(0.2, 0.2, 0.2, 1)
+        -- 恢复被 EUI FadeRegions 隐藏的金/银币图标，并与铜币统一为 13×13 垂直居中靠右
+        if coin then
+            pcall(coin.SetAlpha, coin, 1)
+            pcall(coin.Show, coin)
+            if coin.SetSize then pcall(coin.SetSize, coin, 13, 13) end
+            pcall(coin.ClearAllPoints, coin)
+            pcall(coin.SetPoint, coin, "RIGHT", eb, "RIGHT", -5, 0)
+            if coin.SetDrawLayer then pcall(coin.SetDrawLayer, coin, "OVERLAY", 3) end
+        end
+        if eb.SetFont then pcall(eb.SetFont, eb, F.Theme.GetFont(), 12, "") end
+        if eb.SetShadowColor then pcall(eb.SetShadowColor, eb, 0, 0, 0, 0.90) end
+        if eb.SetShadowOffset then pcall(eb.SetShadowOffset, eb, 1, -1) end
+        -- 大号金额框右对齐紧贴币标并做 +1px 鸿蒙垂直居中补偿，避免数字孤立贴最左与币标脱节
+        if eb.SetJustifyH then pcall(eb.SetJustifyH, eb, "RIGHT") end
+        if eb.SetJustifyV then pcall(eb.SetJustifyV, eb, "MIDDLE") end
+        if eb.SetTextInsets then pcall(eb.SetTextInsets, eb, 4, coin and 22 or 6, 1, 0) end
+        if eb.HasFocus and not eb:HasFocus() and eb.GetText and eb.SetText then
+            local txt = F.PlainString(eb:GetText(), nil)
+            if txt ~= nil then pcall(eb.SetText, eb, txt) end
+        end
+    end
+
+    local function PolishMoneyInputFrame(mi)
+        if type(mi) ~= "table" then return end
+        local ref = (type(mi.SilverBox) == "table" and mi.SilverBox)
+            or (type(mi.GoldBox) == "table" and mi.GoldBox) or nil
+        if type(mi.GoldBox) == "table" and mi.GoldBox:IsShown() then
+            PolishMoneyEditBox(mi.GoldBox, nil, false)
+        end
+        if type(mi.SilverBox) == "table" and mi.SilverBox:IsShown() then
+            PolishMoneyEditBox(mi.SilverBox, nil, false)
+        end
+        if type(mi.CopperBox) == "table" and mi.CopperBox:IsShown() then
+            PolishMoneyEditBox(mi.CopperBox, ref, true)
         end
     end
 
@@ -3598,31 +3747,36 @@ do
     local function PolishAuctionHouseNow()
         if not mod._active then return end
         local ah = _G.AuctionHouseFrame
-        if not (ah and ah:IsShown()) then return end
+        if not (type(ah) == "table" and ah:IsShown()) then return end
         for _, key in ipairs({ "CommoditiesSellFrame", "ItemSellFrame" }) do
             local sf = ah[key]
-            if sf and sf:IsShown() then
+            if type(sf) == "table" and sf:IsShown() then
                 for _, pk in ipairs({ "PriceInput", "SecondaryPriceInput" }) do
                     local pi = sf[pk]
-                    if pi and pi:IsShown() then
-                        local mi = pi.MoneyInputFrame
-                        if mi and mi.CopperBox and mi.CopperBox:IsShown() then
-                            SkinCopperEditBox(mi.CopperBox, mi.SilverBox or mi.GoldBox)
-                        end
+                    if type(pi) == "table" and pi:IsShown() then
+                        PolishMoneyInputFrame(pi.MoneyInputFrame)
                         SeparatePriceLabels(sf, pi)
                     end
                 end
             end
         end
-        -- 顺手补齐竞价区遗漏的铜币输入框换肤（如存在且可见）
-        for _, pair in ipairs({
-            { "AuctionHouseFrameCopper", "AuctionHouseFrameSilver" },
-            { "BidAmountCopper",         "BidAmountSilver" },
+        -- 顺手补齐竞价区全部金/银/铜币输入框的币标与对齐（如存在且可见）
+        for _, host in ipairs({
+            type(ah.ItemBuyFrame) == "table" and ah.ItemBuyFrame.BidFrame or nil,
+            type(ah.AuctionsFrame) == "table" and ah.AuctionsFrame.BidFrame or nil,
         }) do
-            local cb = _G[pair[1]]
-            if cb and cb:IsShown() then
-                SkinCopperEditBox(cb, _G[pair[2]])
+            if type(host) == "table" and type(host.BidAmount) == "table" and host.BidAmount:IsShown() then
+                PolishMoneyInputFrame(host.BidAmount)
             end
+        end
+        for _, trio in ipairs({
+            { "AuctionHouseFrameGold", "AuctionHouseFrameSilver", "AuctionHouseFrameCopper" },
+            { "BidAmountGold",         "BidAmountSilver",         "BidAmountCopper" },
+        }) do
+            local gb, sb, cb = _G[trio[1]], _G[trio[2]], _G[trio[3]]
+            if type(gb) == "table" and gb:IsShown() then PolishMoneyEditBox(gb, nil, false) end
+            if type(sb) == "table" and sb:IsShown() then PolishMoneyEditBox(sb, nil, false) end
+            if type(cb) == "table" and cb:IsShown() then PolishMoneyEditBox(cb, sb or gb, true) end
         end
     end
 
@@ -3639,7 +3793,7 @@ do
 
     windowPolish.HookAuctionHouse = function()
         local ah = _G.AuctionHouseFrame
-        if not ah then return end
+        if type(ah) ~= "table" then return end
         if not ahHooked[ah] then
             ahHooked[ah] = true
             ah:HookScript("OnShow", QueuePolishAuctionHouse)
@@ -3649,7 +3803,7 @@ do
         end
         for _, key in ipairs({ "CommoditiesSellFrame", "ItemSellFrame" }) do
             local sf = ah[key]
-            if sf and not ahHooked[sf] then
+            if type(sf) == "table" and not ahHooked[sf] then
                 ahHooked[sf] = true
                 sf:HookScript("OnShow", QueuePolishAuctionHouse)
                 if type(sf.SetItem) == "function" then
@@ -3822,6 +3976,1268 @@ do
             QueuePolishSendMail()
         end
     end
+
+    -- 商人界面物品格排版：EUI 将 44px 物品卡的价格行上移 6px 并居中图标后，
+    -- 换行的 2 行长物品名（配合鸿蒙字体较高行距）会从卡片上边框溢出 4–5px；
+    -- 这里把名称严格锚定在卡片内顶边（y=-3，最大 2 行、11px 零额外行距），既不顶出上框也不压价格行。
+    local function PolishMerchantTile(item)
+        if not item or (item.IsForbidden and item:IsForbidden()) then return end
+        if item.IsShown and not item:IsShown() then return end
+        local name = item.GetName and item:GetName()
+        local nameFS = item.Name or (type(name) == "string" and _G[name .. "Name"])
+        if not nameFS or (nameFS.IsForbidden and nameFS:IsForbidden()) then return end
+
+        local btn = item.ItemButton or (type(name) == "string" and _G[name .. "ItemButton"])
+        local btnW = btn and F.PlainNumber(btn.GetWidth and btn:GetWidth(), 37) or 37
+        if btnW < 20 or btnW > 60 then btnW = 37 end
+        local leftX = math_floor(btnW + 6.5)
+
+        if nameFS.GetFont and nameFS.SetFont then
+            local okF, fPath, fSize, fFlags = pcall(nameFS.GetFont, nameFS)
+            local curSz = okF and F.PlainNumber(fSize, 0) or 0
+            if okF and type(fPath) == "string" and fPath ~= "" and curSz > 11 then
+                pcall(nameFS.SetFont, nameFS, fPath, 11, type(fFlags) == "string" and fFlags or "")
+            end
+        end
+        if nameFS.SetSpacing then pcall(nameFS.SetSpacing, nameFS, 0) end
+        if nameFS.SetWordWrap then pcall(nameFS.SetWordWrap, nameFS, true) end
+        if nameFS.SetMaxLines then pcall(nameFS.SetMaxLines, nameFS, 2) end
+        if nameFS.SetJustifyH then pcall(nameFS.SetJustifyH, nameFS, "LEFT") end
+        if nameFS.SetJustifyV then pcall(nameFS.SetJustifyV, nameFS, "TOP") end
+        pcall(nameFS.ClearAllPoints, nameFS)
+        pcall(nameFS.SetPoint, nameFS, "TOPLEFT", item, "TOPLEFT", leftX, -3)
+        pcall(nameFS.SetPoint, nameFS, "TOPRIGHT", item, "TOPRIGHT", -5, -3)
+        pcall(nameFS.SetHeight, nameFS, 24)
+    end
+
+    local function PolishMerchantNow()
+        if not mod._active then return end
+        local mf = _G.MerchantFrame
+        if not (mf and mf:IsShown()) then return end
+        if _G.EllesmereUIDB and _G.EllesmereUIDB.merchantShowAsList then return end
+        local perPage = F.PlainNumber(_G.MERCHANT_ITEMS_PER_PAGE, 10)
+        if perPage < 10 then perPage = 10 end
+        if perPage > 12 then perPage = 12 end
+        for i = 1, perPage do
+            PolishMerchantTile(_G["MerchantItem" .. i])
+        end
+        for i = 1, 60 do
+            local exTile = _G["EUI_MerchantPage" .. i]
+            if not exTile then break end
+            PolishMerchantTile(exTile)
+        end
+        PolishMerchantTile(_G.MerchantBuyBackItem)
+    end
+
+    local function QueuePolishMerchant()
+        if merchantPolishQueued or not mod._active then return end
+        merchantPolishQueued = true
+        C_Timer.After(0, function()
+            merchantPolishQueued = false
+            pcall(PolishMerchantNow)
+            C_Timer.After(0.06, function() pcall(PolishMerchantNow) end)
+        end)
+    end
+
+    windowPolish.HookMerchant = function()
+        local mf = _G.MerchantFrame
+        if not mf then return end
+        if not merchantHooked then
+            merchantHooked = true
+            mf:HookScript("OnShow", QueuePolishMerchant)
+            for _, fnName in ipairs({ "MerchantFrame_Update", "MerchantFrame_UpdateMerchantInfo", "MerchantFrame_UpdateBuybackInfo" }) do
+                if type(_G[fnName]) == "function" then
+                    _G.hooksecurefunc(fnName, QueuePolishMerchant)
+                end
+            end
+        end
+        if mf:IsShown() then
+            QueuePolishMerchant()
+        end
+    end
+
+    -- 世界地图底部坐标去重：Polestar 与 Leatrix_Maps 同时开启时，Leatrix 会强开暴雪内置
+    -- worldMapShowPlayerCoords / worldMapShowCursorCoords 并把坐标叠在 Polestar 底部栏下方导致双坐标重叠。
+    local wmCoordsHooked = false
+    local wmDedupActive = false
+    local function HideBlizzAndLeatrixMapCoords()
+        local wm = _G.WorldMapFrame
+        if type(wm) ~= "table" then return end
+        if type(wm.overlayFrames) == "table" then
+            for _, fr in ipairs(wm.overlayFrames) do
+                if type(fr) == "table" and fr.PlayerCoords and fr.CursorCoords then
+                    local pc, cc, xc = fr.PlayerCoords, fr.CursorCoords, fr.CrosshairCoords
+                    if type(pc) == "table" and pc.Hide then pcall(pc.Hide, pc) end
+                    if type(cc) == "table" and cc.Hide then pcall(cc.Hide, cc) end
+                    if type(xc) == "table" and xc.Hide then pcall(xc.Hide, xc) end
+                    -- 若 Leatrix 主题模式把坐标挪进自建 footerFrame，一并收起
+                    local p = type(pc) == "table" and pc.GetParent and pc:GetParent()
+                    local canvas = wm.GetCanvasContainer and wm:GetCanvasContainer()
+                    if type(p) == "table" and p ~= wm and p ~= fr and p ~= canvas and p.back and p.t and p.Hide then
+                        pcall(p.Hide, p)
+                    end
+                end
+            end
+        end
+        -- 收起 Leatrix_Maps 挂在 ScrollContainer 底部的半透明坐标底条（cFrame.back + cFrame.t）
+        local sc = wm.ScrollContainer
+        if type(sc) == "table" and sc.GetChildren then
+            for _, ch in ipairs({ sc:GetChildren() }) do
+                if type(ch) == "table" and ch.back and ch.t and not (ch.GetName and ch:GetName()) then
+                    local h = F.PlainNumber(ch.GetHeight and ch:GetHeight(), 0)
+                    if h >= 14 and h <= 24 and ch.Hide then
+                        pcall(ch.Hide, ch)
+                    end
+                end
+            end
+        end
+    end
+
+    windowPolish.ApplyWorldMapCoordsDedup = function()
+        local db = mod:GetDB()
+        local want = mod._active and db.dedupWorldMapCoords ~= false
+        local pDB = _G.PolestarDB
+        local polestarCoordsOn = F.IsAddOnLoaded("Polestar")
+            and not (type(pDB) == "table" and type(pDB.settings) == "table"
+                and type(pDB.settings.maps) == "table" and pDB.settings.maps.worldMapCoords == false)
+        local setCV = (_G.C_CVar and _G.C_CVar.SetCVar) or _G.SetCVar
+        local getCV = (_G.C_CVar and _G.C_CVar.GetCVar) or _G.GetCVar
+        wmDedupActive = want and polestarCoordsOn
+        if wmDedupActive then
+            local lm = _G.LeaMapsDB
+            if type(lm) == "table" and lm.ShowCoords == "On" then
+                lm.ShowCoords = "Off"
+                db.wmDisabledLeatrix = true
+            end
+            if setCV and getCV then
+                for _, cv in ipairs({ "worldMapShowPlayerCoords", "worldMapShowCursorCoords" }) do
+                    local okV, v = pcall(getCV, cv)
+                    if okV and v == "1" then
+                        pcall(setCV, cv, "0")
+                        db.wmDisabledCVars = type(db.wmDisabledCVars) == "table" and db.wmDisabledCVars or {}
+                        db.wmDisabledCVars[cv] = true
+                    end
+                end
+            end
+            HideBlizzAndLeatrixMapCoords()
+            local wm = _G.WorldMapFrame
+            if type(wm) == "table" and not wmCoordsHooked and wm.HookScript then
+                wmCoordsHooked = true
+                wm:HookScript("OnShow", function()
+                    if mod._active and wmDedupActive then
+                        HideBlizzAndLeatrixMapCoords()
+                        C_Timer.After(0, HideBlizzAndLeatrixMapCoords)
+                    end
+                end)
+            end
+        else
+            -- 去重不再需要（关了选项 / 停用模块 / Polestar 坐标关了或没装）：把我们关掉的坐标原样还回去，
+            -- 否则会出现一套坐标都没有的情况。Leatrix 的开关重载后生效。
+            if db.wmDisabledLeatrix then
+                db.wmDisabledLeatrix = nil
+                if type(_G.LeaMapsDB) == "table" then
+                    _G.LeaMapsDB.ShowCoords = "On"
+                end
+            end
+            if type(db.wmDisabledCVars) == "table" then
+                if setCV then
+                    for cv in pairs(db.wmDisabledCVars) do pcall(setCV, cv, "1") end
+                end
+                db.wmDisabledCVars = nil
+            end
+        end
+    end
+
+    -- 静音角色攻击/射箭发声（经典 8 大种族男女 PlayerExertions Attack/Windup 官方 FileDataID）：
+    -- 只静音角色自身挥砍/拉弓射箭时的「啊/哈」发声，不影响弓弦、技能音效、BOSS 与 NPC 语音，开关实时生效。
+    local ATTACK_GRUNT_IDS = {
+        Human_2    = { 542370, 542373, 542374, 951346, 951348, 951350, 951352, 951354, 951356, 951358, 1343336, 1343337, 1343338, 1343339, 1343340, 1343341 },
+        Human_3    = { 542360, 542361, 542362, 542368, 951308, 951310, 951312, 951314, 951316, 951318, 1343369, 1343370, 1343371, 1343372, 1343373, 1343374, 1343375, 1343376, 1343377 },
+        Dwarf_2    = { 542323, 542326, 542330, 542331, 951190, 951192, 951194, 951196, 951198, 951200, 1512844, 1512845, 1512846, 1512847 },
+        Dwarf_3    = { 542310, 542315, 542316, 542318, 951142, 951144, 951146, 951148, 951150, 951152, 1512959, 1512960, 1512961, 1512962, 1512963 },
+        NightElf_2 = { 542397, 542400, 542403, 542404, 951434, 951436, 951438, 951440, 951442, 951444 },
+        NightElf_3 = { 542381, 542382, 542383, 542384, 951396, 951398, 951400, 951402, 951404, 951406 },
+        Gnome_2    = { 542345, 542351, 542352, 542356, 951264, 951266, 951268, 951270, 951272, 951274, 1512986, 1512987, 1512988, 1512989, 1512990 },
+        Gnome_3    = { 542334, 542335, 542336, 542339, 951228, 951230, 951232, 951234, 951236, 951238 },
+        Orc_2      = { 542418, 542420, 542426, 951510, 951512, 951514, 951516, 951518, 951520 },
+        Orc_3      = { 542405, 542406, 542415, 542416, 951480, 951482, 951484, 951486, 951488 },
+        Scourge_2  = { 542488, 542492, 542493, 542495, 951764, 951766, 951768, 951770, 1383684, 1383685, 1383686, 1383687, 1383688, 1383689, 1383690, 1383713, 1383714 },
+        Scourge_3  = { 542481, 542482, 542485, 542486, 951720, 951722, 951724, 951726, 951728, 951730 },
+        Tauren_2   = { 542442, 542443, 542445, 542446, 951596, 951598, 951600, 951602, 951604, 951606, 1502100, 1502101, 1502102, 1502103, 1502104, 1502105 },
+        Tauren_3   = { 542430, 542433, 542434, 542437, 951552, 951554, 951556, 951558, 951560, 951562 },
+        Troll_2    = { 542466, 542467, 542468, 542471, 951686, 951688, 951690, 951692, 951694, 1512822, 1512823, 1512824, 1512825, 1512826 },
+        Troll_3    = { 542453, 542454, 542460, 542462, 951642, 951644, 951646, 951648, 951650, 1502171, 1502172, 1502173, 1502174, 1502175, 1502176 },
+    }
+    local BOW_PULLBACK_IDS = { 567675, 567676, 567677, 567678, 567679, 567683 }
+    local mutedSoundIDs = {}
+    local staleMuteSwept = false
+
+    windowPolish.ApplyCombatSoundMute = function()
+        local muteFn, unmuteFn = _G.MuteSoundFile, _G.UnmuteSoundFile
+        if type(muteFn) ~= "function" then return end
+        local db = mod:GetDB()
+        local want = {}
+        if mod._active and db.muteAttackGrunts ~= false then
+            local raceFile = nil
+            if _G.UnitRace then
+                local okR, _, rf = pcall(_G.UnitRace, "player")
+                if okR and type(rf) == "string" and not F.IsSecret(rf) then raceFile = rf end
+            end
+            local sex = _G.UnitSex and F.PlainNumber(_G.UnitSex("player"), 0) or 0
+            local list = raceFile and (sex == 2 or sex == 3) and ATTACK_GRUNT_IDS[raceFile .. "_" .. sex] or nil
+            if list then
+                for i = 1, #list do want[list[i]] = true end
+            elseif raceFile then
+                for _, s in ipairs({ 2, 3 }) do
+                    local sub = ATTACK_GRUNT_IDS[raceFile .. "_" .. s]
+                    if sub then
+                        for i = 1, #sub do want[sub[i]] = true end
+                    end
+                end
+            end
+        end
+        if mod._active and db.muteBowPullback == true then
+            for i = 1, #BOW_PULLBACK_IDS do want[BOW_PULLBACK_IDS[i]] = true end
+        end
+        -- 静音会跨 /reload（以及换角色）保留，但本表每次重载都是空的：
+        -- 本会话第一次执行时，若上次会话静音过，就把这次不需要的 ID 全部解除一遍（如换了不同种族的角色）
+        if not staleMuteSwept and type(unmuteFn) == "function" then
+            staleMuteSwept = true
+            if db.soundMuteApplied then
+                for _, list in pairs(ATTACK_GRUNT_IDS) do
+                    for i = 1, #list do
+                        if not want[list[i]] then pcall(unmuteFn, list[i]) end
+                    end
+                end
+                for i = 1, #BOW_PULLBACK_IDS do
+                    if not want[BOW_PULLBACK_IDS[i]] then pcall(unmuteFn, BOW_PULLBACK_IDS[i]) end
+                end
+            end
+        end
+        if type(unmuteFn) == "function" then
+            for id in pairs(mutedSoundIDs) do
+                if not want[id] then
+                    pcall(unmuteFn, id)
+                    mutedSoundIDs[id] = nil
+                end
+            end
+        end
+        for id in pairs(want) do
+            if not mutedSoundIDs[id] then
+                pcall(muteFn, id)
+                mutedSoundIDs[id] = true
+            end
+        end
+        db.soundMuteApplied = (next(mutedSoundIDs) ~= nil) or nil
+    end
+end
+
+----------------------------------------------------------------------
+--  8b-2) 鸿蒙字体全界面防顶部裁切与垂直居中修正
+--        HarmonyOS Sans 的 usWinAscent 达 1056/1000（比暴雪默认字形高 ~20%），
+--        凡是 ScrollFrame / ClipsChildren 顶边紧贴首行文字（如技能说明、声望说明、任务详情）
+--        或定高单行框（如角色「等级30 猎人」）都会把第一行字顶切掉一截。
+--        这里用弱表记录原始锚点与高度，统一补足顶部留白并支持无损还原。
+----------------------------------------------------------------------
+do
+    local origAnchor = setmetatable({}, { __mode = "k" })
+    local origHeight = setmetatable({}, { __mode = "k" })
+    local origJustV  = setmetatable({}, { __mode = "k" })
+    local unclippedNodes = setmetatable({}, { __mode = "k" })
+    local hookedWin  = setmetatable({}, { __mode = "k" })
+    local hookedSF   = setmetatable({}, { __mode = "k" })
+    local skillsBoxHooked = false
+
+    local FONT_GUARD_WINDOWS = {
+        "CharacterFrame", "PaperDollFrame", "SkillsFrame", "ReputationFrame",
+        "PetPaperDollFrame", "TokenFrame", "HonorFrame", "PVPFrame", "InspectFrame",
+        "QuestFrame", "QuestLogFrame", "GossipFrame",
+        "MailFrame", "OpenMailFrame", "SendMailFrame",
+        "MerchantFrame", "FriendsFrame", "GuildFrame",
+        "ClassTrainerFrame", "TradeSkillFrame", "CraftFrame",
+        "SpellBookFrame", "PlayerSpellsFrame", "MacroFrame",
+        "AuctionHouseFrame", "DressUpFrame", "CommunitiesFrame", "EncounterJournal",
+    }
+
+    local function IsSafeObj(o)
+        if type(o) ~= "table" then return false end
+        if o.IsForbidden then
+            local ok, forb = pcall(o.IsForbidden, o)
+            if not ok or forb then return false end
+        end
+        return true
+    end
+
+    local function IsTopPoint(pt)
+        return pt == "TOP" or pt == "TOPLEFT" or pt == "TOPRIGHT"
+    end
+
+    local function ReadAllPoints(region)
+        local pts = {}
+        local n = region.GetNumPoints and F.PlainNumber(region:GetNumPoints(), 1) or 1
+        for i = 1, n do
+            local okP, pt, rel, rpt, x, y = pcall(region.GetPoint, region, i)
+            if okP and type(pt) == "string" then
+                pts[#pts + 1] = { pt, rel, rpt, F.PlainNumber(x, 0), F.PlainNumber(y, 0) }
+            end
+        end
+        return pts
+    end
+
+    local function SetAllPoints(region, pts)
+        pcall(region.ClearAllPoints, region)
+        for _, p in ipairs(pts) do
+            pcall(region.SetPoint, region, p[1], p[2], p[3], p[4], p[5])
+        end
+    end
+
+    -- 把顶边锚点下移 deltaY。暴雪会自己重排很多文字（如任务详情每次显示都会重新挂锚点、在任务窗口与任务日志之间换父框体），
+    -- 所以每次都读当前锚点：仍是我们上次设的才算「已处理 / 可还原」；被暴雪改过就以新锚点为准重新判断，绝不套用旧锚点。
+    -- minY：只有首个锚点是顶边且 y >= minY（文字贴着顶边）时才下移；nil 表示顶边锚点一律下移。
+    local appliedAnchor = setmetatable({}, { __mode = "k" })
+    local function ShiftAnchorY(region, deltaY, want, minY)
+        if not (IsSafeObj(region) and region.GetPoint and region.SetPoint) then return end
+        local cur = ReadAllPoints(region)
+        local first = cur[1]
+        if not first then return end
+        local ap = appliedAnchor[region]
+        local ours = ap ~= nil and ap[1] == first[1] and ap[2] == first[2] and ap[3] == first[3]
+            and math_abs(ap[4] - first[4]) < 0.01 and math_abs(ap[5] - first[5]) < 0.01
+        if ours then
+            if not want and origAnchor[region] then
+                SetAllPoints(region, origAnchor[region])
+                origAnchor[region] = nil
+                appliedAnchor[region] = nil
+            end
+            return
+        end
+        -- 当前锚点不是我们设的：之前记下的原锚点已过期
+        origAnchor[region] = nil
+        appliedAnchor[region] = nil
+        if not want or not IsTopPoint(first[1]) or (minY and first[5] < minY) then return end
+        origAnchor[region] = cur
+        local shifted = {}
+        for i, p in ipairs(cur) do
+            shifted[i] = { p[1], p[2], p[3], p[4], IsTopPoint(p[1]) and (p[5] + deltaY) or p[5] }
+        end
+        SetAllPoints(region, shifted)
+        appliedAnchor[region] = shifted[1]
+    end
+
+    local function GuardFontStringHeight(fs, want)
+        if not (IsSafeObj(fs) and fs.GetFont and fs.GetHeight and fs.SetHeight) then return end
+        local okF, _, sz = pcall(fs.GetFont, fs)
+        sz = okF and F.PlainNumber(sz, 0) or 0
+        if sz < 9 then return end
+        local h = F.PlainNumber(fs:GetHeight(), 0)
+        if origHeight[fs] == nil then
+            if h > 0 and h < sz * 1.40 then
+                origHeight[fs] = h
+            else
+                return
+            end
+        end
+        if want then
+            local wrapped = fs.CanWordWrap and fs:CanWordWrap()
+            local txt = fs.GetText and F.PlainString(fs:GetText(), "") or ""
+            local isLong = wrapped and #txt > 32
+            if isLong then
+                pcall(fs.SetHeight, fs, 0)
+            else
+                local wantH = math_floor(sz * 1.48 + 0.5)
+                if h == 0 or h < wantH then
+                    pcall(fs.SetHeight, fs, wantH)
+                end
+                if fs.SetJustifyV then
+                    if origJustV[fs] == nil and fs.GetJustifyV then
+                        local okJ, jv = pcall(fs.GetJustifyV, fs)
+                        origJustV[fs] = (okJ and type(jv) == "string") and jv or false
+                    end
+                    pcall(fs.SetJustifyV, fs, "MIDDLE")
+                end
+            end
+        else
+            pcall(fs.SetHeight, fs, origHeight[fs])
+            if origJustV[fs] and fs.SetJustifyV then pcall(fs.SetJustifyV, fs, origJustV[fs]) end
+            origJustV[fs] = nil
+        end
+    end
+
+    local function SyncScrollFrameTopGuard(sf, want)
+        if not IsSafeObj(sf) then return end
+        local sc = sf.GetScrollChild and sf:GetScrollChild()
+        if not IsSafeObj(sc) then return end
+        -- 首行文字若紧贴滚动区顶边（y >= -3），统一向下留出 6px 顶部安全区。
+        -- 不关闭滚动区裁切：内容常在窗口开着时变长（任务日志切换任务等），关掉裁切后长文字会溢出到窗口按钮上。
+        if sc.GetRegions then
+            for _, reg in ipairs({ sc:GetRegions() }) do
+                if IsSafeObj(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                    ShiftAnchorY(reg, -6, want, -3)
+                    GuardFontStringHeight(reg, want)
+                end
+            end
+        end
+        if sc.GetChildren then
+            for _, ch in ipairs({ sc:GetChildren() }) do
+                if IsSafeObj(ch) then
+                    ShiftAnchorY(ch, -6, want, -3)
+                end
+            end
+        end
+    end
+
+    local function PolishSkillsDetailDescription(want)
+        local sf = _G.SkillsFrame
+        if not IsSafeObj(sf) then return end
+        local sbox = sf.ScrollBox
+        local function scan(node, depth)
+            if not IsSafeObj(node) or node == sbox or depth > 5 then return end
+            local otype = node.GetObjectType and node:GetObjectType()
+            if otype == "ScrollFrame" then
+                SyncScrollFrameTopGuard(node, want)
+                return
+            end
+            local clips = node.DoesClipChildren and node:DoesClipChildren()
+            if node.GetRegions then
+                for _, reg in ipairs({ node:GetRegions() }) do
+                    if IsSafeObj(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                        local txt = reg.GetText and F.PlainString(reg:GetText(), "") or ""
+                        local isDesc = #txt >= 18 or (reg.CanWordWrap and reg:CanWordWrap() and #txt >= 8)
+                        if isDesc then
+                            ShiftAnchorY(reg, -7, want, -6)
+                            if want and reg.SetHeight then pcall(reg.SetHeight, reg, 0) end
+                            -- 说明装得下才关裁切；换成更长的说明时（每次列表刷新都会重算）立即恢复裁切
+                            if (clips or unclippedNodes[node]) and node.SetClipsChildren then
+                                local nh = F.PlainNumber(node:GetHeight(), 0)
+                                local rh = F.PlainNumber(reg:GetStringHeight(), 0)
+                                local off = want and nh > 0 and rh > 0 and rh + 12 <= nh
+                                pcall(node.SetClipsChildren, node, not off)
+                                unclippedNodes[node] = off or nil
+                            end
+                        else
+                            GuardFontStringHeight(reg, want)
+                        end
+                    end
+                end
+            end
+            if node.GetChildren then
+                for _, ch in ipairs({ node:GetChildren() }) do
+                    scan(ch, depth + 1)
+                end
+            end
+        end
+        scan(sf, 0)
+    end
+
+    local function GuardWindowTree(root, want, depth)
+        if not IsSafeObj(root) or depth > 5 or root == _G.KkowoUI_CharHeroCard then return end
+        local otype = root.GetObjectType and root:GetObjectType()
+        -- 跳过 ScrollBox 虚拟化行池本身（避免破坏暴雪滚动布局），但处理常规 ScrollFrame
+        if root.ScrollTarget then return end
+        if otype == "ScrollFrame" then
+            SyncScrollFrameTopGuard(root, want)
+            if not hookedSF[root] and root.HookScript then
+                hookedSF[root] = true
+                root:HookScript("OnShow", function(self)
+                    local on = mod._active and mod:GetDB().harmonyFontGuard ~= false
+                    SyncScrollFrameTopGuard(self, on)
+                end)
+            end
+            return
+        end
+        if root.GetRegions then
+            local clips = root.DoesClipChildren and root:DoesClipChildren()
+            for _, reg in ipairs({ root:GetRegions() }) do
+                if IsSafeObj(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                    GuardFontStringHeight(reg, want)
+                    if clips or origAnchor[reg] then
+                        ShiftAnchorY(reg, -5, want, -2)
+                    end
+                end
+            end
+        end
+        if root.GetChildren then
+            for _, ch in ipairs({ root:GetChildren() }) do
+                GuardWindowTree(ch, want, depth + 1)
+            end
+        end
+    end
+
+    local function PolishNamedHeaders(want)
+        -- 角色面板「等级30 猎人」与宠物等级行：补足顶部留白并垂直居中
+        for _, name in ipairs({ "CharacterLevelText", "PetCharacterLevelText" }) do
+            local fs = _G[name]
+            if IsSafeObj(fs) then
+                local okF, _, sz = pcall(fs.GetFont, fs)
+                sz = okF and F.PlainNumber(sz, 13) or 13
+                if want then
+                    if origHeight[fs] == nil and fs.GetHeight then
+                        origHeight[fs] = F.PlainNumber(fs:GetHeight(), 0)
+                    end
+                    if origJustV[fs] == nil and fs.GetJustifyV then
+                        local okJ, jv = pcall(fs.GetJustifyV, fs)
+                        origJustV[fs] = (okJ and type(jv) == "string") and jv or false
+                    end
+                    if fs.SetJustifyV then pcall(fs.SetJustifyV, fs, "MIDDLE") end
+                    if fs.SetHeight then pcall(fs.SetHeight, fs, math_max(22, math_floor(sz + 10))) end
+                else
+                    if origHeight[fs] ~= nil and fs.SetHeight then
+                        pcall(fs.SetHeight, fs, origHeight[fs])
+                    end
+                    if origJustV[fs] and fs.SetJustifyV then pcall(fs.SetJustifyV, fs, origJustV[fs]) end
+                    origJustV[fs] = nil
+                end
+                ShiftAnchorY(fs, -3, want)
+            end
+        end
+        local title = _G.CharacterFrameTitleText
+        if IsSafeObj(title) and title.SetJustifyV then
+            pcall(title.SetJustifyV, title, "MIDDLE")
+        end
+    end
+
+    windowPolish.ApplyFontClipGuard = function()
+        local want = mod._active and mod:GetDB().harmonyFontGuard ~= false
+        PolishNamedHeaders(want)
+        PolishSkillsDetailDescription(want)
+        local sf = _G.SkillsFrame
+        if IsSafeObj(sf) and type(sf.ScrollBox) == "table" and not skillsBoxHooked and type(sf.ScrollBox.Update) == "function" then
+            skillsBoxHooked = true
+            _G.hooksecurefunc(sf.ScrollBox, "Update", function()
+                C_Timer.After(0, function()
+                    PolishSkillsDetailDescription(mod._active and mod:GetDB().harmonyFontGuard ~= false)
+                end)
+            end)
+        end
+        for _, winName in ipairs(FONT_GUARD_WINDOWS) do
+            local w = _G[winName]
+            if IsSafeObj(w) then
+                if not hookedWin[w] and w.HookScript then
+                    hookedWin[w] = true
+                    w:HookScript("OnShow", function(self)
+                        local on = mod._active and mod:GetDB().harmonyFontGuard ~= false
+                        C_Timer.After(0, function()
+                            if not IsSafeObj(self) or not self:IsShown() then return end
+                            if self == _G.CharacterFrame or self == _G.PaperDollFrame then
+                                PolishNamedHeaders(on)
+                            elseif self == _G.SkillsFrame then
+                                PolishSkillsDetailDescription(on)
+                            end
+                            GuardWindowTree(self, on, 0)
+                        end)
+                    end)
+                end
+                if w.IsShown and w:IsShown() then
+                    GuardWindowTree(w, want, 0)
+                end
+            end
+        end
+    end
+end
+
+----------------------------------------------------------------------
+--  8b-3) 角色界面现代化重设计 + 3D 模型控制钮防闪烁 + 13px 清晰属性栏
+--        • 修复图 3：鼠标划过左右装备格时模型缩放/旋转按钮反复闪现（仅鼠标落入中间人物区域才显示）
+--        • 修复图 1：默认关闭挡住人物模型的装备长绿字堆叠、装等归位图标底角、耐久移出人物头顶
+--        • 修复图 1/4：重设计右侧人物属性栏（顶部玻璃装等+耐久卡片、13px 清晰大字、柔和高级配色与悬停高亮）
+----------------------------------------------------------------------
+do
+    local STAT_BOX_NAMES = { "CharacterStatsPaneScrollBox", "CharacterStatsPanePetScrollBox" }
+    local EQUIP_SLOT_NAMES = {
+        "CharacterHeadSlot", "CharacterNeckSlot", "CharacterShoulderSlot", "CharacterBackSlot",
+        "CharacterChestSlot", "CharacterShirtSlot", "CharacterTabardSlot", "CharacterWristSlot",
+        "CharacterHandsSlot", "CharacterWaistSlot", "CharacterLegsSlot", "CharacterFeetSlot",
+        "CharacterFinger0Slot", "CharacterFinger1Slot", "CharacterTrinket0Slot", "CharacterTrinket1Slot",
+        "CharacterMainHandSlot", "CharacterSecondaryHandSlot", "CharacterRangedSlot", "CharacterAmmoSlot",
+    }
+
+    local REFINED_CAT_COLORS = {
+        general   = { 0.42, 0.82, 0.95 }, -- 冰川青（概况）
+        primary   = { 0.36, 0.84, 0.66 }, -- 柔玉绿（主要属性）
+        attack    = { 0.95, 0.63, 0.41 }, -- 暖琥珀（武器/攻击）
+        secondary = { 0.73, 0.59, 0.98 }, -- 薰衣草紫（副属性）
+        defense   = { 0.45, 0.73, 0.98 }, -- 晴空蓝（防御）
+    }
+
+    local hookedStatBoxes = setmetatable({}, { __mode = "k" })
+    local styledStatFrames = setmetatable({}, { __mode = "k" })
+    local euiColorHooked = false
+    local modelCtrlDriver = nil
+    local modelCtrlHooked = false
+    local heroCard = nil
+    local sidebarDivider = nil
+    local scrollBoxOrigPoints = setmetatable({}, { __mode = "k" })
+
+    local function IsSafe(o)
+        if type(o) ~= "table" then return false end
+        if o.IsForbidden then
+            local ok, forb = pcall(o.IsForbidden, o)
+            if not ok or forb then return false end
+        end
+        return true
+    end
+
+    -- 1) 角色 3D 模型控制按钮：仅在鼠标悬停于中间人物身体区域（避开左右装备栏与下方武器栏）时显示
+    local function IsCursorOverAnyEquipSlot()
+        for i = 1, #EQUIP_SLOT_NAMES do
+            local sl = _G[EQUIP_SLOT_NAMES[i]]
+            if IsSafe(sl) and sl.IsVisible and sl:IsVisible() and sl.IsMouseOver and sl:IsMouseOver() then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function IsCursorInModelCenter(scene, ctrl, ctrlShownNow)
+        if not (IsSafe(scene) and _G.GetCursorPosition) then return false end
+        local scale = F.PlainNumber(scene.GetEffectiveScale and scene:GetEffectiveScale(), 0)
+        if scale <= 0 then
+            scale = F.PlainNumber(_G.UIParent and _G.UIParent:GetEffectiveScale(), 1)
+        end
+        if scale <= 0 then scale = 1 end
+        local rawX, rawY = _G.GetCursorPosition()
+        local cx, cy = F.PlainNumber(rawX, nil), F.PlainNumber(rawY, nil)
+        if not (cx and cy) then return false end
+        cx, cy = cx / scale, cy / scale
+
+        -- 若按钮当前已显示且光标正停在按钮条上，保持显示以便点击
+        if ctrlShownNow and IsSafe(ctrl) and ctrl.IsMouseOver and ctrl:IsMouseOver() then
+            return true
+        end
+        if IsCursorOverAnyEquipSlot() then return false end
+
+        local sL = F.PlainNumber(scene.GetLeft and scene:GetLeft(), nil)
+        local sR = F.PlainNumber(scene.GetRight and scene:GetRight(), nil)
+        local sB = F.PlainNumber(scene.GetBottom and scene:GetBottom(), nil)
+        local sT = F.PlainNumber(scene.GetTop and scene:GetTop(), nil)
+        if not (sL and sR and sB and sT) then return false end
+
+        local function slotCoordInSceneSpace(slot, fn)
+            if not (IsSafe(slot) and slot[fn]) then return nil end
+            local v = F.PlainNumber(slot[fn](slot), nil)
+            if not v then return nil end
+            local ss = F.PlainNumber(slot.GetEffectiveScale and slot:GetEffectiveScale(), scale)
+            if ss > 0 and ss ~= scale then
+                v = v * ss / scale
+            end
+            return v
+        end
+
+        local headR  = slotCoordInSceneSpace(_G.CharacterHeadSlot, "GetRight")
+        local handsL = slotCoordInSceneSpace(_G.CharacterHandsSlot, "GetLeft")
+        local mhT    = slotCoordInSceneSpace(_G.CharacterMainHandSlot, "GetTop")
+
+        local leftBound   = math_max(sL + 48, headR and (headR + 14) or (sL + 48))
+        local rightBound  = math_min(sR - 48, handsL and (handsL - 14) or (sR - 48))
+        local bottomBound = math_max(sB + 46, mhT and (mhT + 10) or (sB + 46))
+        local topBound    = sT - 2
+        if rightBound <= leftBound + 20 then
+            local mid = (sL + sR) * 0.5
+            leftBound, rightBound = mid - 55, mid + 55
+        end
+        return cx >= leftBound and cx <= rightBound and cy >= bottomBound and cy <= topBound
+    end
+
+    local function SetupModelControlGuard()
+        local scene = _G.CharacterModelScene
+        local doll = _G.PaperDollFrame
+        local ctrl = IsSafe(scene) and scene.ControlFrame or nil
+        if not (IsSafe(scene) and IsSafe(doll) and IsSafe(ctrl)) then return end
+        local want = mod._active and mod:GetDB().centerModelControls ~= false
+
+        if not modelCtrlHooked then
+            modelCtrlHooked = true
+            if ctrl.HookScript then
+                ctrl:HookScript("OnShow", function(self)
+                    if not (mod._active and mod:GetDB().centerModelControls ~= false) then return end
+                    if not IsCursorInModelCenter(scene, self, false) then
+                        pcall(self.SetAlpha, self, 0)
+                        pcall(self.EnableMouse, self, false)
+                    end
+                end)
+            end
+        end
+
+        if not modelCtrlDriver then
+            local drv = CreateFrame("Frame", nil, doll)
+            drv._acc = 0
+            drv._shown = false
+            drv._leaveGrace = 0
+            drv:SetScript("OnUpdate", function(self, elapsed)
+                self._acc = self._acc + (elapsed or 0)
+                if self._acc < 0.05 then return end
+                local dt = self._acc
+                self._acc = 0
+                local active = mod._active and mod:GetDB().centerModelControls ~= false
+                if not active then
+                    if not self._restored then
+                        self._restored = true
+                        pcall(ctrl.SetAlpha, ctrl, 1)
+                        pcall(ctrl.EnableMouse, ctrl, true)
+                    end
+                    return
+                end
+                self._restored = false
+                local inside = IsCursorInModelCenter(scene, ctrl, self._shown)
+                if inside then
+                    self._leaveGrace = 0.14
+                    if not self._shown then
+                        self._shown = true
+                        pcall(ctrl.Show, ctrl)
+                        pcall(ctrl.SetAlpha, ctrl, 1)
+                        pcall(ctrl.EnableMouse, ctrl, true)
+                    elseif F.PlainNumber(ctrl:GetAlpha(), 1) < 0.9 then
+                        pcall(ctrl.SetAlpha, ctrl, 1)
+                        pcall(ctrl.EnableMouse, ctrl, true)
+                    end
+                else
+                    if self._shown then
+                        self._leaveGrace = self._leaveGrace - dt
+                        if self._leaveGrace <= 0 then
+                            self._shown = false
+                            pcall(ctrl.SetAlpha, ctrl, 0)
+                            pcall(ctrl.EnableMouse, ctrl, false)
+                        end
+                    elseif F.PlainNumber(ctrl:GetAlpha(), 0) > 0.01 then
+                        pcall(ctrl.SetAlpha, ctrl, 0)
+                        pcall(ctrl.EnableMouse, ctrl, false)
+                    end
+                end
+            end)
+            drv:HookScript("OnShow", function(self)
+                self._shown = false
+                self._leaveGrace = 0
+                if mod._active and mod:GetDB().centerModelControls ~= false then
+                    pcall(ctrl.SetAlpha, ctrl, 0)
+                    pcall(ctrl.EnableMouse, ctrl, false)
+                end
+            end)
+            modelCtrlDriver = drv
+        end
+
+        if want then
+            modelCtrlDriver._shown = false
+            pcall(ctrl.SetAlpha, ctrl, 0)
+            pcall(ctrl.EnableMouse, ctrl, false)
+        else
+            pcall(ctrl.SetAlpha, ctrl, 1)
+            pcall(ctrl.EnableMouse, ctrl, true)
+        end
+    end
+
+    -- 2) 简洁装备格设置：默认隐藏遮挡人物的绿字堆叠、装等收入图标底角、隐藏头顶漂浮耐久（移入右侧英雄卡）
+    local function SyncCleanSlotPreferences()
+        local euiDB = _G.EllesmereUIDB
+        if type(euiDB) ~= "table" then return end
+        local db = mod:GetDB()
+        local want = mod._active and db.cleanCharSheet ~= false
+        -- 原值存进 KkowoUI 存档（EUI 的这几项会随 EllesmereUIDB 落盘，只放内存的话重载后就成了改过的值）
+        local saved = type(db.euiSheetBackup) == "table" and db.euiSheetBackup or nil
+        if want then
+            if not saved then
+                db.euiSheetBackup = {
+                    showStats = euiDB.charSheetShowItemStats,
+                    ilvlPos   = euiDB.charSheetItemLevelPos,
+                    outline   = euiDB.charSheetItemLevelOutline,
+                    showDur   = euiDB.showCharSheetDurability,
+                }
+            end
+            euiDB.charSheetShowItemStats = false
+            euiDB.charSheetItemLevelPos = "iconbottom"
+            euiDB.charSheetItemLevelOutline = true
+            euiDB.showCharSheetDurability = false
+        elseif saved then
+            euiDB.charSheetShowItemStats = saved.showStats
+            euiDB.charSheetItemLevelPos = saved.ilvlPos
+            euiDB.charSheetItemLevelOutline = saved.outline
+            euiDB.showCharSheetDurability = saved.showDur
+            db.euiSheetBackup = nil
+        end
+        local EUI = _G.EllesmereUI
+        if EUI then
+            if type(EUI._refreshCharSheetSlotLabels) == "function" then
+                pcall(EUI._refreshCharSheetSlotLabels)
+            end
+            if type(EUI._updateCharSheetDurability) == "function" then
+                pcall(EUI._updateCharSheetDurability)
+            end
+        end
+    end
+
+    -- 3) 顶部现代玻璃装等 + 耐久英雄卡片（取代右侧单调的紫色浮字与压在人物头顶的绿字耐久）
+    local function ComputeLowestDurability()
+        local lowest = 100
+        if not _G.GetInventoryItemDurability then return 100 end
+        for slotId = 1, 18 do
+            local ok, cur, mx = pcall(_G.GetInventoryItemDurability, slotId)
+            cur = ok and F.PlainNumber(cur, nil) or nil
+            mx = ok and F.PlainNumber(mx, nil) or nil
+            if cur and mx and mx > 0 then
+                local pct = cur / mx * 100
+                if pct < lowest then lowest = pct end
+            end
+        end
+        return math_floor(lowest)
+    end
+
+    local function HideEUIFloatingAverage(box, hide)
+        if not (IsSafe(box) and box.GetChildren) then return end
+        for _, ch in ipairs({ box:GetChildren() }) do
+            if IsSafe(ch) and ch ~= heroCard and ch ~= box.ScrollBox and ch ~= box.ScrollBar then
+                local h = F.PlainNumber(ch.GetHeight and ch:GetHeight(), 0)
+                if h >= 20 and h <= 28 and not (ch.GetName and ch:GetName()) then
+                    if ch.SetAlpha then pcall(ch.SetAlpha, ch, hide and 0 or 1) end
+                    if ch.EnableMouse then pcall(ch.EnableMouse, ch, not hide) end
+                end
+            end
+        end
+    end
+
+    local function UpdateHeroCardData()
+        if not (heroCard and heroCard:IsShown()) then return end
+        local eq = 0
+        if _G.GetAverageItemLevel then
+            local ok, ov, equipped = pcall(_G.GetAverageItemLevel)
+            if ok then
+                eq = F.PlainNumber(equipped, 0)
+                if eq <= 0 then eq = F.PlainNumber(ov, 0) end
+            end
+        end
+        if eq > 0 then
+            heroCard._ilvlVal:SetText(string_format("%.2f", eq))
+        else
+            heroCard._ilvlVal:SetText("--")
+        end
+        local dur = ComputeLowestDurability()
+        heroCard._durVal:SetText(dur .. "%")
+        if dur >= 80 then
+            heroCard._durVal:SetTextColor(0.38, 0.92, 0.78, 1)
+        elseif dur >= 40 then
+            heroCard._durVal:SetTextColor(0.99, 0.80, 0.34, 1)
+        else
+            heroCard._durVal:SetTextColor(0.98, 0.44, 0.52, 1)
+        end
+    end
+
+    local function EnsureHeroCardAndSidebar()
+        local cf = _G.CharacterFrame
+        local box = _G.CharacterStatsPaneScrollBox
+        local want = mod._active and mod:GetDB().cleanCharSheet ~= false
+
+        -- 左侧人物展示区与右侧属性栏之间增加一条精致玻璃竖线
+        local rph = IsSafe(cf) and cf.RightPaneHost or nil
+        if IsSafe(rph) then
+            if not sidebarDivider then
+                local ln = rph:CreateTexture(nil, "OVERLAY", nil, 2)
+                ln:SetWidth(1)
+                ln:SetPoint("TOPLEFT", rph, "TOPLEFT", 0, -28)
+                ln:SetPoint("BOTTOMLEFT", rph, "BOTTOMLEFT", 0, 10)
+                ln:SetColorTexture(1, 1, 1, 0.08)
+                sidebarDivider = ln
+            end
+            sidebarDivider:SetShown(want)
+        end
+
+        if not (IsSafe(box) and IsSafe(box.ScrollBox)) then return end
+        HideEUIFloatingAverage(box, want)
+
+        local sb = box.ScrollBox
+        if not want then
+            if heroCard then heroCard:Hide() end
+            -- 只还原我们挪过的列表，并且还原成 EUI 当初的锚点（没挪过就不碰）
+            local orig = scrollBoxOrigPoints[sb]
+            if orig then
+                pcall(sb.ClearAllPoints, sb)
+                for _, p in ipairs(orig) do
+                    pcall(sb.SetPoint, sb, p[1], p[2], p[3], p[4], p[5])
+                end
+                scrollBoxOrigPoints[sb] = nil
+            end
+            return
+        end
+        if not scrollBoxOrigPoints[sb] and sb.GetNumPoints then
+            local pts = {}
+            for i = 1, F.PlainNumber(sb:GetNumPoints(), 0) do
+                local okP, pt, rel, rpt, x, y = pcall(sb.GetPoint, sb, i)
+                if okP and type(pt) == "string" then
+                    pts[#pts + 1] = { pt, rel, rpt, F.PlainNumber(x, 0), F.PlainNumber(y, 0) }
+                end
+            end
+            if #pts > 0 then scrollBoxOrigPoints[sb] = pts end
+        end
+
+        if not heroCard then
+            local card = CreateFrame("Frame", "KkowoUI_CharHeroCard", box)
+            card:SetHeight(52)
+            card:SetPoint("TOPLEFT", box, "TOPLEFT", 8, -4)
+            card:SetPoint("TOPRIGHT", box, "TOPRIGHT", -24, -4)
+            card:SetFrameLevel((box:GetFrameLevel() or 5) + 4)
+
+            F.Theme.PaintPrettyCardOverlay(card, 0.44, 0.90, 0.92, 22, {
+                rounded = true,
+                radius = 6,
+                alpha = 0.78,
+                haloAlpha = 0.14,
+                haloSpread = 10,
+                headerTopAlpha = 0.22,
+                headerBottomAlpha = 0.00,
+            })
+
+            local midLine = card:CreateTexture(nil, "OVERLAY", nil, 2)
+            midLine:SetWidth(1)
+            midLine:SetPoint("TOP", card, "TOP", 0, -9)
+            midLine:SetPoint("BOTTOM", card, "BOTTOM", 0, 9)
+            midLine:SetColorTexture(1, 1, 1, 0.10)
+
+            local ilvlCap = card:CreateFontString(nil, "OVERLAY")
+            F.Theme.ApplyFont(ilvlCap, 10, "", 0.68, 0.75, 0.84, 0.92)
+            ilvlCap:SetJustifyH("CENTER")
+            ilvlCap:SetJustifyV("MIDDLE")
+            ilvlCap:SetPoint("TOPLEFT", card, "TOPLEFT", 6, -7)
+            ilvlCap:SetPoint("TOPRIGHT", card, "TOP", -2, -7)
+            ilvlCap:SetText("平均装等")
+
+            local ilvlVal = card:CreateFontString(nil, "OVERLAY")
+            F.Theme.ApplyFont(ilvlVal, 16, "", 0.76, 0.99, 0.97, 1)
+            ilvlVal:SetJustifyH("CENTER")
+            ilvlVal:SetJustifyV("MIDDLE")
+            ilvlVal:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 6, 7)
+            ilvlVal:SetPoint("BOTTOMRIGHT", card, "BOTTOM", -2, 7)
+            card._ilvlVal = ilvlVal
+
+            local durCap = card:CreateFontString(nil, "OVERLAY")
+            F.Theme.ApplyFont(durCap, 10, "", 0.68, 0.75, 0.84, 0.92)
+            durCap:SetJustifyH("CENTER")
+            durCap:SetJustifyV("MIDDLE")
+            durCap:SetPoint("TOPLEFT", card, "TOP", 2, -7)
+            durCap:SetPoint("TOPRIGHT", card, "TOPRIGHT", -6, -7)
+            durCap:SetText("装备耐久")
+
+            local durVal = card:CreateFontString(nil, "OVERLAY")
+            F.Theme.ApplyFont(durVal, 16, "", 0.38, 0.92, 0.78, 1)
+            durVal:SetJustifyH("CENTER")
+            durVal:SetJustifyV("MIDDLE")
+            durVal:SetPoint("BOTTOMLEFT", card, "BOTTOM", 2, 7)
+            durVal:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", -6, 7)
+            card._durVal = durVal
+
+            card:RegisterEvent("PLAYER_AVG_ITEM_LEVEL_UPDATE")
+            card:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+            card:RegisterEvent("UPDATE_INVENTORY_DURABILITY")
+            card:RegisterEvent("UPDATE_INVENTORY_ALERTS")
+            card:SetScript("OnEvent", UpdateHeroCardData)
+            card:SetScript("OnShow", UpdateHeroCardData)
+            heroCard = card
+        end
+
+        heroCard:Show()
+        UpdateHeroCardData()
+        -- 为顶部英雄卡片留出整洁间距，避免与「概况」标题重叠
+        pcall(box.ScrollBox.ClearAllPoints, box.ScrollBox)
+        pcall(box.ScrollBox.SetPoint, box.ScrollBox, "TOPLEFT", box, "TOPLEFT", 8, -62)
+        pcall(box.ScrollBox.SetPoint, box.ScrollBox, "BOTTOMRIGHT", box, "BOTTOMRIGHT", -24, 6)
+    end
+
+    -- 4) 右侧属性列表全面放大与精修（修复原 PolishCharacterStatsFontSize 找错 ScrollFrame 导致 10px 极小字的 Bug）
+    local function ClassifyStatCategory(name)
+        if type(name) ~= "string" then return "general" end
+        if name:find("主要", 1, true) or name:find("属性", 1, true) or name:find("Attr", 1, true) then return "primary" end
+        if name:find("武器", 1, true) or name:find("攻击", 1, true) or name:find("战斗", 1, true)
+            or name:find("Weapon", 1, true) or name:find("Attack", 1, true) or name:find("Combat", 1, true) then
+            return "attack"
+        end
+        if name:find("防御", 1, true) or name:find("抗性", 1, true) or name:find("Defense", 1, true) then return "defense" end
+        if name:find("强化", 1, true) or name:find("修正", 1, true) or name:find("法术", 1, true)
+            or name:find("Mod", 1, true) or name:find("Spell", 1, true) then
+            return "secondary"
+        end
+        return "general"
+    end
+
+    local function CategoryKeyOfElement(box, elementData)
+        local list = box and box.elementData
+        if type(list) ~= "table" then return "general" end
+        local curName = nil
+        for i = 1, #list do
+            local d = list[i]
+            if d and d.isHeader then curName = d.name end
+            if d == elementData then return ClassifyStatCategory(curName) end
+        end
+        return ClassifyStatCategory(curName)
+    end
+
+    local function StyleForeverStatFrame(box, frame, elementData)
+        if not IsSafe(frame) then return end
+        local db = mod:GetDB()
+        local active = mod._active == true
+        local statSz = math_max(11, math_min(16, F.PlainNumber(db.charStatFontSize, 13)))
+        local redesign = active and db.cleanCharSheet ~= false
+        local fontPath = F.Theme.GetFont()
+        local isHeader = (type(elementData) == "table" and elementData.isHeader == true)
+            or (frame.Title ~= nil and frame.Label == nil)
+
+        if isHeader then
+            if frame.Title and frame.Title.SetFont then
+                local sz = active and statSz or 11
+                pcall(frame.Title.SetFont, frame.Title, fontPath, sz, "")
+                if frame.Title.SetShadowColor then pcall(frame.Title.SetShadowColor, frame.Title, 0, 0, 0, 0.90) end
+                if frame.Title.SetShadowOffset then pcall(frame.Title.SetShadowOffset, frame.Title, 1, -1) end
+                if frame.Title.SetJustifyV then pcall(frame.Title.SetJustifyV, frame.Title, "MIDDLE") end
+                if frame.Title.SetHeight then pcall(frame.Title.SetHeight, frame.Title, math_max(18, sz + 6)) end
+                if redesign then
+                    local key = ClassifyStatCategory(type(elementData) == "table" and elementData.name or (frame.Title.GetText and F.PlainString(frame.Title:GetText(), nil)))
+                    local c = REFINED_CAT_COLORS[key] or REFINED_CAT_COLORS.general
+                    pcall(frame.Title.SetTextColor, frame.Title, c[1], c[2], c[3], 1)
+                    -- 柔和化 EUI 过亮的两侧色线（0.80 -> 0.42）
+                    if frame.GetRegions then
+                        for _, reg in ipairs({ frame:GetRegions() }) do
+                            if IsSafe(reg) and reg.GetObjectType and reg:GetObjectType() == "Texture" and reg ~= frame.Background then
+                                local rh = F.PlainNumber(reg.GetHeight and reg:GetHeight(), 0)
+                                if rh > 0 and rh <= 2.5 then
+                                    pcall(reg.SetColorTexture, reg, c[1], c[2], c[3], 0.42)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            return
+        end
+
+        -- 属性行：放大至 13px（可调 11~16），高对比柔和银白标签 + 柔和亮色数值 + 轻悬停底色
+        local rowSz = active and statSz or 10
+        local catKey = CategoryKeyOfElement(box, elementData)
+        local c = REFINED_CAT_COLORS[catKey] or REFINED_CAT_COLORS.general
+
+        if frame.Label and frame.Label.SetFont then
+            pcall(frame.Label.SetFont, frame.Label, fontPath, rowSz, "")
+            if frame.Label.SetShadowColor then pcall(frame.Label.SetShadowColor, frame.Label, 0, 0, 0, 0.90) end
+            if frame.Label.SetShadowOffset then pcall(frame.Label.SetShadowOffset, frame.Label, 1, -1) end
+            if frame.Label.SetJustifyV then pcall(frame.Label.SetJustifyV, frame.Label, "MIDDLE") end
+            if frame.Label.SetHeight then pcall(frame.Label.SetHeight, frame.Label, 0) end
+            if redesign then
+                pcall(frame.Label.SetTextColor, frame.Label, 0.84, 0.88, 0.94, 0.96)
+            end
+        end
+        if frame.Value and frame.Value.SetFont then
+            pcall(frame.Value.SetFont, frame.Value, fontPath, rowSz, "")
+            if frame.Value.SetShadowColor then pcall(frame.Value.SetShadowColor, frame.Value, 0, 0, 0, 0.90) end
+            if frame.Value.SetShadowOffset then pcall(frame.Value.SetShadowOffset, frame.Value, 1, -1) end
+            if frame.Value.SetJustifyV then pcall(frame.Value.SetJustifyV, frame.Value, "MIDDLE") end
+            if frame.Value.SetHeight then pcall(frame.Value.SetHeight, frame.Value, 0) end
+            if redesign then
+                -- 与白柔和混合（0.45 分类色 + 0.55 纯白），既保留分区辨识度又高级不刺眼
+                pcall(frame.Value.SetTextColor, frame.Value,
+                    c[1] * 0.45 + 0.55, c[2] * 0.45 + 0.55, c[3] * 0.45 + 0.55, 1)
+            end
+        end
+
+        if not styledStatFrames[frame] and frame.CreateTexture then
+            styledStatFrames[frame] = true
+            local hl = frame:CreateTexture(nil, "HIGHLIGHT")
+            hl:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, 0)
+            hl:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -4, 0)
+            hl:SetColorTexture(1, 1, 1, 0.055)
+            frame._kkHover = hl
+        end
+        if frame._kkHover then
+            frame._kkHover:SetAlpha(redesign and 1 or 0)
+        end
+    end
+
+    local function RefreshStatBoxesNow()
+        for _, boxName in ipairs(STAT_BOX_NAMES) do
+            local box = _G[boxName]
+            local sb = IsSafe(box) and box.ScrollBox or nil
+            if IsSafe(sb) then
+                if not hookedStatBoxes[sb] then
+                    hookedStatBoxes[sb] = true
+                    local SU = _G.ScrollUtil
+                    if SU and SU.AddInitializedFrameCallback then
+                        pcall(SU.AddInitializedFrameCallback, sb, function(_, fr, ed)
+                            StyleForeverStatFrame(box, fr, ed)
+                        end, nil, false)
+                    end
+                    if sb.Update then
+                        _G.hooksecurefunc(sb, "Update", function(self)
+                            if self.ForEachFrame then
+                                pcall(self.ForEachFrame, self, function(fr, ed) StyleForeverStatFrame(box, fr, ed) end)
+                            end
+                        end)
+                    end
+                end
+                if sb.ForEachFrame then
+                    pcall(sb.ForEachFrame, sb, function(fr, ed) StyleForeverStatFrame(box, fr, ed) end)
+                end
+            end
+        end
+    end
+
+    local cfRedesignHooked = false
+    local ammoOrigFont = setmetatable({}, { __mode = "k" })
+    local ammoOrigAnchor = setmetatable({}, { __mode = "k" })
+    local ammoCountHooked = setmetatable({}, { __mode = "k" })
+    local ammoArrowFaded = setmetatable({}, { __mode = "k" })
+    local ammoConnector = nil
+
+    -- 5) 弹药格（CharacterAmmoSlot）与远程堆叠数防遮挡精修：
+    --    暴雪原版木头箭头子框体横向盖在 27px 弹药格左侧，直接吃掉「394」首位数字且箭头也压到枪械图标上；
+    --    这里淡出重叠木箭头并改为槽隙间极简细连线，同时按位数自适应 11/10/9px 描边数字右对齐，确保 3~4 位数完整显示。
+    local function StyleStackCountFont(slot, fs, want)
+        if not (IsSafe(slot) and IsSafe(fs) and fs.SetFont) then return end
+        if not ammoOrigFont[fs] and fs.GetFont then
+            local okF, face, sz, flags = pcall(fs.GetFont, fs)
+            if okF and face and sz then
+                ammoOrigFont[fs] = { face, F.PlainNumber(sz, 12), F.PlainString(flags, "") }
+            end
+        end
+        if not ammoOrigAnchor[fs] and fs.GetPoint then
+            local okP, pt, rel, rpt, x, y = pcall(fs.GetPoint, fs, 1)
+            if okP and type(pt) == "string" then
+                ammoOrigAnchor[fs] = { pt, rel, rpt, F.PlainNumber(x, 0), F.PlainNumber(y, 0) }
+            end
+        end
+        if not want then
+            local of = ammoOrigFont[fs]
+            if of then pcall(fs.SetFont, fs, of[1], of[2], of[3]) end
+            local oa = ammoOrigAnchor[fs]
+            if oa and fs.ClearAllPoints and fs.SetPoint then
+                pcall(fs.ClearAllPoints, fs)
+                pcall(fs.SetPoint, fs, oa[1], oa[2], oa[3], oa[4], oa[5])
+            end
+            return
+        end
+        local txt = fs.GetText and F.PlainString(fs:GetText(), "") or ""
+        local n = #txt
+        local sz = (n >= 4) and 9 or ((n == 3) and 10 or 11)
+        pcall(fs.SetFont, fs, F.Theme.GetFont(), sz, "OUTLINE")
+        if fs.SetShadowColor then pcall(fs.SetShadowColor, fs, 0, 0, 0, 0.95) end
+        if fs.SetShadowOffset then pcall(fs.SetShadowOffset, fs, 1, -1) end
+        if fs.SetJustifyH then pcall(fs.SetJustifyH, fs, "RIGHT") end
+        if fs.SetJustifyV then pcall(fs.SetJustifyV, fs, "BOTTOM") end
+        if fs.SetWordWrap then pcall(fs.SetWordWrap, fs, false) end
+        if fs.SetWidth then pcall(fs.SetWidth, fs, 0) end
+        if fs.SetHeight then pcall(fs.SetHeight, fs, 0) end
+        if fs.ClearAllPoints and fs.SetPoint then
+            pcall(fs.ClearAllPoints, fs)
+            pcall(fs.SetPoint, fs, "BOTTOMRIGHT", slot, "BOTTOMRIGHT", -2, 2)
+        end
+    end
+
+    local function PolishAmmoAndStackSlots()
+        local db = mod:GetDB()
+        local want = mod._active and (db.cleanCharSheet ~= false or db.harmonyFontGuard ~= false)
+        for _, slotName in ipairs({ "CharacterAmmoSlot", "CharacterRangedSlot" }) do
+            local slot = _G[slotName]
+            if IsSafe(slot) then
+                local fs = slot.Count or _G[slotName .. "Count"] or slot.Stock or _G[slotName .. "Stock"]
+                if not IsSafe(fs) and slot.GetRegions then
+                    for _, reg in ipairs({ slot:GetRegions() }) do
+                        if IsSafe(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                            fs = reg
+                            break
+                        end
+                    end
+                end
+                if IsSafe(fs) then
+                    StyleStackCountFont(slot, fs, want)
+                    if not ammoCountHooked[fs] and type(fs.SetText) == "function" then
+                        ammoCountHooked[fs] = true
+                        _G.hooksecurefunc(fs, "SetText", function(self)
+                            local d = mod:GetDB()
+                            local on = mod._active and (d.cleanCharSheet ~= false or d.harmonyFontGuard ~= false)
+                            if on then StyleStackCountFont(slot, self, true) end
+                        end)
+                    end
+                end
+            end
+        end
+
+        local ammo = _G.CharacterAmmoSlot
+        if not IsSafe(ammo) then return end
+        local EUI = _G.EllesmereUI
+        local euiBrd = EUI and EUI.PanelPP and EUI.PanelPP.GetBorders and EUI.PanelPP.GetBorders(ammo) or nil
+        if ammo.GetChildren then
+            for _, ch in ipairs({ ammo:GetChildren() }) do
+                if IsSafe(ch) and ch ~= euiBrd and ch ~= ammoConnector and ch ~= ammo.BorderFrame then
+                    if ammoArrowFaded[ch] then
+                        if ch.SetAlpha then pcall(ch.SetAlpha, ch, want and 0 or 1) end
+                    elseif ch.GetRegions then
+                        local regs = { ch:GetRegions() }
+                        local texCnt, artCnt = 0, 0
+                        for _, r in ipairs(regs) do
+                            if IsSafe(r) and r.GetObjectType and r:GetObjectType() == "Texture" then
+                                texCnt = texCnt + 1
+                                local tex = r.GetTexture and r:GetTexture()
+                                local atl = r.GetAtlas and r:GetAtlas()
+                                if (tex ~= nil and tex ~= "") or (atl ~= nil and atl ~= "") then
+                                    artCnt = artCnt + 1
+                                end
+                            end
+                        end
+                        -- 跳过 4 条边框子框体，精准命中暴雪木头箭头子框体（1~2 张贴图）
+                        if texCnt > 0 and texCnt <= 2 and artCnt > 0 then
+                            ammoArrowFaded[ch] = true
+                            if ch.SetAlpha then pcall(ch.SetAlpha, ch, want and 0 or 1) end
+                        end
+                    end
+                end
+            end
+        end
+
+        -- 槽隙间绘制 1 条极简水平细连线（严格落在远程槽与弹药槽的空隙内，绝不触碰图标与数字）
+        local ranged = _G.CharacterRangedSlot
+        if want and IsSafe(ranged) and ranged:IsShown() and ammo:IsShown() then
+            if not ammoConnector then
+                local parent = _G.PaperDollItemsFrame or ammo:GetParent() or ammo
+                local conn = CreateFrame("Frame", nil, parent)
+                conn:SetHeight(5)
+                conn:SetPoint("LEFT", ranged, "RIGHT", 3, 0)
+                conn:SetPoint("RIGHT", ammo, "LEFT", -3, 0)
+                local ln = conn:CreateTexture(nil, "OVERLAY")
+                ln:SetHeight(1)
+                ln:SetPoint("LEFT", conn, "LEFT", 0, 0)
+                ln:SetPoint("RIGHT", conn, "RIGHT", 0, 0)
+                ln:SetColorTexture(0.78, 0.84, 0.92, 0.32)
+                ammoConnector = conn
+            end
+            ammoConnector:Show()
+        elseif ammoConnector then
+            ammoConnector:Hide()
+        end
+    end
+
+    windowPolish.ApplyCharacterSheetRedesign = function()
+        SyncCleanSlotPreferences()
+        SetupModelControlGuard()
+        EnsureHeroCardAndSidebar()
+        RefreshStatBoxesNow()
+        PolishAmmoAndStackSlots()
+        local cf = _G.CharacterFrame
+        if IsSafe(cf) and not cfRedesignHooked and cf.HookScript then
+            cfRedesignHooked = true
+            cf:HookScript("OnShow", function()
+                C_Timer.After(0, function()
+                    SetupModelControlGuard()
+                    EnsureHeroCardAndSidebar()
+                    RefreshStatBoxesNow()
+                    PolishAmmoAndStackSlots()
+                end)
+                C_Timer.After(0.15, function()
+                    EnsureHeroCardAndSidebar()
+                    RefreshStatBoxesNow()
+                    PolishAmmoAndStackSlots()
+                end)
+            end)
+        end
+        local EUI = _G.EllesmereUI
+        if not euiColorHooked and type(EUI) == "table" and type(EUI._refreshCharacterSheetColors) == "function" then
+            euiColorHooked = true
+            _G.hooksecurefunc(EUI, "_refreshCharacterSheetColors", function()
+                C_Timer.After(0, RefreshStatBoxesNow)
+            end)
+        end
+    end
 end
 
 ----------------------------------------------------------------------
@@ -3873,6 +5289,11 @@ local function RefreshAllModernHUD()
     pcall(HookTrainerFrameIfReady)
     pcall(windowPolish.HookAuctionHouse)
     pcall(windowPolish.HookMail)
+    pcall(windowPolish.HookMerchant)
+    pcall(windowPolish.ApplyWorldMapCoordsDedup)
+    pcall(windowPolish.ApplyCombatSoundMute)
+    pcall(windowPolish.ApplyFontClipGuard)
+    pcall(windowPolish.ApplyCharacterSheetRedesign)
     pcall(HookEUICastNames)
     pcall(HookCombatTextSizing)
     pcall(RefreshWorldRefreshBanner)
@@ -3914,6 +5335,7 @@ function mod:OnDisable()
         F.ApplyDamageFont("default", true)
     end
     RestoreFittedAuraTimers()
+    pcall(windowPolish.ApplyCombatSoundMute)
     RefreshAllModernHUD()
     RefreshAllCharacterBars()
 end
@@ -3924,6 +5346,12 @@ function mod:OnEnable()
         db.v3WorldTextScaleMigrated = true
         if db.worldTextScale == 0.85 then
             db.worldTextScale = 1.00
+        end
+    end
+    if not db.v4CharStatSizeMigrated then
+        db.v4CharStatSizeMigrated = true
+        if db.charStatFontSize == 12 then
+            db.charStatFontSize = 13
         end
     end
     -- 同步仅影响战斗伤害/治疗浮动文字的字体（绝不动其他 UI 字体）
@@ -3973,11 +5401,18 @@ function mod:OnEnable()
         elseif addonName == "Blizzard_MailFrame" then
             windowPolish.HookMail()
         end
+        if type(addonName) == "string" and addonName:sub(1, 9) == "Blizzard_" then
+            C_Timer.After(0.05, function()
+                if mod._active then pcall(windowPolish.ApplyFontClipGuard) end
+            end)
+        end
     end)
     self:RegisterEvent("AUCTION_HOUSE_SHOW", windowPolish.HookAuctionHouse)
     self:RegisterEvent("MAIL_SHOW", windowPolish.HookMail)
     self:RegisterEvent("SEND_MAIL_MONEY_CHANGED", windowPolish.HookMail)
     self:RegisterEvent("MAIL_SEND_INFO_UPDATE", windowPolish.HookMail)
+    self:RegisterEvent("MERCHANT_SHOW", windowPolish.HookMerchant)
+    self:RegisterEvent("MERCHANT_UPDATE", windowPolish.HookMerchant)
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA", function()
         C_Timer.After(0.5, RefreshWorldRefreshBanner)
     end)
@@ -4047,6 +5482,11 @@ function mod:OnEnable()
     pcall(ApplyUnifiedResourceBars, false)
     pcall(swingGuard.Heal, nil)
     ScheduleBootRefresh(false)
+end
+
+function mod:OnRefresh()
+    RefreshAllCharacterBars()
+    RefreshAllModernHUD()
 end
 
 function mod:OnThemeChanged()
@@ -4135,6 +5575,50 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
+        text = "角色属性面板重设计（去挡人绿字 + 装等耐久卡）",
+        tooltip = "关闭遮挡 3D 人物模型的装备长绿字堆叠、装等收入装备格底角、将头顶漂浮耐久移入右侧顶部玻璃卡片，并全面优化右侧属性栏排版与色彩。",
+        getValue = function() return db.cleanCharSheet ~= false end,
+        setValue = function(v)
+            db.cleanCharSheet = v == true
+            pcall(windowPolish.ApplyCharacterSheetRedesign)
+        end,
+    }, {
+        type = "slider",
+        text = "角色属性栏字号",
+        tooltip = "放大角色面板右侧「概况 / 主要属性 / 武器 / 防御」列表文字与数值（EUI 默认 10px 偏小，推荐 13px）。",
+        min = 11, max = 16, step = 1,
+        getValue = function() return math_max(11, math_min(16, F.PlainNumber(db.charStatFontSize, 13))) end,
+        setValue = function(v)
+            db.charStatFontSize = math_floor(v + 0.5)
+            pcall(windowPolish.ApplyCharacterSheetRedesign)
+            PolishCharacterStatsFontSize()
+        end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "角色模型按钮仅悬停中间人物时显示",
+        tooltip = "修复鼠标划过左右装备格时缩放/旋转按钮不停闪现的问题：仅光标落入中间 3D 人物区域时才显示控制栏。",
+        getValue = function() return db.centerModelControls ~= false end,
+        setValue = function(v)
+            db.centerModelControls = v == true
+            pcall(windowPolish.ApplyCharacterSheetRedesign)
+        end,
+    }, {
+        type = "toggle",
+        text = "鸿蒙字体全界面防顶切修正",
+        tooltip = "为角色等级、技能详情、声望详情、任务、邮件、商人等界面的滚动文本与定高文字补充顶部留白，解决鸿蒙字体字身偏高导致的顶部裁切。",
+        getValue = function() return db.harmonyFontGuard ~= false end,
+        setValue = function(v)
+            db.harmonyFontGuard = v == true
+            pcall(windowPolish.ApplyFontClipGuard)
+        end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
         text = "角色面板精修（列表缩进/复选框/PvP 框）",
         tooltip = "为声望与技能子项增加层级缩进对齐，将声望详情复选框与 PvP 奖励棕色浮雕框统一为现代黑曜石扁平风。",
         getValue = function() return db.charFramePolish ~= false end,
@@ -4157,7 +5641,37 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             db.dedupMinimapNPC = v == true
             if v then ApplyQuestieTownsfolkDedup(true) end
         end,
-    }, blank)
+    }, {
+        type = "toggle",
+        text = "世界地图底部坐标去重（保留 Polestar 单套）",
+        tooltip = "同时安装 Polestar 与 Leatrix_Maps 时，自动隐藏 Leatrix_Maps / 暴雪重叠的世界地图底部坐标，只保留 Polestar 清晰单套坐标栏。",
+        getValue = function() return db.dedupWorldMapCoords ~= false end,
+        setValue = function(v)
+            db.dedupWorldMapCoords = v == true
+            pcall(windowPolish.ApplyWorldMapCoordsDedup)
+        end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "静音射箭/攻击时角色喊声（「啊/哈」声）",
+        tooltip = "使用游戏内置静音接口仅屏蔽当前角色射箭、挥砍时的发声喊叫，不影响弓弦、技能音效或 NPC/BOSS 语音，实时生效无需重载。",
+        getValue = function() return db.muteAttackGrunts ~= false end,
+        setValue = function(v)
+            db.muteAttackGrunts = v == true
+            pcall(windowPolish.ApplyCombatSoundMute)
+        end,
+    }, {
+        type = "toggle",
+        text = "同时静音拉弓吱嘎声",
+        tooltip = "额外屏蔽拉弓时的重复吱嘎音效（保留箭矢离弦与命中音效），实时生效。",
+        getValue = function() return db.muteBowPullback == true end,
+        setValue = function(v)
+            db.muteBowPullback = v == true
+            pcall(windowPolish.ApplyCombatSoundMute)
+        end,
+    })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
@@ -4294,17 +5808,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             db.skinWorldRefresh = v == true
             RefreshWorldRefreshBanner()
         end,
-    }, {
-        type = "slider",
-        text = "角色属性栏字号（右侧防御/抗性等）",
-        tooltip = "EUI 角色面板右侧属性栏原版硬编码 10px 偏小，默认优化为清晰 12px，可实时在 10–14px 间微调。",
-        min = 10, max = 14, step = 1,
-        getValue = function() return db.charStatFontSize or 12 end,
-        setValue = function(v)
-            db.charStatFontSize = math_floor(v + 0.5)
-            PolishCharacterStatsFontSize()
-        end,
-    })
+    }, blank)
     y = y - h
     return y
 end

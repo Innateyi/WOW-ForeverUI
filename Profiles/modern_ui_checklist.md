@@ -8,10 +8,10 @@
 |---|---|
 | `EUI_Haalandtool` | 核心功能已全部模块化迁入 `KkowoUI`（无污染、无全局泄漏、修完已知 Bug） |
 | `ForeverLootSparkles` | 已内置到 `KkowoUI` 的「采集与拾取闪光提醒」模块 |
-| `ArcUI` | 官方声明的一次性迁移存根，迁到 `ArcAuras` 后不再需要 |
+| `ArcUI` | 官方声明的一次性迁移存根，不再需要（KkowoUI 登录时自动停用） |
 | `BlizzMove` & `BlizzMove_Debug` | 已被 `EllesmereUI` 内置 Shifter 替代，且后者为调试插件 |
 | `QuestieTrace` | 调试追踪插件，单角色存档已膨胀至 2.58 MB |
-| `EllesmereUICooldownManager` | 与 `ArcAuras` 冲突（你目前已停用，保持停用即可） |
+| `ArcAuras` 及子插件 | 作者本机已改用 `EllesmereUICooldownManager`（两者冲突，登录时自动停用 ArcAuras）；其他人默认保留自己的 ArcAuras，同时开启会提示停用 EUI 冷却管理器。`/kk deadguard arc on|off` 切换 |
 | `QFXSystemBar`（可选） | 停用后 `KkowoUI` 内置的「极简现代系统栏」自动接管；保留则自动让位 |
 | `PrettyTooltip`（可选） | 停用后 `KkowoUI` 内置的「极简现代鼠标提示」自动接管；保留则自动让位 |
 

@@ -2,7 +2,8 @@
 ## Title: |cffdca77fKkowoUI|r 无限现代整合模块
 ## Notes: 面向《魔兽世界：无限》的零污染模块化增强与现代极简视觉统一插件（依赖 EllesmereUI）
 ## Author: Mei
-## Version: 1.2.0
+## Version: 1.3.0
+## IconTexture: Interface\AddOns\KkowoUI\Media\Icons\KkowoUI
 ## Dependencies: EllesmereUI
 ## OptionalDeps: EllesmereUIQuestTracker, EllesmereUIBlizzardSkin, EllesmereUIBags, EllesmereUIDamageMeters, EllesmereUIChat, EllesmereUIMinimap, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIForeverEssentials, Auctionator, Questie, Polestar, BugSack, WaypointUI, QFXSystemBar, PrettyTooltip, Leatrix_Maps
 ## SavedVariables: KkowoUIDB
@@ -16,6 +17,7 @@ Core\Mover.lua
 Data\ZoneLevels.lua
 Data\NodeReminderData.lua
 Data\PolestarZh.lua
+Data\CooldownPresets.lua
 
 Modules\QuestAuto.lua
 Modules\QuestBar.lua
@@ -23,18 +25,22 @@ Modules\QuestXP.lua
 Modules\XPBar.lua
 Modules\NodeReminder.lua
 Modules\ZoneLabels.lua
+Modules\WorldNames.lua
 Modules\CombatAlert.lua
+Modules\CooldownPresets.lua
 Modules\SoulstoneAlert.lua
 Modules\SpellSounds.lua
 Modules\RollBars.lua
 Modules\MarkBar.lua
 Modules\ChatBar.lua
+Modules\ChatBubbles.lua
 Modules\SocialTools.lua
 Modules\ClassEmote.lua
 Modules\BagUtility.lua
 Modules\LootToast.lua
 Modules\Durability.lua
 Modules\ModernChrome.lua
+Modules\AuctionSkin.lua
 Modules\ImmersiveHUD.lua
 Modules\SystemBar.lua
 Modules\TooltipStyle.lua

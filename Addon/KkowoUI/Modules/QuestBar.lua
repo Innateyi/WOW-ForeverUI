@@ -6,7 +6,7 @@
 local _, F = ...
 
 local _G = _G
-local ipairs, pcall, setmetatable, tostring = ipairs, pcall, setmetatable, tostring
+local ipairs, pairs, pcall, setmetatable, tostring, type = ipairs, pairs, pcall, setmetatable, tostring, type
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 local GameTooltip = _G.GameTooltip
@@ -129,6 +129,91 @@ local function FindTrackerHeader()
         end
     end
     return tracker, nil
+end
+
+-- EUI 任务追踪：折叠的地区标题被写成「+ 地区名」。开头的英文「+」让整行按英文字体的行高排版，
+-- 中文字形顶部超出行框，被追踪栏的滚动裁切区切掉一截；地区名还会被「+ 」往右挤。
+-- 这里把它改成「地区名 ＋」（全角加号放在名字后面、调暗），名字不再移动，行高按中文排版。
+-- 只改显示文字，点击折叠 / 展开仍由 EUI 处理（它按行记的是地区 ID，不看文字）。
+local zoneLineHooked = setmetatable({}, { __mode = "k" })
+local zoneTrackerHooked = false
+local zoneFixing = false
+
+local function GetLineKind(fs)
+    local p = fs.GetParent and fs:GetParent()
+    return p and p.kind
+end
+
+local function OnZoneLineSetText(fs, text)
+    if zoneFixing or not mod._active or type(text) ~= "string" or F.IsSecret(text) then return end
+    if text:sub(1, 2) ~= "+ " or GetLineKind(fs) ~= "zone" then return end
+    zoneFixing = true
+    pcall(fs.SetText, fs, text:sub(3) .. "  |cff8a8f9a＋|r")   -- 与下方 ZONE_SUFFIX 一致
+    zoneFixing = false
+end
+
+-- 中文字形会比文字框顶端高出一两个像素（当前安装的字体字身偏大）。追踪列表的滚动区是贴着第一行裁切的，
+-- 地区收起后整个列表只剩一行，字顶就被齐刷刷切掉。内容装得下、根本不用滚动时就不裁切，
+-- 只有真的需要滚动时才恢复裁切。
+local function SyncTrackerClip(sf, child)
+    if not (sf.SetClipsChildren and sf.GetHeight and child.GetHeight) then return end
+    local viewH = F.PlainNumber(sf:GetHeight(), 0)
+    local contentH = F.PlainNumber(child:GetHeight(), 0)
+    local needScroll = mod._active and contentH > viewH + 2
+    pcall(sf.SetClipsChildren, sf, needScroll or not mod._active)
+end
+
+local function HookZoneLines()
+    local tracker = _G.EUI_CustomQuestTracker
+    if not (tracker and tracker.GetChildren) then return end
+    for _, sf in ipairs({ tracker:GetChildren() }) do
+        local child = sf and sf.GetScrollChild and sf:GetScrollChild()
+        if child then SyncTrackerClip(sf, child) end
+        if child and child.GetChildren then
+            for _, line in ipairs({ child:GetChildren() }) do
+                local fs = line and line.text
+                if fs and fs.GetText and not zoneLineHooked[fs] then
+                    zoneLineHooked[fs] = true
+                    _G.hooksecurefunc(fs, "SetText", OnZoneLineSetText)
+                    OnZoneLineSetText(fs, fs:GetText())
+                end
+            end
+        end
+    end
+end
+
+-- 停用模块时把已改过的地区标题还原成 EUI 原本的「+ 地区名」
+local ZONE_SUFFIX = "  |cff8a8f9a＋|r"
+local function RestoreZoneLines()
+    local tracker = _G.EUI_CustomQuestTracker
+    if tracker and tracker.GetChildren then
+        for _, sf in ipairs({ tracker:GetChildren() }) do
+            if sf and sf.GetScrollChild and sf.SetClipsChildren then pcall(sf.SetClipsChildren, sf, true) end
+        end
+    end
+    for fs in pairs(zoneLineHooked) do
+        local t = fs.GetText and fs:GetText()
+        if type(t) == "string" and not F.IsSecret(t) and t:sub(-#ZONE_SUFFIX) == ZONE_SUFFIX then
+            zoneFixing = true
+            pcall(fs.SetText, fs, "+ " .. t:sub(1, -#ZONE_SUFFIX - 1))
+            zoneFixing = false
+        end
+    end
+end
+
+local function HookZoneTracker()
+    if zoneTrackerHooked then
+        HookZoneLines()
+        return
+    end
+    local tracker = _G.EUI_CustomQuestTracker
+    if not (tracker and tracker.SetHeight) then return end
+    zoneTrackerHooked = true
+    -- EUI 每次重绘末尾都会 SetHeight：借它发现新建的行（已挂过的行直接跳过，开销只是遍历几十个子框）
+    _G.hooksecurefunc(tracker, "SetHeight", function()
+        if mod._active then HookZoneLines() end
+    end)
+    HookZoneLines()
 end
 
 local function SetPanelChromeShown(frame, shown)
@@ -321,6 +406,7 @@ RefreshButtons = function()
         return
     end
     ApplyDockAndLayout()
+    HookZoneTracker()
 
     local db = mod:GetDB()
     local qa = F.Modules.Get("questAuto")
@@ -611,6 +697,7 @@ function mod:OnDisable()
     if barFrame then
         barFrame:Hide()
     end
+    RestoreZoneLines()
 end
 
 function mod:OnRefresh()

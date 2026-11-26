@@ -665,6 +665,8 @@ local function OpenTextEditor(catKey)
         eb:SetSize(396, 150)
         eb:SetMaxLetters(1200)
         F.Theme.ApplyFont(eb, 12, "", 0.96, 0.97, 0.99, 1)
+        -- 顶部留 3px：当前中文字体的字顶会高出文字框，贴着滚动裁切区时首行字顶会被切掉
+        if eb.SetTextInsets then eb:SetTextInsets(2, 2, 3, 2) end
         eb:SetScript("OnEscapePressed", function()
             eb:ClearFocus()
             f:Hide()

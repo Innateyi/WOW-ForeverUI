@@ -6,6 +6,7 @@
 """
 import importlib.util
 import os
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,6 +15,7 @@ PATCH_LIST = [
     'eui_np_questtext_name.py',
     'eui_friendly_player_names.py',
     'eui_chat_tab_fast.py',
+    'vss_kkowo_rename.py',      # 先改名为 VamoosesSlipstream_kkowo（DD 不再认得、不会覆盖），再打跑尸开关
     'vss_corpse_toggle.py',
     'polestar_zhcn_fill.py',
 ]
@@ -26,11 +28,23 @@ def load_patch(path):
     return mod
 
 
+def wow_running():
+    try:
+        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Wow.exe'], capture_output=True, text=True,
+                             encoding='mbcs', errors='replace', timeout=10).stdout
+        return 'Wow.exe' in out
+    except Exception:
+        return False
+
+
 def main():
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     apply_mode = '--apply' in sys.argv
     check_only = not apply_mode
+    if apply_mode and wow_running():
+        print('魔兽世界正在运行：请完全退出游戏后再打补丁（改名会动存档与 AddOns.txt，游戏退出时会覆盖它们）。')
+        return 2
     print('=== KkowoUI 补丁检查（只读） ===' if check_only else '=== KkowoUI 一键应用补丁 ===')
     failed = 0
     for name in PATCH_LIST:

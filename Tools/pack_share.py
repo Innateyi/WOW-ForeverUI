@@ -23,9 +23,13 @@ SKIP_ADDON_DIRS = {
     'BlizzMove_Debug',
     'QuestieTrace',
     'ArcUI',
+    # 冷却显示已改用 EUI 冷却管理器，ArcAuras 全家不再随包分发
+    'ArcAuras',
+    'ArcAuras_Finds',
+    'ArcAuras_LFG',
 }
 SKIP_ADDON_FILES = {'addon_strategy.txt', 'dd_author.toc'}
-SKIP_ACC_SV = re.compile(r'^(!BugGrabber|BugSack|Auctionator|QuestieTrace|RXPGuides|EUI-RestedXP|Blizzard_.*)\.lua$')
+SKIP_ACC_SV = re.compile(r'^(!BugGrabber|BugSack|Auctionator|QuestieTrace|RXPGuides|EUI-RestedXP|ArcAuras.*|ArcUI|Blizzard_.*)\.lua$')
 PRIVACY_RE = re.compile(r'CHAT_MSG_|\|Hplayer:|[^\s"#]{2,}#\d{4,6}\b', re.I)
 
 # 脱敏清空表：(文件名, 外层键, [内层键列表])

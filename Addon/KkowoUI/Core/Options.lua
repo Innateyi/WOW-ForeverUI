@@ -5,7 +5,9 @@
 local _, F = ...
 
 local _G = _G
-local ipairs, math_abs, pcall = ipairs, math.abs, pcall
+local ipairs, pairs, math_abs, pcall, type = ipairs, pairs, math.abs, pcall, type
+local CreateFrame = CreateFrame
+local C_Timer = C_Timer
 
 local GROUPS = {
     {
@@ -15,16 +17,16 @@ local GROUPS = {
         pages = { "任务增强", "经验与地图" },
         pageMap = {
             ["任务增强"]   = { "questAuto", "questBar", "questXP" },
-            ["经验与地图"] = { "xpBar", "nodeReminder", "zoneLabels" },
+            ["经验与地图"] = { "xpBar", "nodeReminder", "zoneLabels", "worldNames" },
         },
     },
     {
         key   = "CombatAudio",
         title = "战斗与音效",
-        desc  = "进/脱战剑盾提醒、术士灵魂石到期提醒、猎人技能音效、Roll 点条、快捷标记条。",
+        desc  = "职业预设冷却条、进/脱战剑盾提醒、术士灵魂石到期提醒、猎人技能音效、Roll 点条、快捷标记条。",
         pages = { "战斗增强", "灵魂石提醒", "猎人音效" },
         pageMap = {
-            ["战斗增强"]   = { "combatAlert", "rollBars", "markBar" },
+            ["战斗增强"]   = { "cdPresets", "combatAlert", "rollBars", "markBar" },
             ["灵魂石提醒"] = { "soulstoneAlert" },
             ["猎人音效"]   = { "spellSounds" },
         },
@@ -35,7 +37,7 @@ local GROUPS = {
         desc  = "融合聊天条、右键菜单与邮件联系人、趣味职业表情喊话、极速静默拾取、现代拾取微播报、装备耐久度。",
         pages = { "聊天与社交", "趣味表情喊话", "拾取与工具" },
         pageMap = {
-            ["聊天与社交"]   = { "chatBar", "socialTools" },
+            ["聊天与社交"]   = { "chatBar", "chatBubbles", "socialTools" },
             ["趣味表情喊话"] = { "classEmote" },
             ["拾取与工具"]   = { "bagUtility", "lootToast", "durability" },
         },
@@ -46,7 +48,7 @@ local GROUPS = {
         desc  = "全局视觉统一、姓名板主城减卡、场景性能自动档位、沉浸探索淡隐、一体化系统栏与极简鼠标提示。",
         pages = { "视觉与性能", "沉浸与系统栏" },
         pageMap = {
-            ["视觉与性能"]   = { "modernChrome", "nameplateSmart", "perfAutoTier" },
+            ["视觉与性能"]   = { "modernChrome", "auctionSkin", "nameplateSmart", "perfAutoTier" },
             ["沉浸与系统栏"] = { "immersiveHUD", "systemBar", "tooltipStyle" },
         },
     },
@@ -155,7 +157,7 @@ local SLIM_LIST = {
     "QFXSystemBar_Locale", "QFXSystemBar_MeetingStone",
     "EllesmereUIDataBars",
     -- 确认闲置 / 练级无用 / 调试 / 重叠重型插件
-    "TalentsForever", "ForeverFishing", "ArcAuras_Finds", "ArcAuras_LFG", "ArcUI",
+    "TalentsForever", "ForeverFishing", "ArcAuras", "ArcAuras_Finds", "ArcAuras_LFG", "ArcUI",
     "EllesmereUIAuraBuffReminders", "EllesmereUIQuickdraw", "EllesmereUIMythicTimer",
     "GlowingBars", "MiniMarkers", "163UI_Info", "QuestieTrace", "BlizzMove_Debug",
     "DungeonsForeverPvP", "DungeonsForeverExplore", "DungeonsForeverClass",
@@ -202,10 +204,6 @@ local function ApplyInGameSlim()
     for _, name in ipairs(SLIM_LIST) do
         list[#list + 1] = name
     end
-    -- 已安装 ArcAuras 时一并停用冲突的 EUI 冷却管理器
-    if F.IsAddOnLoaded("ArcAuras") then
-        list[#list + 1] = "EllesmereUICooldownManager"
-    end
     local backup = {}
     local count = 0
     for _, name in ipairs(list) do
@@ -245,6 +243,8 @@ local function RestoreInGameSlim()
     local accBak = F.db and type(F.db.slimBackup) == "table" and #F.db.slimBackup > 0 and F.db.slimBackup or nil
     local list = charBak or accBak or SLIM_LIST
     if not enable then return end
+    -- 玩家主动还原：不再在登录时自动停用无效插件，否则下次登录又会被关掉
+    if F.db then F.db.autoDisableDeadAddons = false end
     for _, name in ipairs(list) do
         SetAddOnEnabledSafely(name, true)
     end
@@ -253,9 +253,133 @@ local function RestoreInGameSlim()
     if _G.ReloadUI then _G.ReloadUI() end
 end
 
+-- 无效 / 已替换插件守卫：下面这些插件在本整合里不该加载，但网易 DD 每次更新所属整包时会把文件夹放回来
+-- （ArcUI 随 ArcAuras、QuestieTrace 随 Questie、163UI_Info 是 DD 自己的同步插件），删了也会再出现。
+-- 所以登录时检查：只要它们处于启用状态就替本角色停用（下次登录 / 重载生效），不用再手动 /kk slim。
+--   ArcUI           Arc UI Forever 迁移存根，自身什么都不画
+--   163UI_Info      DD 数据同步插件，没有适配无限服（16001）的 TOC，根本加载不了
+--   QuestieTrace    Questie 开发者收集数据用的调试插件
+--   BlizzMove_Debug BlizzMove 调试版
+--   VamoosesSlipstream 已由改名的 VamoosesSlipstream_kkowo（极速导航 kkowo优化版）替代；DD 若把原版装回来，两份会抢同一份存档
+-- 「ArcAuras 换成 EUI 冷却管理器」只在选择后才做（/kk deadguard arc on，作者本机的旧存档自动沿用）：
+--   这时 ArcAuras(+子插件) 也会停用，并且每个角色一次性启用 EUI 冷却管理器（之后你自己关掉它也不会再被打开）。
+--   默认不碰 ArcAuras：装了整合包的朋友如果本来就在用 ArcAuras，以对方为准。
+-- /kk restore 会关闭此守卫；/kk deadguard on 重新打开。
+local DEAD_ADDONS = { "ArcUI", "163UI_Info", "QuestieTrace", "BlizzMove_Debug" }
+local ARC_ADDONS = { "ArcAuras", "ArcAuras_Finds", "ArcAuras_LFG" }
+-- 原版 -> 替代它的改名版：替代版存在且启用时才停用原版
+local REPLACED_BY = { VamoosesSlipstream = "VamoosesSlipstream_kkowo" }
+local CDM_ADDON = "EllesmereUICooldownManager"
+
+local function PreferCDMOverArc()
+    if not F.db then return false end
+    if F.db.cdmReplacesArc == nil then
+        -- 旧存档：守卫已经替这个角色启用过 EUI 冷却管理器，说明当初选的就是「ArcAuras 换成 EUI 冷却管理器」
+        F.db.cdmReplacesArc = (F.charDB and F.charDB.cdmEnabledOnce == true) or false
+    end
+    return F.db.cdmReplacesArc == true
+end
+
+local function ShowReloadOffer(msg)
+    if not (_G.StaticPopupDialogs and _G.StaticPopup_Show) then return end
+    if not _G.StaticPopupDialogs["KKOWOUI_ADDON_RELOAD"] then
+        _G.StaticPopupDialogs["KKOWOUI_ADDON_RELOAD"] = {
+            text = "%s",
+            button1 = "立即重载",
+            button2 = "稍后",
+            OnAccept = function() if _G.ReloadUI then _G.ReloadUI() end end,
+            timeout = 0,
+            whileDead = true,
+            hideOnEscape = true,
+            preferredIndex = 3,
+        }
+    end
+    F.RunOutOfCombat("KKOWOUI_ADDON_RELOAD", function()
+        _G.StaticPopup_Show("KKOWOUI_ADDON_RELOAD", msg)
+    end)
+end
+
+local function DisableDeadAddons(verbose)
+    local ca = _G.C_AddOns
+    local getState = ca and ca.GetAddOnEnableState
+    local existsFn = ca and ca.DoesAddOnExist
+    if not getState then return 0 end
+    local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+    local function Exists(name)
+        if not existsFn then return true end
+        local okEx, ex = pcall(existsFn, name)
+        return okEx and ex == true
+    end
+    local function State(name)
+        local ok, st = pcall(getState, name, guid)
+        if not ok then ok, st = pcall(getState, name) end
+        return (ok and type(st) == "number") and st or nil
+    end
+    local preferCDM = PreferCDMOverArc()
+    local list = {}
+    for _, name in ipairs(DEAD_ADDONS) do list[#list + 1] = name end
+    if preferCDM then
+        for _, name in ipairs(ARC_ADDONS) do list[#list + 1] = name end
+    end
+    for orig, repl in pairs(REPLACED_BY) do
+        local rs = Exists(repl) and State(repl)
+        if rs and rs > 0 then list[#list + 1] = orig end
+    end
+    local off = {}
+    for _, name in ipairs(list) do
+        if Exists(name) then
+            local st = State(name)
+            if st and st > 0 then
+                SetAddOnEnabledSafely(name, false)
+                off[#off + 1] = name
+            end
+        end
+    end
+    -- 选择了用 EUI 冷却管理器替代 ArcAuras 时，每个角色一次：启用 EUI 冷却管理器
+    local cdmOn = false
+    if preferCDM and F.charDB and not F.charDB.cdmEnabledOnce then
+        F.charDB.cdmEnabledOnce = true
+        if Exists(CDM_ADDON) and State(CDM_ADDON) == 0 then
+            SetAddOnEnabledSafely(CDM_ADDON, true)
+            cdmOn = true
+        end
+    end
+    if #off > 0 or cdmOn then
+        if ca.SaveAddOns then pcall(ca.SaveAddOns) end
+        local parts = {}
+        if #off > 0 then parts[#parts + 1] = "已停用：" .. table.concat(off, "、") end
+        if cdmOn then parts[#parts + 1] = "已启用：EUI 冷却管理器" end
+        F.Print(table.concat(parts, "；") .. "（下次登录 / 重载生效；/kk deadguard off 可关闭自动停用）")
+        -- 其中有正在运行的插件（如 ArcAuras）或刚启用了冷却管理器：问一句要不要马上重载
+        local liveChange = cdmOn
+        for _, name in ipairs(off) do
+            if F.IsAddOnLoaded(name) then liveChange = true end
+        end
+        if liveChange then
+            ShowReloadOffer("|cffdca77fKkowoUI|r\n\n" .. table.concat(parts, "\n") .. "\n\n重载界面后生效，现在重载吗？")
+        end
+    elseif verbose then
+        F.Print("没有需要停用的无效插件。")
+    end
+    return #off
+end
+
+do
+    local guard = CreateFrame("Frame")
+    guard:RegisterEvent("PLAYER_LOGIN")
+    guard:SetScript("OnEvent", function(self)
+        self:UnregisterAllEvents()
+        C_Timer.After(3, function()
+            if F.db and F.db.autoDisableDeadAddons ~= false then
+                DisableDeadAddons(false)
+            end
+        end)
+    end)
+end
+
 if _G.StaticPopupDialogs then
     _G.StaticPopupDialogs["KKOWOUI_SLIM_CONFIRM"] = {
-        text = "|cffdca77fKkowoUI 一键瘦身与精简切换|r\n\n将停用已合并或闲置/冲突的重型插件（约省 35+ MB 常驻内存，其他角色若也启用了它们会一并停用），随后自动重载界面：\n\n• 合并/冲突：QFXSystemBar×5、EUI DataBars、EUI 冷却管理器（已装 ArcAuras 时）\n• 闲置/调试：TalentsForever、ForeverFishing、ArcAuras_Finds/LFG、ArcUI、163UI_Info、QuestieTrace、EUI Quickdraw/MythicTimer/BuffReminders、GlowingBars、MiniMarkers、DungeonsForever×8 百科子库\n\n你的布局与核心插件全部保留，随时可输入 /kk restore 一键还原。",
+        text = "|cffdca77fKkowoUI 一键瘦身与精简切换|r\n\n将停用已合并或闲置/冲突的重型插件（约省 35+ MB 常驻内存，其他角色若也启用了它们会一并停用），随后自动重载界面：\n\n• 合并/冲突：QFXSystemBar×5、EUI DataBars、ArcAuras（与 EUI 冷却管理器冲突，已改用后者）\n• 闲置/调试：TalentsForever、ForeverFishing、ArcAuras_Finds/LFG、ArcUI、163UI_Info、QuestieTrace、EUI Quickdraw/MythicTimer/BuffReminders、GlowingBars、MiniMarkers、DungeonsForever×8 百科子库\n\n你的布局与核心插件全部保留，随时可输入 /kk restore 一键还原。",
         button1 = "确认瘦身并重载",
         button2 = "取消",
         OnAccept = ApplyInGameSlim,
@@ -316,6 +440,25 @@ _G.SlashCmdList.KKOWOUI = function(msg)
         end
     elseif cmd == "restore" then
         RestoreInGameSlim()
+    elseif cmd == "deadguard" then
+        local arg = (rest or ""):lower()
+        if arg == "off" then
+            if F.db then F.db.autoDisableDeadAddons = false end
+            F.Print("已关闭无效插件自动停用。")
+        elseif arg == "arc on" or arg == "arc off" then
+            if F.db then F.db.cdmReplacesArc = (arg == "arc on") end
+            if arg == "arc on" then
+                F.Print("已选择用 EUI 冷却管理器替代 ArcAuras：守卫开着时会停用 ArcAuras 及其子插件。")
+                if F.db and F.db.autoDisableDeadAddons ~= false then DisableDeadAddons(true) end
+            else
+                F.Print("不再自动停用 ArcAuras（与 EUI 冷却管理器同时开启时会提示二选一）。")
+            end
+        else
+            if F.db then F.db.autoDisableDeadAddons = true end
+            local extra = PreferCDMOverArc() and "、ArcAuras 及其子插件" or ""
+            F.Print("已开启无效插件自动停用（ArcUI、163UI_Info、QuestieTrace、BlizzMove_Debug、被改名版替代的原版插件" .. extra .. "）。/kk deadguard arc on|off 切换是否用 EUI 冷却管理器替代 ArcAuras。")
+            DisableDeadAddons(true)
+        end
     elseif cmd == "unifybars" then
         local mc = F.Modules.Get("modernChrome")
         if mc and mc.UnifyResourceBarsNow then mc:UnifyResourceBarsNow() end

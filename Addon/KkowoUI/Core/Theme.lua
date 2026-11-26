@@ -415,6 +415,88 @@ function Theme.SetGlassShown(frame, shown)
     end
 end
 
+-- 半透明「磨砂玻璃」（悬浮提示 / 小地图卡片 / 聊天气泡共用）：
+-- 冷灰蓝底色 + 上半部柔和白色光泽（纵向渐变）+ 1px 顶部高光线。
+-- 只用纯色与渐变（系统栏玻璃按钮同款写法，游戏里显示可靠）；不再叠平铺颗粒贴图：
+-- 颗粒层在 EUI 小部件提示上整片显示成了灰色噪点。
+-- opts.noTint：宿主自己已有底色（EUI 提示由 TooltipStyle 加深底色），只叠光泽与高光线。
+Theme.FROST_RGB = { 0.045, 0.050, 0.066 }
+local frostParts = setmetatable({}, { __mode = "k" })
+
+function Theme.ApplyFrostedGlass(frame, opts)
+    if not (frame and frame.CreateTexture) then return nil end
+    opts = opts or {}
+    local p = frostParts[frame]
+    if not p then
+        p = {}
+        -- 光泽压在宿主底色之上（EUI 提示底色在 BACKGROUND -8 或 0 层）；noTint 模式不创建多余底板纹理
+        p.sheen = frame:CreateTexture(nil, "BACKGROUND", nil, 4)
+        p.sheen:SetColorTexture(1, 1, 1, 1)
+        p.topLine = frame:CreateTexture(nil, "BORDER", nil, 6)
+        p.topLine:SetHeight(1)
+        frostParts[frame] = p
+    end
+
+    local inset = opts.inset or 0
+    if not opts.noTint and not p.tint then
+        p.tint = frame:CreateTexture(nil, "BACKGROUND", nil, -7)
+        p.tintInset = nil
+    end
+    if p.tint and p.tintInset ~= inset then
+        p.tintInset = inset
+        p.tint:ClearAllPoints()
+        p.tint:SetPoint("TOPLEFT", frame, "TOPLEFT", inset, -inset)
+        p.tint:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -inset, inset)
+    end
+    if p.inset ~= inset then
+        p.inset = inset
+        p.sheen:ClearAllPoints()
+        p.sheen:SetPoint("TOPLEFT", frame, "TOPLEFT", inset + 1, -inset - 1)
+        p.sheen:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -inset - 1, -inset - 1)
+        p.sheen:SetPoint("BOTTOM", frame, "CENTER", 0, 0)
+        p.topLine:ClearAllPoints()
+        p.topLine:SetPoint("TOPLEFT", frame, "TOPLEFT", inset + 1, -inset - 1)
+        p.topLine:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -inset - 1, -inset - 1)
+    end
+
+    if opts.noTint then
+        if p.tint then p.tint:Hide() end
+    else
+        local a = math_max(0, math_min(1, opts.alpha or 0.84))
+        local c = Theme.FROST_RGB
+        p.tint:SetColorTexture(c[1], c[2], c[3], a)
+        p.tint:Show()
+    end
+    -- VERTICAL：第一色 = 底部（透明），第二色 = 顶部（淡白）；渐变不可用时干脆不画光泽
+    if SetScratchGradient(p.sheen, "VERTICAL", 1, 1, 1, 0, 1, 1, 1, opts.sheen or 0.06) then
+        p.sheen:Show()
+    else
+        p.sheen:Hide()
+    end
+    p.topLine:SetColorTexture(1, 1, 1, opts.topLine or 0.13)
+    p.topLine:Show()
+    return p
+end
+
+function Theme.IsFrostRegion(frame, region)
+    local p = frame and frostParts[frame]
+    return p ~= nil and region ~= nil
+        and ((p.tint and region == p.tint) or region == p.sheen or region == p.topLine)
+end
+
+function Theme.SetFrostedGlassShown(frame, shown)
+    local p = frame and frostParts[frame]
+    if not p then return end
+    if shown == true then
+        p.sheen:Show()
+        p.topLine:Show()
+    else
+        if p.tint then p.tint:Hide() end
+        p.sheen:Hide()
+        p.topLine:Hide()
+    end
+end
+
 function Theme.OnChanged(fn)
     if type(fn) == "function" then
         themeListeners[#themeListeners + 1] = fn
@@ -500,11 +582,65 @@ function Theme.FadeTo(frame, toAlpha, duration, hideAtZero)
     ag:Play()
 end
 
--- 共用 PrettyTooltip 同款黑曜石渐变 + 外柔光晕 + 顶光带卡片材质覆层（零侵入、零污染、可复用）
+-- 共用 PrettyTooltip 100% 复刻卡片表面（深黑曜石纵向渐变 + 顶色带 + 四周内暗晕 + 2px 顶亮边 + 外柔光）
+-- 支持 square（严格复刻 PrettyTooltip 平铺卡）与 rounded（现代 MMO 抗锯齿圆角卡，用于聊天气泡与圆角卡片）
 local prettyOverlays = setmetatable({}, { __mode = "k" })
 local PTIP_GLOW = "Interface\\AddOns\\PrettyTooltip\\art\\glow"
+local EUI_ROUND_DIR = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
 
-function Theme.EnsurePrettyCardOverlay(host)
+local function ApplyNineSliceMask(obj, path, radius, wrap)
+    if not obj then return end
+    if wrap then
+        pcall(obj.SetTexture, obj, path, wrap, wrap)
+    else
+        pcall(obj.SetTexture, obj, path)
+    end
+    if obj.SetTextureSliceMargins then
+        pcall(obj.SetTextureSliceMargins, obj, radius, radius, radius, radius)
+    end
+    local sm = _G.Enum and _G.Enum.UITextureSliceMode and _G.Enum.UITextureSliceMode.Stretched
+    if sm and obj.SetTextureSliceMode then
+        pcall(obj.SetTextureSliceMode, obj, sm)
+    end
+end
+
+local function AddMaskSafe(tex, mask)
+    if tex and mask and tex.AddMaskTexture then
+        pcall(tex.AddMaskTexture, tex, mask)
+    end
+end
+
+local function RemoveMaskSafe(tex, mask)
+    if tex and mask and tex.RemoveMaskTexture then
+        pcall(tex.RemoveMaskTexture, tex, mask)
+    end
+end
+
+local function HasEUIRoundedMasks()
+    return _G.EllesmereUI ~= nil or F.IsAddOnLoaded("EllesmereUI")
+end
+
+-- 读取 PrettyTooltipDB 的实时外观参数，确保玩家在 /ptip 中的改动自动同步到所有统一卡片
+local function ReadPrettyLiveMetrics()
+    local db = _G.PrettyTooltipDB
+    local bodyA = 0.94
+    local glowA = 0.22
+    local headTop = 0.40
+    local headBot = 0.00
+    if type(db) == "table" then
+        local ba = F.PlainNumber(db.backdropAlpha, nil) or F.PlainNumber(db.backdropAlphaItems, nil)
+        if ba and ba >= 0.40 and ba <= 1.00 then bodyA = ba end
+        local ga = F.PlainNumber(db.glowAlphaItems, nil) or F.PlainNumber(db.glowAlphaUnits, nil)
+        if ga and ga >= 0 and ga <= 1.50 then glowA = ga end
+        local ht = F.PlainNumber(db.headerTopAlphaItems, nil) or F.PlainNumber(db.headerTopAlphaUnits, nil)
+        if ht and ht >= 0 and ht <= 1.00 then headTop = ht end
+        local hb = F.PlainNumber(db.headerBottomAlphaItems, nil) or F.PlainNumber(db.headerBottomAlphaUnits, nil)
+        if hb and hb >= 0 and hb <= 1.00 then headBot = hb end
+    end
+    return bodyA, glowA, headTop, headBot
+end
+
+function Theme.EnsurePrettyCardOverlay(host, opts)
     if not host then return nil end
     local ov = prettyOverlays[host]
     if ov then return ov end
@@ -514,11 +650,12 @@ function Theme.EnsurePrettyCardOverlay(host)
     ov:SetFrameLevel(math_max(1, lvl - 1))
     ov:EnableMouse(false)
 
-    -- 1) 外发光柔光晕（优先复用 PrettyTooltip\art\glow，未装时降级至内置 glowTex）
+    -- 1) 外发光柔光晕（与 PrettyTooltip\Panel\Layout.lua 完全同源：art\glow 9 宫格 + ADD 混合）
+    local spread = (opts and opts.haloSpread) or 16
     if F.IsAddOnLoaded("PrettyTooltip") then
         local halo = ov:CreateTexture(nil, "BACKGROUND", nil, -8)
-        halo:SetPoint("TOPLEFT", ov, "TOPLEFT", -14, 14)
-        halo:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", 14, -14)
+        halo:SetPoint("TOPLEFT", ov, "TOPLEFT", -spread, spread)
+        halo:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", spread, -spread)
         halo:SetTexture(PTIP_GLOW)
         if halo.SetTextureSliceMargins then
             pcall(halo.SetTextureSliceMargins, halo, 24, 24, 24, 24)
@@ -528,31 +665,23 @@ function Theme.EnsurePrettyCardOverlay(host)
         ov._haloPTip = true
     elseif _G.BackdropTemplateMixin then
         local shadow = CreateFrame("Frame", nil, ov, "BackdropTemplate")
-        shadow:SetPoint("TOPLEFT", ov, "TOPLEFT", -4, 4)
-        shadow:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", 4, -4)
+        shadow:SetPoint("TOPLEFT", ov, "TOPLEFT", -5, 5)
+        shadow:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", 5, -5)
         shadow:SetFrameLevel(math_max(0, ov:GetFrameLevel() - 1))
         shadow:EnableMouse(false)
         pcall(shadow.SetBackdrop, shadow, { edgeFile = F.MEDIA .. "Textures\\glowTex", edgeSize = 5 })
         pcall(shadow.SetBackdropBorderColor, shadow, 0, 0, 0, 0.65)
         ov._haloPTip = false
+        ov._shadowFallback = shadow
     end
 
-    -- 2) 深黑曜石纵向微渐变底板 + 细腻暗纹
+    -- 2) 深黑曜石纵向微渐变底板（使用 FLAT_TEX 兼容圆角 MaskTexture，去除原版无的杂纹层以 100% 复刻 PrettyTooltip）
     local bg = ov:CreateTexture(nil, "BACKGROUND", nil, -7)
     bg:SetAllPoints()
-    bg:SetColorTexture(1, 1, 1, 1)
+    bg:SetTexture(Theme.FLAT_TEX)
     ov._bg = bg
 
-    local grain = ov:CreateTexture(nil, "BACKGROUND", nil, -6)
-    grain:SetAllPoints()
-    grain:SetTexture(F.MEDIA .. "Textures\\bgTex", true, true)
-    if grain.SetHorizTile then grain:SetHorizTile(true) end
-    if grain.SetVertTile then grain:SetVertTile(true) end
-    grain:SetBlendMode("ADD")
-    grain:SetAlpha(0.24)
-    ov._grain = grain
-
-    -- 3) 顶部标题区柔和染色渐变带
+    -- 3) 顶部柔和染色渐变带
     local header = ov:CreateTexture(nil, "BORDER", nil, 0)
     header:SetHeight(24)
     header:SetPoint("TOPLEFT", ov, "TOPLEFT", 1, -1)
@@ -560,25 +689,27 @@ function Theme.EnsurePrettyCardOverlay(host)
     header:SetTexture(Theme.FLAT_TEX)
     ov._header = header
 
-    -- 4) 四周内收微暗边阴影
+    -- 4) 四周内收微暗边阴影（与 PrettyTooltip 数值一致：顶 10px 0.30 / 底 10px 0.45 / 左 8px 0.35 / 右 8px 0.35）
+    ov._shades = {}
     if _G.CreateColor then
         local function makeShade(orient, from, to, a1, a2, w, h)
             local sh = ov:CreateTexture(nil, "BORDER", nil, 2)
-            sh:SetColorTexture(1, 1, 1, 1)
+            sh:SetTexture(Theme.FLAT_TEX)
             sh:SetPoint(from, ov, from)
             sh:SetPoint(to, ov, to)
             if w then sh:SetWidth(w) end
             if h then sh:SetHeight(h) end
             pcall(sh.SetGradient, sh, orient, _G.CreateColor(0, 0, 0, a1), _G.CreateColor(0, 0, 0, a2))
+            ov._shades[#ov._shades + 1] = sh
             return sh
         end
-        makeShade("VERTICAL", "TOPLEFT", "TOPRIGHT", 0, 0.28, nil, 8)
-        makeShade("VERTICAL", "BOTTOMLEFT", "BOTTOMRIGHT", 0.42, 0, nil, 8)
-        makeShade("HORIZONTAL", "TOPLEFT", "BOTTOMLEFT", 0.30, 0, 6, nil)
-        makeShade("HORIZONTAL", "TOPRIGHT", "BOTTOMRIGHT", 0, 0.30, 6, nil)
+        makeShade("VERTICAL", "TOPLEFT", "TOPRIGHT", 0, 0.30, nil, 10)
+        makeShade("VERTICAL", "BOTTOMLEFT", "BOTTOMRIGHT", 0.45, 0, nil, 10)
+        makeShade("HORIZONTAL", "TOPLEFT", "BOTTOMLEFT", 0.35, 0, 8, nil)
+        makeShade("HORIZONTAL", "TOPRIGHT", "BOTTOMRIGHT", 0, 0.35, 8, nil)
     end
 
-    -- 5) 2px 顶边高亮 + 1px 其余三边柔和描边
+    -- 5) 直角 2px 顶亮边 + 1px 三边描边（严格复刻 PrettyTooltip 平铺边框）
     local edges = {}
     local specs = {
         { "TOPLEFT", "TOPRIGHT", nil, 2 },
@@ -587,7 +718,7 @@ function Theme.EnsurePrettyCardOverlay(host)
         { "TOPRIGHT", "BOTTOMRIGHT", 1, nil },
     }
     for i, sp in ipairs(specs) do
-        local ln = ov:CreateTexture(nil, "OVERLAY")
+        local ln = ov:CreateTexture(nil, "OVERLAY", nil, 1)
         ln:SetTexture(Theme.FLAT_TEX)
         ln:SetPoint(sp[1], ov, sp[1])
         ln:SetPoint(sp[2], ov, sp[2])
@@ -601,8 +732,73 @@ function Theme.EnsurePrettyCardOverlay(host)
     return ov
 end
 
-function Theme.PaintPrettyCardOverlay(host, r, g, b, headerMaxH)
-    local ov = Theme.EnsurePrettyCardOverlay(host)
+local function SyncPrettyRoundedState(ov, rounded, radius)
+    local wantRound = (rounded == true) and HasEUIRoundedMasks() and (ov.CreateMaskTexture ~= nil)
+    local r = wantRound and math_max(3, math_min(12, radius or 8)) or 0
+    if ov._roundRadius == r then return end
+
+    -- 先卸载旧遮罩（若切换半径或切回直角）
+    if ov._bodyMask then
+        RemoveMaskSafe(ov._bg, ov._bodyMask)
+        RemoveMaskSafe(ov._header, ov._bodyMask)
+        for _, sh in ipairs(ov._shades or {}) do RemoveMaskSafe(sh, ov._bodyMask) end
+        if ov._roundBorder then RemoveMaskSafe(ov._roundBorder, ov._bodyMask) end
+        if ov._roundTopEdge then RemoveMaskSafe(ov._roundTopEdge, ov._bodyMask) end
+    end
+
+    ov._roundRadius = r
+    if r > 0 then
+        local maskPath = EUI_ROUND_DIR .. "rounded-" .. r .. ".tga"
+        local holePath = EUI_ROUND_DIR .. "rounded-inv-" .. math_max(1, r - 1) .. ".tga"
+        if not ov._bodyMask then
+            ov._bodyMask = ov:CreateMaskTexture()
+        end
+        if ov._bodyMask then
+            ApplyNineSliceMask(ov._bodyMask, maskPath, r, "CLAMPTOBLACKADDITIVE")
+            ov._bodyMask:SetAllPoints(ov)
+            AddMaskSafe(ov._bg, ov._bodyMask)
+            AddMaskSafe(ov._header, ov._bodyMask)
+            for _, sh in ipairs(ov._shades or {}) do AddMaskSafe(sh, ov._bodyMask) end
+        end
+
+        if not ov._roundBorder then
+            local rb = ov:CreateTexture(nil, "OVERLAY", nil, 1)
+            rb:SetAllPoints(ov)
+            rb:SetTexture(Theme.FLAT_TEX)
+            ov._roundBorder = rb
+            ov._roundHole = ov:CreateMaskTexture()
+        end
+        if ov._roundBorder and ov._bodyMask and ov._roundHole then
+            AddMaskSafe(ov._roundBorder, ov._bodyMask)
+            ApplyNineSliceMask(ov._roundHole, holePath, math_max(1, r - 1), "CLAMPTOWHITE")
+            ov._roundHole:SetPoint("TOPLEFT", ov, "TOPLEFT", 1, -1)
+            ov._roundHole:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", -1, 1)
+            AddMaskSafe(ov._roundBorder, ov._roundHole)
+            ov._roundBorder:Show()
+            for _, ln in ipairs(ov._edges) do ln:Hide() end
+            -- 顶部柔和亮色圆角呼应条（保留 PrettyTooltip 顶部亮边基因）
+            if not ov._roundTopEdge then
+                local te = ov:CreateTexture(nil, "OVERLAY", nil, 2)
+                te:SetPoint("TOPLEFT", ov, "TOPLEFT", 0, 0)
+                te:SetPoint("TOPRIGHT", ov, "TOPRIGHT", 0, 0)
+                te:SetHeight(2)
+                te:SetTexture(Theme.FLAT_TEX)
+                ov._roundTopEdge = te
+            end
+            AddMaskSafe(ov._roundTopEdge, ov._bodyMask)
+            ov._roundTopEdge:Show()
+            return
+        end
+    end
+
+    if ov._roundBorder then ov._roundBorder:Hide() end
+    if ov._roundTopEdge then ov._roundTopEdge:Hide() end
+    for _, ln in ipairs(ov._edges) do ln:Show() end
+end
+
+function Theme.PaintPrettyCardOverlay(host, r, g, b, headerMaxH, opts)
+    opts = opts or {}
+    local ov = Theme.EnsurePrettyCardOverlay(host, opts)
     if not ov then return nil end
     if not (r and g and b) then
         r, g, b = Theme.GetAccent()
@@ -610,26 +806,50 @@ function Theme.PaintPrettyCardOverlay(host, r, g, b, headerMaxH)
     local lvl = F.PlainNumber(host.GetFrameLevel and host:GetFrameLevel(), 200)
     ov:SetFrameLevel(math_max(1, lvl - 1))
 
+    SyncPrettyRoundedState(ov, opts.rounded == true, opts.radius or 8)
+
+    local defBody, defGlow, defHeadTop, defHeadBot = ReadPrettyLiveMetrics()
+    local bodyA = opts.alpha or defBody
+    local strength = opts.strength or 1
+    local glowA = opts.haloAlpha or (0.55 * strength * defGlow)
+    local headTop = opts.headerTopAlpha or defHeadTop
+    local headBot = opts.headerBottomAlpha or defHeadBot
+
     if scratchC1 and ov._bg.SetGradient then
         SetScratchGradient(ov._bg, "VERTICAL",
-            0.016 + r * 0.02, 0.012 + g * 0.02, 0.016 + b * 0.02, 0.94,
-            0.052 + r * 0.06, 0.040 + g * 0.06, 0.050 + b * 0.06, 0.94)
+            0.016 + r * 0.02 * strength, 0.012 + g * 0.02 * strength, 0.016 + b * 0.02 * strength, bodyA,
+            0.052 + r * 0.06 * strength, 0.040 + g * 0.06 * strength, 0.050 + b * 0.06 * strength, bodyA)
         SetScratchGradient(ov._header, "VERTICAL",
-            r * 0.06, g * 0.06, b * 0.06, 0.00,
-            r * 0.36, g * 0.36, b * 0.36, 0.56)
+            r * 0.12, g * 0.12, b * 0.12, headBot,
+            r * 0.38, g * 0.38, b * 0.38, headTop)
     else
-        ov._bg:SetColorTexture(0.042, 0.046, 0.058, 0.95)
-        ov._header:SetColorTexture(r * 0.22, g * 0.22, b * 0.22, 0.50)
+        ov._bg:SetVertexColor(0.036, 0.032, 0.040, bodyA)
+        ov._header:SetVertexColor(r * 0.25, g * 0.25, b * 0.25, headTop * 0.8)
     end
 
     if ov._haloPTip and ov._halo then
-        ov._halo:SetVertexColor(r, g, b, 0.28)
+        local sp = opts.haloSpread or 16
+        ov._halo:ClearAllPoints()
+        ov._halo:SetPoint("TOPLEFT", ov, "TOPLEFT", -sp, sp)
+        ov._halo:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", sp, -sp)
+        ov._halo:SetVertexColor(r, g, b, math_max(0, math_min(0.60, glowA)))
+        ov._halo:SetShown(glowA > 0.005)
     end
+
     local h = F.PlainNumber(host.GetHeight and host:GetHeight(), 40)
-    ov._header:SetHeight(math_max(12, math_min(headerMaxH or 32, h - 2)))
-    for i, ln in ipairs(ov._edges) do
-        local strength = (i == 1) and 0.80 or 0.36
-        ln:SetVertexColor(r * strength, g * strength, b * strength, 0.95)
+    local hdrH = math_max(8, math_min(headerMaxH or 30, math_max(8, h - 2)))
+    ov._header:SetHeight(hdrH)
+
+    if ov._roundRadius and ov._roundRadius > 0 and ov._roundBorder and ov._roundBorder:IsShown() then
+        ov._roundBorder:SetVertexColor(r * 0.46 + 0.08, g * 0.46 + 0.08, b * 0.46 + 0.08, 0.88)
+        if ov._roundTopEdge then
+            ov._roundTopEdge:SetVertexColor(r * 0.82, g * 0.82, b * 0.82, 0.72)
+        end
+    else
+        for i, ln in ipairs(ov._edges) do
+            local edgeStr = (i == 1) and 0.80 or 0.36
+            ln:SetVertexColor(r * edgeStr, g * edgeStr, b * edgeStr, 0.95)
+        end
     end
     ov:Show()
     return ov
@@ -638,6 +858,11 @@ end
 function Theme.HidePrettyCardOverlay(host)
     local ov = host and prettyOverlays[host]
     if ov then ov:Hide() end
+end
+
+function Theme.IsPrettyOverlayRegion(host, region)
+    local ov = host and prettyOverlays[host]
+    return ov ~= nil and region == ov
 end
 
 -- 战斗自动淡出管理器：非核心条进战自动柔和淡出，悬停立刻恢复

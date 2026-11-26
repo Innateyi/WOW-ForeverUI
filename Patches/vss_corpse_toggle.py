@@ -7,7 +7,11 @@ import os, re, shutil, sys
 
 # 游戏目录与备份目录可用环境变量覆盖：WOW_FOREVER_DIR（含 Interface 的客户端根目录）/ WOW_BACKUP_ROOT
 WOW_ROOT = os.environ.get('WOW_FOREVER_DIR', r'E:\Program Files\World of Warcraft\_forever_')
-DEFAULT_DIR = os.path.join(WOW_ROOT, 'Interface', 'AddOns', 'VamoosesSlipstream')
+# 已改名为 VamoosesSlipstream_kkowo（见 vss_kkowo_rename.py）时打到新文件夹上，否则打到原名文件夹
+_ADDONS = os.path.join(WOW_ROOT, 'Interface', 'AddOns')
+DEFAULT_DIR = os.path.join(_ADDONS, 'VamoosesSlipstream_kkowo')
+if not os.path.isdir(DEFAULT_DIR):
+    DEFAULT_DIR = os.path.join(_ADDONS, 'VamoosesSlipstream')
 # 默认放在仓库同级的 backups 目录（绝不写进游戏目录）
 BACKUP_ROOT = os.environ.get('WOW_BACKUP_ROOT', os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backups')))
 MARK = '[kkowo-corpse v2]'

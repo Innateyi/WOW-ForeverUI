@@ -22,7 +22,7 @@ local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("tooltipStyle", {
     title = "悬浮提示美化与字号统一（PrettyTooltip 联动）",
-    desc = "分层统一悬浮提示：装备/技能/NPC 交由 PrettyTooltip 呈现，按钮与纯文字提示统一保持轻盈半透明烟熏玻璃风，并支持全局字号倍率调节。",
+    desc = "全界面悬浮提示 100% 统一为 PrettyTooltip 视觉风格（装备/技能/NPC/路牌/小地图/好友卡片/系统栏与第三方图标提示完全一致），并支持全局字号倍率与紧凑度调节。",
     group = "theme",
     order = 30,
     defaults = {
@@ -34,13 +34,18 @@ local mod = F.RegisterModule("tooltipStyle", {
         balancePrettyBody = true, -- 均衡 PrettyTooltip 标题与信息正文比例（放大 11-12px 偏小的正文行、微收过大标题）
         prettyOriginalKey = "NONE", -- 默认关闭按 Alt 切回原版面板，防止按 Alt 组合键时误切（可选 NONE / ALT / CTRL）
         prettyDetailsKey = "SHIFT", -- NPC ID / 分解等扩展信息默认按住 Shift 展示，平时卡片更紧凑（可选 SHIFT / ALWAYS）
-        unifyEUICards = false,    -- 默认关闭：普通按钮与小地图卡片保持与 GameTooltip 一致的半透明烟熏玻璃风；开启则改包 PrettyTooltip 黑曜石绿框
+        unifyEUICards = true,     -- 默认开启：100% 复刻 PrettyTooltip 样式统一全界面所有悬浮提示与小地图卡片
+        frostedGlass = true,      -- 仅在关闭 PrettyTooltip 全面统一时作为磨砂玻璃备用风格
+        glassOpacity = 0.82,      -- 磨砂备用浓度
+        plainWorldTipsFrosted = false, -- 默认关闭：场景牌子/草药/矿点/小地图/鸟点全部交回 PrettyTooltip 统一绘制
         v2Migrated = false,
         v3PrettyUnified = false,
         v4FontTuned = false,
         v5LayeredGlass = false,
         v6CompactPretty = false,
         v7BalancedPrettyBody = false,
+        v8UnifiedGlass = false,
+        v9AllPrettyTooltips = false,
         scale = 1.0,
         titleFontSize = 15,
         bodyFontSize = 13,
@@ -133,7 +138,7 @@ local BALANCED_PRETTY_SIZES = {
     -- 装备/技能/物件/光环/任务信息正文同步均衡放大
     subtitle = 14, header = 13, damage = 13, stats = 14,
     equipEffects = 14, enchants = 14, effects = 14, flavor = 13,
-    setItems = 13, setBonuses = 13, footer = 13, extras = 13, disenchant = 13,
+    setItems = 13, setBonuses = 13, footer = 12, extras = 11, disenchant = 11,
     spellBadges = 13, spellText = 14, spellDetails = 13,
     objectKind = 13, objectDetails = 14, objectQuests = 14, objectLoot = 13, objectPrices = 13,
     auraBadges = 13, auraText = 14, auraTime = 13,
@@ -158,6 +163,14 @@ local function SyncPrettyTooltipSettings()
         local detKey = db.prettyDetailsKey
         if detKey == "SHIFT" or detKey == "ALWAYS" then
             _G.PrettyTooltipDB.detailsKey = detKey
+        end
+        -- 只在 KkowoUI 这边的开关变化时写一次：之后你在 /ptip 里单独改这三项会被保留
+        local usePrettyWorld = (db.plainWorldTipsFrosted ~= true)
+        if db.ptipPanelsSynced ~= usePrettyWorld then
+            db.ptipPanelsSynced = usePrettyWorld
+            _G.PrettyTooltipDB.objectPanels = usePrettyWorld
+            _G.PrettyTooltipDB.minimapPanels = usePrettyWorld
+            _G.PrettyTooltipDB.taxiPanels = usePrettyWorld
         end
         if db.balancePrettyBody ~= false then
             if type(_G.PrettyTooltipDB.styles) ~= "table" then
@@ -292,16 +305,38 @@ local function PolishCardFontStrings(frame, depth)
     end
 end
 
+local function GetGlassAlpha()
+    return Clamp(F.PlainNumber(mod:GetDB().glassOpacity, 0.82), 0.50, 0.95)
+end
+
+local function UseFrostedGlass()
+    return mod._active and mod:GetDB().frostedGlass ~= false
+end
+
 local function MuteEUICardFlatChrome(tt, mode, ov)
     if not IsSafeFrame(tt) then return end
     local isPretty = (mode == "pretty")
     local isGlass = (mode == "glass")
+    -- 磨砂模式：让所有 EUI 私有提示与小地图卡片复用与 GameTooltip 完全一致的底色、EUI 配置边框与磨砂光泽
+    local isFrost = isGlass and UseFrostedGlass()
+    local fr, fg, fb = F.Theme.FROST_RGB[1], F.Theme.FROST_RGB[2], F.Theme.FROST_RGB[3]
+    local fa = GetGlassAlpha()
+    local EUI = _G.EllesmereUI
+    local applyCfgBrd = EUI and EUI._applyBlizzardConfiguredBorder
+    local hideCfgBrd = EUI and EUI._hideBlizzardConfiguredBorder
+    local useUnifiedBorder = isFrost and type(applyCfgBrd) == "function"
 
     -- 1) BackdropTemplate 卡片（如 _vaultTT）
     if tt.SetBackdropColor and tt.SetBackdropBorderColor then
         if isPretty then
             pcall(tt.SetBackdropColor, tt, 0, 0, 0, 0)
             pcall(tt.SetBackdropBorderColor, tt, 0, 0, 0, 0)
+        elseif useUnifiedBorder then
+            pcall(tt.SetBackdropColor, tt, fr, fg, fb, fa)
+            pcall(tt.SetBackdropBorderColor, tt, 0, 0, 0, 0)
+        elseif isFrost then
+            pcall(tt.SetBackdropColor, tt, fr, fg, fb, fa)
+            pcall(tt.SetBackdropBorderColor, tt, 1, 1, 1, 0.16)
         elseif isGlass then
             pcall(tt.SetBackdropColor, tt, 0.040, 0.045, 0.060, 0.84)
             pcall(tt.SetBackdropBorderColor, tt, 1, 1, 1, 0.14)
@@ -311,10 +346,34 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
         end
     end
 
-    -- 2) 直接挂在卡片上的平铺底板 Texture（ShowWidgetTooltip.bg 与小地图卡片 BACKGROUND 纹理）
+    -- 2) 直接挂在卡片上的平铺底板 Texture（ShowWidgetTooltip.bg）与圆角边框（_brd）
+    -- 磨砂模式下关闭 _brd（会同步卸载 tt.bg 上的 bodyMask），改为调用与 GameTooltip 同源的 _applyBlizzardConfiguredBorder，
+    -- 彻底消除圆角遮罩与缩放/底板重绘冲突（焦点提示变绿根因）并保证外观与 GameTooltip 完全一致。
+    if tt._brd then
+        if useUnifiedBorder or isPretty then
+            if tt._brd.SetShown then pcall(tt._brd.SetShown, tt._brd, false) end
+        else
+            if tt._brd.SetShown then pcall(tt._brd.SetShown, tt._brd, true) end
+            if tt._brd.SetColor then
+                if isPretty then
+                    pcall(tt._brd.SetColor, tt._brd, 0, 0, 0, 0)
+                elseif isFrost then
+                    pcall(tt._brd.SetColor, tt._brd, 1, 1, 1, 0.16)
+                elseif isGlass then
+                    pcall(tt._brd.SetColor, tt._brd, 1, 1, 1, 0.10)
+                else
+                    pcall(tt._brd.SetColor, tt._brd, 1, 1, 1, 0.15)
+                end
+            end
+            if tt._brd.Fit then pcall(tt._brd.Fit, tt._brd) end
+        end
+    end
     if tt.bg then
         if isPretty then
             if tt.bg.SetAlpha then pcall(tt.bg.SetAlpha, tt.bg, 0) end
+        elseif isFrost then
+            if tt.bg.SetAlpha then pcall(tt.bg.SetAlpha, tt.bg, 1) end
+            if tt.bg.SetColorTexture then pcall(tt.bg.SetColorTexture, tt.bg, fr, fg, fb, fa) end
         elseif isGlass then
             if tt.bg.SetAlpha then pcall(tt.bg.SetAlpha, tt.bg, 1) end
             if tt.bg.SetColorTexture then pcall(tt.bg.SetColorTexture, tt.bg, 0.040, 0.045, 0.060, 0.84) end
@@ -322,22 +381,17 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
             if tt.bg.SetAlpha then pcall(tt.bg.SetAlpha, tt.bg, 1) end
         end
     end
-    if tt._brd and tt._brd.SetColor then
-        if isPretty then
-            pcall(tt._brd.SetColor, tt._brd, 0, 0, 0, 0)
-        elseif isGlass then
-            pcall(tt._brd.SetColor, tt._brd, 1, 1, 1, 0.10)
-        else
-            pcall(tt._brd.SetColor, tt._brd, 1, 1, 1, 0.15)
-        end
-    end
 
+    -- 仅对没有 tt.bg / SetBackdropColor 的私有卡片（如小地图 _friendsTT / _calendarTT）扫描匿名 BACKGROUND 底板，
+    -- 绝不扫描 tooltipFrame，避免误触 MaskTexture 或辅助贴图
     local origBg = euiCardOrigBg[tt]
-    if not origBg and tt.GetRegions then
+    if not origBg and not tt.bg and not tt.SetBackdropColor and tt.GetRegions then
         local ok, regs = pcall(function() return { tt:GetRegions() } end)
         if ok and type(regs) == "table" then
             for _, reg in ipairs(regs) do
-                if reg and reg ~= tt.bg and reg.GetObjectType and reg:GetObjectType() == "Texture" then
+                if reg and not F.Theme.IsFrostRegion(tt, reg)
+                    and reg.GetObjectType and reg:GetObjectType() == "Texture"
+                    and not (reg.IsObjectType and reg:IsObjectType("MaskTexture")) then
                     local okL, layer = pcall(reg.GetDrawLayer, reg)
                     if okL and layer == "BACKGROUND" then
                         origBg = reg
@@ -351,6 +405,9 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
     if origBg then
         if isPretty then
             if origBg.SetAlpha then pcall(origBg.SetAlpha, origBg, 0) end
+        elseif isFrost then
+            if origBg.SetAlpha then pcall(origBg.SetAlpha, origBg, 1) end
+            if origBg.SetColorTexture then pcall(origBg.SetColorTexture, origBg, fr, fg, fb, fa) end
         elseif isGlass then
             -- 统一小地图「公会/好友」与「日历」卡片为轻盈半透明烟熏玻璃（替代 EUI 硬编码的 0.92 实心灰块）
             if origBg.SetAlpha then pcall(origBg.SetAlpha, origBg, 1) end
@@ -363,7 +420,7 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
 
     -- 3) EllesmereUI.MakeBorder 生成的 1px 边框子框体（无鼠标、仅含 4 条 BORDER 纹理）
     local origBrd = euiCardOrigBorder[tt]
-    if not origBrd and tt.GetChildren then
+    if not origBrd and not tt._brd and tt.GetChildren then
         local ok, kids = pcall(function() return { tt:GetChildren() } end)
         if ok and type(kids) == "table" then
             for _, ch in ipairs(kids) do
@@ -391,13 +448,14 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
         end
     end
     if origBrd then
+        local hideOrigBrd = isPretty or useUnifiedBorder
         if origBrd.SetAlpha then
-            pcall(origBrd.SetAlpha, origBrd, isPretty and 0 or 1)
+            pcall(origBrd.SetAlpha, origBrd, hideOrigBrd and 0 or 1)
         end
-        if not isPretty and origBrd.GetRegions then
+        if not hideOrigBrd and origBrd.GetRegions then
             local okR, regs = pcall(function() return { origBrd:GetRegions() } end)
             if okR and type(regs) == "table" then
-                local ba = isGlass and 0.10 or 0.15
+                local ba = isFrost and 0.16 or (isGlass and 0.10 or 0.15)
                 for _, ln in ipairs(regs) do
                     if ln and ln.SetColorTexture then
                         pcall(ln.SetColorTexture, ln, 1, 1, 1, ba)
@@ -405,6 +463,221 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
                 end
             end
         end
+    end
+
+    -- 4) 统一套用与 GameTooltip 完全一致的 EUI 配置边框 + 磨砂光泽与 1px 顶部高光线
+    if useUnifiedBorder then
+        local bsNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIBlizzardSkin
+        local bsFFD = bsNS and bsNS._internals and bsNS._internals.FFD
+        local cb = type(bsFFD) == "table" and bsFFD[tt] and bsFFD[tt].configBorder
+        if cb and cb.Show then pcall(cb.Show, cb) end
+        pcall(applyCfgBrd, tt, "tooltip", 1)
+    elseif type(hideCfgBrd) == "function" then
+        pcall(hideCfgBrd, tt)
+    end
+    if isFrost then
+        F.Theme.ApplyFrostedGlass(tt, { noTint = true })
+    else
+        F.Theme.SetFrostedGlassShown(tt, false)
+    end
+end
+
+-- 暴雪原生提示与 EUI 小部件提示的底色都来自 EllesmereUI.GetTooltipBg()（EUI 每次显示时现取）。
+-- 磨砂开启时让它返回加深的冷灰蓝底：不低于「磨砂玻璃底色浓度」，你在 EUI 里调得更深则沿用你的。
+-- 只改这一个取色函数，不改 EUI 存档；停用模块或关掉磨砂即交还原函数。
+local origGetTooltipBg = nil
+
+local function FrostedTooltipBg()
+    local r, g, b, a = origGetTooltipBg()
+    if not UseFrostedGlass() then return r, g, b, a end
+    local want = GetGlassAlpha()
+    a = F.PlainNumber(a, want)
+    if a < want then a = want end
+    local c = F.Theme.FROST_RGB
+    return c[1], c[2], c[3], a
+end
+
+local function SetTooltipBgOverride(on)
+    local E = _G.EllesmereUI
+    if type(E) ~= "table" then return end
+    if on and not origGetTooltipBg and type(E.GetTooltipBg) == "function" then
+        origGetTooltipBg = E.GetTooltipBg
+        E.GetTooltipBg = FrostedTooltipBg
+    elseif not on and origGetTooltipBg then
+        if E.GetTooltipBg == FrostedTooltipBg then E.GetTooltipBg = origGetTooltipBg end
+        origGetTooltipBg = nil
+    end
+end
+
+-- 暴雪原生文字提示（系统栏、小地图插件按钮 LibDBIconTooltip、设置说明、好友提示等）：
+-- 覆盖全部命名辅助提示并挂钩 SharedTooltip_SetBackdropStyle 捕获懒加载提示；
+-- EUI 的 _ttInitVisual 因 ipairs 遇到无限服缺失的 WarCampaignTooltip(nil) 会提前中止、漏掉 LibDBIconTooltip 等，
+-- 这里在辅助提示显示时主动补调一次 EUI._skinBlizzardTooltipFrame 刷新磨砂底色与边框，彻底统一为图 10 样式。
+local FROST_TIPS = {
+    "GameTooltip",
+    "ItemRefTooltip",
+    "ItemRefShoppingTooltip1",
+    "ItemRefShoppingTooltip2",
+    "ShoppingTooltip1",
+    "ShoppingTooltip2",
+    "LibDBIconTooltip",
+    "SettingsTooltip",
+    "FriendsTooltip",
+    "GameSmallHeaderTooltip",
+    "QuickKeybindTooltip",
+    "BattlePetTooltip",
+    "FloatingBattlePetTooltip",
+    "ReputationParagonTooltip",
+    "WarCampaignTooltip",
+    "EllesmereUIGroupFinderRioTip",
+    "EllesmereUILootRollsTip",
+    "DungeonsForeverSpellCompareTip",
+}
+local frostTipHookedMap = setmetatable({}, { __mode = "k" })
+local sharedBackdropHooked = false
+
+local function UseAllPrettyMode()
+    return mod._active and mod:GetDB().unifyEUICards ~= false
+end
+
+local function ResolveNativeTipAccent(tip)
+    local name = tip and tip.GetName and F.PlainString(tip:GetName(), nil)
+    local fs = (name and _G[name .. "TextLeft1"]) or (tip and tip.GetLeftLine and tip:GetLeftLine(1))
+    if fs and fs.GetTextColor then
+        local okC, r, g, b = pcall(fs.GetTextColor, fs)
+        r = okC and F.PlainNumber(r, nil) or nil
+        g = okC and F.PlainNumber(g, nil) or nil
+        b = okC and F.PlainNumber(b, nil) or nil
+        if r and g and b then
+            -- 若标题行自带鲜明颜色（如绿色/蓝色/紫色/红警/任务金），同步该色给顶边与光晕；纯白/纯灰则用 PrettyTooltip 暖金中性色
+            local hi = math_max(r, g, b)
+            local lo = math_min(r, g, b)
+            if hi - lo > 0.16 and not (r > 0.95 and g > 0.78 and g < 0.86 and b < 0.08) then
+                return r, g, b
+            end
+        end
+    end
+    return 0.78, 0.66, 0.46
+end
+
+local mutedNativeRegs = setmetatable({}, { __mode = "k" })
+
+local function HideNativeTipChrome(tip, hide)
+    if not IsSafeFrame(tip) then return end
+    if tip.NineSlice and tip.NineSlice.SetAlpha then
+        pcall(tip.NineSlice.SetAlpha, tip.NineSlice, hide and 0 or 1)
+    end
+    local E = _G.EllesmereUI
+    local hideCfg = E and E._hideBlizzardConfiguredBorder
+    if hide then
+        if type(hideCfg) == "function" then pcall(hideCfg, tip) end
+        -- 隐藏 EUI 给原生提示挂载的平铺底色层（保留文字），由 PrettyCardOverlay 接管全部底板与边框
+        if tip.GetRegions then
+            local okR, regs = pcall(function() return { tip:GetRegions() } end)
+            if okR and type(regs) == "table" then
+                local list = mutedNativeRegs[tip]
+                if not list then list = {}; mutedNativeRegs[tip] = list end
+                for _, reg in ipairs(regs) do
+                    if reg and reg.GetObjectType and reg:GetObjectType() == "Texture"
+                        and not F.Theme.IsFrostRegion(tip, reg) then
+                        local okL, layer = pcall(reg.GetDrawLayer, reg)
+                        if okL and (layer == "BACKGROUND" or layer == "BORDER") then
+                            if list[reg] == nil and reg.GetAlpha then
+                                local okA, a = pcall(reg.GetAlpha, reg)
+                                list[reg] = okA and F.PlainNumber(a, 1) or 1
+                            end
+                            pcall(reg.SetAlpha, reg, 0)
+                        end
+                    end
+                end
+            end
+        end
+    else
+        local list = mutedNativeRegs[tip]
+        if list then
+            for reg, origA in _G.pairs(list) do
+                if reg and reg.SetAlpha then pcall(reg.SetAlpha, reg, origA) end
+            end
+            mutedNativeRegs[tip] = nil
+        end
+        if tip ~= GameTooltip and E and type(E._skinBlizzardTooltipFrame) == "function" then
+            pcall(E._skinBlizzardTooltipFrame, tip)
+        end
+    end
+end
+
+local function FrostNativeTip(tip)
+    if not IsSafeFrame(tip) or tip.IsEmbedded == true then return end
+    local E = _G.EllesmereUI
+    if UseAllPrettyMode() then
+        F.Theme.SetFrostedGlassShown(tip, false)
+        HideNativeTipChrome(tip, true)
+        local r, g, b = ResolveNativeTipAccent(tip)
+        F.Theme.PaintPrettyCardOverlay(tip, r, g, b, 28)
+        PolishCardFontStrings(tip, 0)
+    elseif UseFrostedGlass() then
+        F.Theme.HidePrettyCardOverlay(tip)
+        HideNativeTipChrome(tip, false)
+        if tip ~= GameTooltip and E and type(E._skinBlizzardTooltipFrame) == "function" then
+            pcall(E._skinBlizzardTooltipFrame, tip)
+        end
+        F.Theme.ApplyFrostedGlass(tip, { noTint = true })
+    else
+        F.Theme.HidePrettyCardOverlay(tip)
+        HideNativeTipChrome(tip, false)
+        F.Theme.SetFrostedGlassShown(tip, false)
+        if tip ~= GameTooltip and E and type(E._skinBlizzardTooltipFrame) == "function" then
+            pcall(E._skinBlizzardTooltipFrame, tip)
+        end
+    end
+end
+
+local function EnsureFrostTipHook(tip)
+    if not IsSafeFrame(tip) or tip.IsEmbedded == true or frostTipHookedMap[tip] then return end
+    if not tip.HookScript then return end
+    frostTipHookedMap[tip] = true
+    tip:HookScript("OnShow", FrostNativeTip)
+    tip:HookScript("OnSizeChanged", function(self)
+        if UseAllPrettyMode() and self:IsShown() then
+            FrostNativeTip(self)
+        end
+    end)
+    if tip.IsShown and tip:IsShown() then
+        FrostNativeTip(tip)
+    end
+end
+
+local function HookNativeTipFrost()
+    for _, name in ipairs(FROST_TIPS) do
+        local tip = _G[name]
+        if tip then EnsureFrostTipHook(tip) end
+    end
+    local qsf = _G.QuestScrollFrame
+    if qsf then
+        if qsf.StoryTooltip then EnsureFrostTipHook(qsf.StoryTooltip) end
+        if qsf.CampaignTooltip then EnsureFrostTipHook(qsf.CampaignTooltip) end
+    end
+    if not sharedBackdropHooked and type(_G.SharedTooltip_SetBackdropStyle) == "function" then
+        sharedBackdropHooked = true
+        _G.hooksecurefunc("SharedTooltip_SetBackdropStyle", function(tip)
+            if not mod._active or not IsSafeFrame(tip) or tip.IsEmbedded == true then return end
+            EnsureFrostTipHook(tip)
+            if tip.IsShown and tip:IsShown() then
+                C_Timer.After(0, function()
+                    if mod._active and IsSafeFrame(tip) and tip:IsShown() then
+                        FrostNativeTip(tip)
+                    end
+                end)
+            end
+        end)
+    end
+end
+
+local function RefreshNativeTipFrost()
+    SetTooltipBgOverride(mod._active and (not UseAllPrettyMode()) and UseFrostedGlass())
+    HookNativeTipFrost()
+    for tip in _G.pairs(frostTipHookedMap) do
+        FrostNativeTip(tip)
     end
 end
 
@@ -415,7 +688,7 @@ local function ApplyPrettyStyleToEUICard(tt, r, g, b, headerMaxH)
         MuteEUICardFlatChrome(tt, "restore", nil)
         return
     end
-    if mod:GetDB().unifyEUICards ~= true then
+    if mod:GetDB().unifyEUICards == false then
         F.Theme.HidePrettyCardOverlay(tt)
         MuteEUICardFlatChrome(tt, "glass", nil)
         PolishCardFontStrings(tt, 0)
@@ -1048,6 +1321,140 @@ end
 ----------------------------------------------------------------------
 --  模块生命周期与设置面板
 ----------------------------------------------------------------------
+local HookScalesTooltipPolish
+do
+    local hookedScalesTips = setmetatable({}, { __mode = "k" })
+    local scalesGapIdx = setmetatable({}, { __mode = "k" })
+
+    local function GetTipLineFS(tip, idx, isRight)
+        if isRight then
+            if tip.GetRightLine then
+                local ok, fs = pcall(tip.GetRightLine, tip, idx)
+                if ok and fs then return fs end
+            end
+            local nm = tip.GetName and F.PlainString(tip:GetName(), nil)
+            return nm and _G[nm .. "TextRight" .. idx] or nil
+        else
+            if tip.GetLeftLine then
+                local ok, fs = pcall(tip.GetLeftLine, tip, idx)
+                if ok and fs then return fs end
+            end
+            local nm = tip.GetName and F.PlainString(tip:GetName(), nil)
+            return nm and _G[nm .. "TextLeft" .. idx] or nil
+        end
+    end
+
+    local function CleanScalesText(s)
+        if type(s) ~= "string" then return s end
+        -- 将 Scales 的 14px 基线图标改为与 PrettyTooltip 11px 扩展行严格垂直对齐的 11:11:0:-2，并收紧双空格防折行
+        local out = s:gsub("|TInterface\\AddOns\\Scales\\Media\\Logo:%d+|t",
+            "|TInterface\\AddOns\\Scales\\Media\\Logo:11:11:0:-2|t")
+        out = out:gsub("|TInterface\\AddOns\\Scales\\Media\\(Arrow%a+):%d+|t",
+            "|TInterface\\AddOns\\Scales\\Media\\%1:10:10:0:-1|t")
+        out = out:gsub("|T([^|:]+):14|t", "|T%1:11:11:0:-2|t")
+        out = out:gsub("Scales|r  +", "Scales|r ")
+        if out:sub(1, 3) == "   " then
+            out = "  " .. out:sub(4)
+        end
+        return out
+    end
+
+    local function IsBlankLine(tip, idx)
+        if idx < 1 then return false end
+        local lfs = GetTipLineFS(tip, idx, false)
+        local rfs = GetTipLineFS(tip, idx, true)
+        local lt = lfs and lfs.GetText and F.PlainString(lfs:GetText(), "") or ""
+        local rt = rfs and rfs.GetText and F.PlainString(rfs:GetText(), "") or ""
+        return (lt:match("^%s*$") ~= nil) and (rt:match("^%s*$") ~= nil)
+    end
+
+    local function CopyLine(tip, srcIdx, dstIdx, newLeft, newRight)
+        local sL, dL = GetTipLineFS(tip, srcIdx, false), GetTipLineFS(tip, dstIdx, false)
+        local sR, dR = GetTipLineFS(tip, srcIdx, true), GetTipLineFS(tip, dstIdx, true)
+        if dL and dL.SetText then
+            pcall(dL.SetText, dL, newLeft or "")
+            if sL and sL.GetTextColor and dL.SetTextColor then
+                local okC, r, g, b, a = pcall(sL.GetTextColor, sL)
+                if okC and r then pcall(dL.SetTextColor, dL, r, g, b, a or 1) end
+            end
+        end
+        if dR and dR.SetText then
+            pcall(dR.SetText, dR, newRight or "")
+            if sR and sR.GetTextColor and dR.SetTextColor then
+                local okC, r, g, b, a = pcall(sR.GetTextColor, sR)
+                if okC and r then pcall(dR.SetTextColor, dR, r, g, b, a or 1) end
+            end
+            if newRight and newRight ~= "" and dR.Show then pcall(dR.Show, dR) end
+        end
+        -- 腾空的那一行清字并隐藏：只清字的话空行只是被挪到了 Scales 最后一行之后，仍然隔一行
+        -- （ClearLines 时暴雪会统一重置各行，下一次提示照常使用）
+        if sL and sL.SetText then pcall(sL.SetText, sL, "") end
+        if sR and sR.SetText then pcall(sR.SetText, sR, "") end
+        if sL and sL.Hide then pcall(sL.Hide, sL) end
+        if sR and sR.Hide then pcall(sR.Hide, sR) end
+    end
+
+    local function HandleScalesRow(tip, leftArg, rightArg)
+        if not mod._active or not IsSafeFrame(tip) then return end
+        local left = F.PlainString(leftArg, nil)
+        if not left then return end
+        local isScalesHeader = left:find("Interface\\AddOns\\Scales\\Media\\", 1, true) ~= nil
+        local gap = scalesGapIdx[tip]
+        local n = tip.NumLines and F.PlainNumber(tip:NumLines(), 0) or 0
+        if n <= 0 then return end
+
+        local isScalesFollow = (gap ~= nil) and (n == gap + 1) and (left:sub(1, 3) == "   " or isScalesHeader)
+        if not (isScalesHeader or isScalesFollow) then
+            if gap ~= nil then scalesGapIdx[tip] = nil end
+            return
+        end
+
+        local lfs = GetTipLineFS(tip, n, false)
+        local rfs = GetTipLineFS(tip, n, true)
+        local curL = (lfs and lfs.GetText and F.PlainString(lfs:GetText(), left)) or left
+        local curR = (rfs and rfs.GetText and F.PlainString(rfs:GetText(), "")) or F.PlainString(rightArg, "")
+        local fixedL = CleanScalesText(curL)
+        local fixedR = CleanScalesText(curR)
+
+        if isScalesHeader and n >= 2 and IsBlankLine(tip, n - 1) then
+            -- 吞掉 Scales 自己插在前面的空行（AddLine(" ")），消除「隔行」空洞
+            CopyLine(tip, n, n - 1, fixedL, fixedR)
+            scalesGapIdx[tip] = n
+        elseif isScalesFollow and gap then
+            CopyLine(tip, n, gap, fixedL, fixedR)
+            scalesGapIdx[tip] = n
+        else
+            if lfs and lfs.SetText and fixedL ~= curL then pcall(lfs.SetText, lfs, fixedL) end
+            if rfs and rfs.SetText and fixedR ~= curR then pcall(rfs.SetText, rfs, fixedR) end
+        end
+    end
+
+    HookScalesTooltipPolish = function()
+        for _, name in ipairs({ "GameTooltip", "ItemRefTooltip" }) do
+            local tip = _G[name]
+            if IsSafeFrame(tip) and not hookedScalesTips[tip] then
+                hookedScalesTips[tip] = true
+                if type(tip.AddDoubleLine) == "function" then
+                    _G.hooksecurefunc(tip, "AddDoubleLine", function(self, l, r)
+                        HandleScalesRow(self, l, r)
+                    end)
+                end
+                if type(tip.AddLine) == "function" then
+                    _G.hooksecurefunc(tip, "AddLine", function(self, l)
+                        HandleScalesRow(self, l, nil)
+                    end)
+                end
+                if tip.HookScript then
+                    if tip.HasScript and tip:HasScript("OnTooltipCleared") then
+                        tip:HookScript("OnTooltipCleared", function(self) scalesGapIdx[self] = nil end)
+                    end
+                    tip:HookScript("OnHide", function(self) scalesGapIdx[self] = nil end)
+                end
+            end
+        end
+    end
+end
+
 function mod:OnEnable()
     local db = self:GetDB()
     if not db.v2Migrated then
@@ -1090,11 +1497,24 @@ function mod:OnEnable()
         db.fontScale = 1.00
         db.tooltipScale = 0.94
     end
+    if not db.v8UnifiedGlass then
+        db.v8UnifiedGlass = true
+        db.plainWorldTipsFrosted = true
+    end
+    if not db.v9AllPrettyTooltips then
+        db.v9AllPrettyTooltips = true
+        -- 一次性全面统一：全部原生提示、EUI 私有卡片、小地图/场景物件/鸟点 100% 复刻/交由 PrettyTooltip 统一呈现
+        db.unifyEUICards = true
+        db.plainWorldTipsFrosted = false
+    end
 
     SuppressEUITooltipConflict(true)
     SyncPrettyTooltipSettings()
     SyncBlizzTooltipFontObjects()
     SetupTooltipHooks()
+    SetTooltipBgOverride((not UseAllPrettyMode()) and UseFrostedGlass())
+    HookNativeTipFrost()
+    HookScalesTooltipPolish()
     HookEUIWidgetTooltip()
     HookEUIMinimapCards()
 
@@ -1106,6 +1526,7 @@ function mod:OnEnable()
         if not mod._active then return end
         SyncPrettyTooltipSettings()
         SyncBlizzTooltipFontObjects()
+        HookNativeTipFrost()
         HookEUIWidgetTooltip()
         HookEUIMinimapCards()
     end)
@@ -1115,6 +1536,7 @@ function mod:OnEnable()
         SuppressEUITooltipConflict(true)
         SyncBlizzTooltipFontObjects()
         SetupTooltipHooks()
+        HookNativeTipFrost()
         HookEUIWidgetTooltip()
         HookEUIMinimapCards()
         if not HasPrettyTooltip() then
@@ -1127,6 +1549,19 @@ function mod:OnDisable()
     SuppressEUITooltipConflict(false)
     RestoreTooltipFontObjects()
     RefreshAllEUICards()
+    SetTooltipBgOverride(false)
+    local E = _G.EllesmereUI
+    for tip in _G.pairs(frostTipHookedMap) do
+        F.Theme.HidePrettyCardOverlay(tip)
+        HideNativeTipChrome(tip, false)
+        F.Theme.SetFrostedGlassShown(tip, false)
+        if tip ~= GameTooltip and IsSafeFrame(tip) and E and type(E._skinBlizzardTooltipFrame) == "function" then
+            pcall(E._skinBlizzardTooltipFrame, tip)
+        end
+    end
+    for _, name in ipairs(FROST_TIPS) do
+        if _G[name] then F.Theme.SetFrostedGlassShown(_G[name], false) end
+    end
     if not HasPrettyTooltip() then
         for _, name in ipairs(TARGET_TIPS) do
             local tip = _G[name]
@@ -1145,6 +1580,7 @@ end
 
 function mod:OnThemeChanged()
     RefreshAllEUICards()
+    RefreshNativeTipFrost()
     if not HasPrettyTooltip() then
         PaintFallbackTooltip(GameTooltip)
     end
@@ -1165,10 +1601,40 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "小按钮/小地图卡片也改用 PrettyTooltip 黑曜石框",
-        tooltip = "默认关闭（推荐）：装备/技能/NPC 用 PrettyTooltip，按钮说明与小地图列表统一采用与普通提示一致的半透明烟熏玻璃；开启则改套黑曜石顶光框。",
-        getValue = function() return db.unifyEUICards == true end,
-        setValue = function(v) db.unifyEUICards = v == true; RefreshAllEUICards() end,
+        text = "全部悬浮提示 100% 复刻 PrettyTooltip 样式",
+        tooltip = "默认开启：将按钮说明、小地图好友/公会/日历卡片、系统栏与第三方图标提示全部 100% 复刻 PrettyTooltip 的黑曜石渐变、顶色带、2px 亮顶边与外柔光，全游戏悬浮提示零割裂；关闭则切回磨砂玻璃。",
+        getValue = function() return db.unifyEUICards ~= false end,
+        setValue = function(v)
+            db.unifyEUICards = v == true
+            RefreshAllEUICards()
+            RefreshNativeTipFrost()
+        end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "文字提示与小地图卡片使用磨砂玻璃（备用）",
+        tooltip = "仅在关闭上方「全部悬浮提示 100% 复刻 PrettyTooltip 样式」时生效：将按钮说明、系统栏、好友/公会列表改为半透明冷灰蓝磨砂玻璃。",
+        disabled = function() return db.unifyEUICards ~= false end,
+        getValue = function() return db.frostedGlass ~= false end,
+        setValue = function(v)
+            db.frostedGlass = v == true
+            RefreshAllEUICards()
+            RefreshNativeTipFrost()
+        end,
+    }, {
+        type = "slider",
+        text = "磨砂玻璃底色浓度",
+        tooltip = "仅在磨砂备用模式下生效：数值越大越不透明、越好读；默认 0.82。",
+        min = 0.50, max = 0.95, step = 0.02,
+        disabled = function() return db.unifyEUICards ~= false or db.frostedGlass == false end,
+        getValue = function() return GetGlassAlpha() end,
+        setValue = function(v)
+            db.glassOpacity = v
+            RefreshAllEUICards()
+            RefreshNativeTipFrost()
+        end,
     })
     y = y - h
 
@@ -1207,7 +1673,24 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
                 db.balancePrettyBody = v == true
                 RefreshAllEUICards()
             end,
-        }, blank)
+        }, {
+            type = "toggle",
+            text = "场景物件/小地图/鸟点改用磨砂玻璃",
+            tooltip = "默认关闭：路牌、邮箱、草药/矿点、小地图图钉与飞行点全部交给 PrettyTooltip 统一绘制；开启则改回磨砂玻璃纯文字框。",
+            getValue = function() return db.plainWorldTipsFrosted == true end,
+            setValue = function(v)
+                db.plainWorldTipsFrosted = v == true
+                if type(_G.PrettyTooltipDB) == "table" then
+                    local usePretty = not db.plainWorldTipsFrosted
+                    db.ptipPanelsSynced = usePretty
+                    _G.PrettyTooltipDB.objectPanels = usePretty
+                    _G.PrettyTooltipDB.minimapPanels = usePretty
+                    _G.PrettyTooltipDB.taxiPanels = usePretty
+                end
+                RefreshAllEUICards()
+                RefreshNativeTipFrost()
+            end,
+        })
         y = y - h
 
         _, h = W:DualRow(parent, y, {

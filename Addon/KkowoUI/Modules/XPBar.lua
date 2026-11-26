@@ -1,11 +1,9 @@
 ----------------------------------------------------------------------
 --  KkowoUI — Modules/XPBar.lua
---  现代扁平风经验条 + 左侧高清职业纹章（等级 & 装等）+ 声望条
---    • 100% 纯扁平实色填充（WHITE8x8 + 1px 锐利黑框，去渐变/去高光/去糊边光晕）
---    • 默认经典幻紫配暖橙任务段（内置 5 套纯扁平主题配色，可随时切换）
---    • 左侧高清职业图标（优先复用 EllesmereUI 128×128 锐利职业图集 / 暴雪高清纹章）
---      图标下方醒目大号等级数字 + 青蓝装等铭牌（实时随换装刷新）
---    • 净空防重叠双栏排版：关闭条下统计时自动切换极简双词模式（左百分比 / 右预计时间）
+--  极简圆角柔光经验条 + 左侧职业徽印（等级 & 冰青柔光装等）+ 声望条
+--    • 9 宫格抗锯齿圆角半透明暗玻底槽（无厚重黑框 / 无复古塑料高光 / 无突兀白竖线）
+--    • 水平哑光丝滑渐变填充 + 3 段均匀高斯背光晕（仅贴合已填充进度，空槽保持通透）
+--    • 统一纯净阴影无黑描边排版 + 左侧清透冰青自发光装等 + 防重载错算精准速率（右键重置）
 ----------------------------------------------------------------------
 local _, F = ...
 
@@ -18,45 +16,62 @@ local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 local GameTooltip = _G.GameTooltip
 
--- 5 套现代纯扁平配色（主进度实色 + 可交任务实色 + 双倍实色 + AION2 清透青蓝装等高亮）
-local ILVL_AION_HEX = "55e2e4"
-local ILVL_AION_RGB = { 0.33, 0.89, 0.89 }
+-- 5 套现代水平哑光渐变配色（左深右亮自然流向进度前沿 + 冰青清透装等）
+local ILVL_AION_HEX = "c2fcf8"
+local ILVL_AION_RGB = { 0.76, 0.99, 0.97 }
+local SOFT_GLOW_TEX  = F.MEDIA .. "Textures\\SoftGlow"
+local PILL_MASK_TEX  = F.MEDIA .. "Textures\\BarPillMask"
+local PILL_RIM_TEX   = F.MEDIA .. "Textures\\BarPillRim"
+local EUI_ROUND_MASK = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\rounded-3.tga"
+local EUI_ROUND_INV2 = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\rounded-inv-2.tga"
+
+local function UseEUIRounded()
+    return _G.EllesmereUI ~= nil or F.IsAddOnLoaded("EllesmereUI")
+end
 
 local THEME_PRESETS = {
     violet = {
-        label    = "经典幻紫（默认扁平风）",
-        fill     = { 0.64, 0.31, 0.96 }, -- #A34FF5 纯净现代紫
-        quest    = { 0.93, 0.54, 0.21 }, -- #ED8A36 暖橙任务段
-        rested   = { 0.22, 0.74, 0.97 }, -- #38BDF8 清透双倍蓝
-        questHex = "f59e42",
-        ilvlHex  = ILVL_AION_HEX,
+        label      = "琉璃幻紫（默认柔光风）",
+        fillStart  = { 0.48, 0.32, 0.94 }, -- #7A52F0 深邃紫罗兰
+        fill       = { 0.80, 0.66, 1.00 }, -- #CCA8FF 清透薰衣草紫
+        questStart = { 0.88, 0.59, 0.28 }, -- #E09647 暖蜜琥珀
+        quest      = { 0.99, 0.78, 0.48 }, -- #FCC77A 浅香槟橙
+        rested     = { 0.28, 0.78, 0.99 }, -- #47C7FC 清透双倍蓝
+        questHex   = "fcc87c",
+        ilvlHex    = ILVL_AION_HEX,
     },
     class = {
-        label = "职业纯色（动态职业扁平）",
+        label = "职业主题色（动态职业渐变）",
     },
     emerald = {
-        label    = "翡翠纯绿（猎人/自然）",
-        fill     = { 0.16, 0.78, 0.48 }, -- #29C77A 清爽翡翠绿
-        quest    = { 0.93, 0.54, 0.21 }, -- #ED8A36 暖橙任务段
-        rested   = { 0.22, 0.74, 0.97 },
-        questHex = "f59e42",
-        ilvlHex  = ILVL_AION_HEX,
+        label      = "翡翠流光（猎人/自然）",
+        fillStart  = { 0.16, 0.68, 0.46 },
+        fill       = { 0.48, 0.94, 0.70 },
+        questStart = { 0.88, 0.59, 0.28 },
+        quest      = { 0.99, 0.78, 0.48 },
+        rested     = { 0.28, 0.78, 0.99 },
+        questHex   = "fcc87c",
+        ilvlHex    = ILVL_AION_HEX,
     },
     cobalt = {
-        label    = "清透钴蓝（简洁冷调）",
-        fill     = { 0.24, 0.55, 0.96 }, -- #3D8CF5 明快钴蓝
-        quest    = { 0.93, 0.54, 0.21 }, -- #ED8A36 暖橙任务段
-        rested   = { 0.32, 0.80, 0.98 },
-        questHex = "f59e42",
-        ilvlHex  = ILVL_AION_HEX,
+        label      = "冰川钴蓝（清透冷调）",
+        fillStart  = { 0.20, 0.45, 0.92 },
+        fill       = { 0.54, 0.79, 1.00 },
+        questStart = { 0.88, 0.59, 0.28 },
+        quest      = { 0.99, 0.78, 0.48 },
+        rested     = { 0.34, 0.84, 0.99 },
+        questHex   = "fcc87c",
+        ilvlHex    = ILVL_AION_HEX,
     },
     gold = {
-        label    = "暖香槟金（KkowoUI 同系）",
-        fill     = { 0.86, 0.65, 0.50 }, -- #DCA77F 暖香槟金
-        quest    = { 0.20, 0.82, 0.60 }, -- #33D199 翡翠任务段（与金强区分）
-        rested   = { 0.28, 0.70, 0.95 },
-        questHex = "45d9a4",
-        ilvlHex  = ILVL_AION_HEX,
+        label      = "暖香槟金（KkowoUI 同系）",
+        fillStart  = { 0.76, 0.56, 0.32 },
+        fill       = { 0.97, 0.86, 0.68 },
+        questStart = { 0.22, 0.72, 0.54 },
+        quest      = { 0.48, 0.94, 0.76 },
+        rested     = { 0.28, 0.74, 0.96 },
+        questHex   = "76efc2",
+        ilvlHex    = ILVL_AION_HEX,
     },
 }
 
@@ -87,19 +102,20 @@ local EQUIP_SLOTS = { 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
 
 local mod = F.RegisterModule("xpBar", {
     title = "经验与声望条",
-    desc = "一体化现代纯扁平经验条，左侧无缝融合半透明简约职业徽印、等级与角色面板同款装等，支持统一悬停提示、可交任务预览与双倍经验。",
+    desc = "一体化现代流光玻璃风经验条，左侧融合半透明职业徽印、等级与清透发光装等，支持悬停概览、可交任务预览、双倍经验与右键重置速率。",
     group = "quest",
     order = 40,
     defaults = {
         enabled = true,
         width = 430,
-        height = 10,
+        height = 7,
         fontSize = 11,
         colorTheme = "violet",
         iconStyle = "glyph",
         showEmblem = true,
         showTicks = false,
         showGlow = true,
+        softGlow = true,       -- 经验条进度背光晕、等级与装等浅柔光
         showQuestXP = true,
         showRested = true,
         showTopTimers = false,
@@ -112,6 +128,7 @@ local mod = F.RegisterModule("xpBar", {
         v4RefinedXP = false,
         v5FlatEmblemXP = false,
         v6IntegratedXP = false,
+        v8SleekPillXP = false,
     },
 })
 
@@ -120,8 +137,11 @@ local xpPulse, xpPulseAG
 local emblemFrame, emblemIconTex, emblemLevelFS, emblemIlvlFS
 local xpTexts = {}
 local repFrame, repBar, repLeft, repRight
-local activeQuestHex = "f59e42"
-local activeQuestCol = { 0.93, 0.54, 0.21 }
+local activeQuestHex = "fcc87c"
+local activeQuestCol = { 0.99, 0.78, 0.48 }
+local activeFillCol = { 0.80, 0.66, 1.00 }
+local levelHalo, ilvlHalo
+local fx = {}
 local activeIlvlHex = ILVL_AION_HEX
 local isUnitHovered = false
 local updateXPFade = nil
@@ -236,29 +256,48 @@ local function ResolveThemeColors(themeKey)
     local resolvedKey = THEME_ALIASES[themeKey] or themeKey
     local preset = THEME_PRESETS[resolvedKey]
     if preset and preset.fill then
-        return preset.fill, preset.quest, preset.rested, preset.questHex, preset.ilvlHex
+        return preset.fillStart or preset.fill, preset.fill, preset.questStart or preset.quest, preset.quest, preset.rested, preset.questHex, preset.ilvlHex
     end
-    -- 职业纯色扁平
+    -- 职业主题色水平渐变：左侧沉稳本色，右侧向进度前沿自然提亮
     local ar, ag, ab = F.Theme.GetClassColor()
-    local fill = { Clamp01(ar), Clamp01(ag), Clamp01(ab) }
     local warmClass = (ar > 0.75 and ag > 0.45 and ab < 0.45)
-    local quest = warmClass and { 0.20, 0.82, 0.60 } or { 0.93, 0.54, 0.21 }
-    local questHex = warmClass and "45d9a4" or "f59e42"
-    local rested = { 0.22, 0.74, 0.97 }
-    return fill, quest, rested, questHex, ILVL_AION_HEX
+    local fillStart = { Clamp01(ar * 0.72), Clamp01(ag * 0.72), Clamp01(ab * 0.74) }
+    local fillEnd = { Clamp01(ar + (1 - ar) * 0.26), Clamp01(ag + (1 - ag) * 0.26), Clamp01(ab + (1 - ab) * 0.26) }
+    local questStart = warmClass and { 0.22, 0.72, 0.54 } or { 0.88, 0.59, 0.28 }
+    local questEnd = warmClass and { 0.48, 0.94, 0.76 } or { 0.99, 0.78, 0.48 }
+    local questHex = warmClass and "76efc2" or "fcc87c"
+    local rested = { 0.28, 0.78, 0.99 }
+    return fillStart, fillEnd, questStart, questEnd, rested, questHex, ILVL_AION_HEX
 end
 
-local function ApplyFlatBarColor(bar, col, alpha)
-    if not bar or not col then return end
-    bar:SetStatusBarTexture(F.Theme.FLAT_TEX)
-    bar:SetStatusBarColor(col[1], col[2], col[3], alpha or 1)
+local function ApplyHorizBarColor(bar, colStart, colEnd, alpha)
+    if not bar or not colEnd then return end
+    local a = alpha or 1
+    if not bar._texBound then
+        bar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+        bar._texBound = true
+    end
+    bar:SetStatusBarColor(colEnd[1], colEnd[2], colEnd[3], a)
+    if colStart and _G.CreateColor and bar.GetStatusBarTexture then
+        local tex = bar:GetStatusBarTexture()
+        if tex and tex.SetGradient then
+            local leftC = _G.CreateColor(colStart[1], colStart[2], colStart[3], a)
+            local rightC = _G.CreateColor(colEnd[1], colEnd[2], colEnd[3], a)
+            pcall(tex.SetGradient, tex, "HORIZONTAL", leftC, rightC)
+        end
+    end
 end
 
-local function ApplyCleanBarFont(fs, size, r, g, b, a, outline)
+local function ApplyCleanBarFont(fs, size, r, g, b, a, outline, shadowAlpha, shadowX)
     if not (fs and fs.SetFont) then return end
-    F.Theme.ApplyFont(fs, size, outline or "OUTLINE", r, g, b, a)
-    if fs.SetShadowColor then pcall(fs.SetShadowColor, fs, 0, 0, 0, 0.55) end
-    if fs.SetShadowOffset then pcall(fs.SetShadowOffset, fs, 0, -1) end
+    local flags = (outline == nil) and "" or outline
+    F.Theme.ApplyFont(fs, size, flags, r, g, b, a)
+    if fs.SetShadowColor then
+        pcall(fs.SetShadowColor, fs, 0, 0, 0, shadowAlpha or (flags == "" and 0.94 or 0.80))
+    end
+    if fs.SetShadowOffset then
+        pcall(fs.SetShadowOffset, fs, shadowX or 1, -1)
+    end
 end
 
 local function ApplyClassIcon(tex, style)
@@ -291,6 +330,29 @@ local function ApplyClassIcon(tex, style)
     if tex.SetTexelSnappingBias then pcall(tex.SetTexelSnappingBias, tex, 0) end
 end
 
+local function ResetXPSession(silent)
+    local s = F.charDB and F.charDB.xpSession
+    if not s then return end
+    local now = GetTime()
+    local level = F.PlainNumber(_G.UnitLevel and _G.UnitLevel("player"), 0)
+    local cur = F.PlainNumber(_G.UnitXP and _G.UnitXP("player"), 0)
+    local max = math_max(1, F.PlainNumber(_G.UnitXPMax and _G.UnitXPMax("player"), 1))
+    s.startTime = now
+    s.gainedXP = 0
+    s.lastXP = cur
+    s.maxXP = max
+    s.lastLevel = level
+    s.pendingLevel = nil
+    s.refPerHour = nil
+    s.v7RateClean = true
+    if not s.levelStartTime or s.levelStartTime == 0 or s.levelStartTime > now then
+        s.levelStartTime = now
+    end
+    if not silent and F.Print then
+        F.Print("经验条：已重置本次升级速率统计。")
+    end
+end
+
 local function UpdateSession(cur, max)
     local s = F.charDB and F.charDB.xpSession
     if not s then
@@ -298,70 +360,206 @@ local function UpdateSession(cur, max)
     end
     local now = GetTime()
     local level = F.PlainNumber(_G.UnitLevel and _G.UnitLevel("player"), 0)
-    if not s.startTime or s.startTime == 0 or s.startTime > now then
-        -- GetTime() 是开机时长：startTime 比现在还大说明重启过电脑，旧会话的累计经验必须一起清零，
-        -- 否则「昨天的总经验 / 1 秒」会算出上亿每小时
+    -- 角色数据尚未同步完毕（登录首帧或切图瞬间 UnitXPMax <= 1 或等级无效）：绝不改写 lastXP/gainedXP
+    if level <= 0 or max <= 1 then
+        local sessionSec = (s.startTime and s.startTime > 0 and s.startTime <= now) and math_max(1, now - s.startTime) or 1
+        local levelSec = (s.levelStartTime and s.levelStartTime > 0 and s.levelStartTime <= now) and math_max(1, now - s.levelStartTime) or 1
+        return s.gainedXP or 0, 0, sessionSec, levelSec, F.PlainNumber(s.refPerHour, nil)
+    end
+    -- 一次性清理旧版本因 /reload 瞬间 cur=0 误判升级而污染的累计经验与参考速率
+    local needReset = (not s.v7RateClean)
+        or (not s.startTime or s.startTime == 0 or s.startTime > now)
+        or (s.lastLevel and s.lastLevel > 0 and level < s.lastLevel)
+    if needReset then
+        -- GetTime() 是开机时长：startTime 比现在还大说明重启过电脑，旧会话必须清零
         s.startTime = now
         s.gainedXP = 0
         s.lastXP = cur
         s.maxXP = max
         s.lastLevel = level
+        s.pendingLevel = nil
+        if not s.v7RateClean then
+            s.refPerHour = nil
+            s.v7RateClean = true
+        end
     else
-        local delta = 0
-        local leveled = (s.lastLevel ~= nil and level > s.lastLevel)
-        if s.maxXP and s.maxXP > 0 and (leveled or cur < (s.lastXP or 0)) then
-            -- 升级：上一级剩余经验 + 本级已得经验（新经验 >= 旧值的升级也要识别，不能只看 cur < lastXP）
-            delta = (s.maxXP - (s.lastXP or 0)) + cur
-            s.levelStartTime = now
-        elseif cur > (s.lastXP or 0) then
-            delta = cur - (s.lastXP or 0)
+        -- 切图或 /reload 瞬间同等级下 UnitXP("player") 偶发短暂返回 0：跳过该帧，绝不能误判成升级
+        local isTransientZero = (s.lastLevel == level and cur == 0 and (s.lastXP or 0) > 0)
+        if not isTransientZero then
+            local lastXP = s.lastXP or 0
+            local leveled = (s.lastLevel ~= nil and s.lastLevel > 0 and level > s.lastLevel)
+            -- 升级时 UnitXP 常常先回绕、UnitLevel 稍后才刷新（PLAYER_LEVEL_UP 期间就是旧等级）：
+            -- 同等级下经验变少就按升级结算一次，并记下应到的等级，等级刷新过来时不再重复结算
+            local prepaid = leveled and s.pendingLevel ~= nil and level <= s.pendingLevel
+            local wrapped = (not leveled) and cur < lastXP
+            -- 反过来等级先刷新、经验还是旧值时先不结算，等经验刷新后再算，否则会多算一整级
+            if not (leveled and not prepaid and cur == lastXP) then
+                local delta = 0
+                if ((leveled and not prepaid) or wrapped) and s.maxXP and s.maxXP > 0 then
+                    delta = math_max(0, s.maxXP - lastXP) + cur
+                    s.levelStartTime = now
+                elseif cur > lastXP then
+                    delta = cur - lastXP
+                end
+                if delta > 0 then
+                    s.gainedXP = (s.gainedXP or 0) + delta
+                end
+                s.lastXP = cur
+                s.maxXP = max
+                s.lastLevel = level
+                if wrapped then
+                    s.pendingLevel = level + 1
+                elseif leveled then
+                    s.pendingLevel = nil
+                end
+            end
         end
-        if delta > 0 then
-            s.gainedXP = (s.gainedXP or 0) + delta
-        end
-        s.lastXP = cur
-        s.maxXP = max
-        s.lastLevel = level
     end
     if not s.levelStartTime or s.levelStartTime == 0 or s.levelStartTime > now then
         s.levelStartTime = now
     end
     local sessionSec = math_max(1, now - s.startTime)
     local levelSec = math_max(1, now - s.levelStartTime)
-    local perHour = (s.gainedXP or 0) / sessionSec * 3600
-    -- 记住本次在线满 2 分钟后的可靠速率：下次登录在拿到第一笔经验之前，用它给出参考预计，而不是一直「计算中」
-    if (s.gainedXP or 0) > 0 and sessionSec >= 120 then
+    -- 开局前 3 分钟用 180 秒窗口做平滑阻尼，防止刚上线交一个任务就算出 6~20 万/时的虚高瞬时峰值；满 3 分钟后转为精准在线均速
+    local gained = s.gainedXP or 0
+    local perHour = gained > 0 and (gained / math_max(sessionSec, 180) * 3600) or 0
+    -- 在线满 5 分钟后才更新参考速率，确保下次登录首段展示的「参考预计」稳定可信
+    if gained > 0 and sessionSec >= 300 then
         s.refPerHour = perHour
     end
-    return s.gainedXP or 0, perHour, sessionSec, levelSec, F.PlainNumber(s.refPerHour, nil)
+    return gained, perHour, sessionSec, levelSec, F.PlainNumber(s.refPerHour, nil)
 end
 
-local function CreateFlatBorder(frame, r, g, b, a)
-    local borders = {}
-    local specs = {
-        { "TOPLEFT",     "TOPRIGHT",    0,  1, nil, 1 },
-        { "BOTTOMLEFT",  "BOTTOMRIGHT", 0, -1, nil, 1 },
-        { "TOPLEFT",     "BOTTOMLEFT", -1,  0, 1, nil },
-        { "TOPRIGHT",    "BOTTOMRIGHT", 1,  0, 1, nil },
-    }
-    for i, sp in ipairs(specs) do
-        local ln = frame:CreateTexture(nil, "BORDER")
-        ln:SetPoint(sp[1], frame, sp[1], sp[3], sp[4])
-        ln:SetPoint(sp[2], frame, sp[2], sp[3], sp[4])
-        if sp[5] then ln:SetWidth(sp[5]) end
-        if sp[6] then ln:SetHeight(sp[6]) end
-        ln:SetColorTexture(r or 0.02, g or 0.02, b or 0.03, a or 0.98)
-        borders[i] = ln
+local function ApplyNineSlice(obj, texPath, radius, wrap)
+    if not obj then return end
+    if wrap then
+        pcall(obj.SetTexture, obj, texPath, wrap, wrap)
+    else
+        pcall(obj.SetTexture, obj, texPath)
     end
-    return borders
+    if obj.SetTextureSliceMargins then
+        pcall(obj.SetTextureSliceMargins, obj, radius, radius, radius, radius)
+    end
+    local sm = _G.Enum and _G.Enum.UITextureSliceMode and _G.Enum.UITextureSliceMode.Stretched
+    if sm and obj.SetTextureSliceMode then
+        pcall(obj.SetTextureSliceMode, obj, sm)
+    end
 end
 
-local function BuildFlatTrack(frame)
-    local trackBg = frame:CreateTexture(nil, "BACKGROUND", nil, -6)
-    trackBg:SetAllPoints()
-    trackBg:SetColorTexture(0.07, 0.072, 0.10, 0.94)
+local function AttachMask(tex, mask)
+    if tex and mask and tex.AddMaskTexture then
+        pcall(tex.AddMaskTexture, tex, mask)
+    end
+end
+
+local function CreateThreeSliceGlow(parent, layer, sub)
+    local l = parent:CreateTexture(nil, layer, nil, sub)
+    local m = parent:CreateTexture(nil, layer, nil, sub)
+    local r = parent:CreateTexture(nil, layer, nil, sub)
+    for _, t in ipairs({ l, m, r }) do
+        t:SetTexture(SOFT_GLOW_TEX)
+        t:SetBlendMode("ADD")
+        t:Hide()
+    end
+    l:SetTexCoord(0, 0.5, 0, 1)
+    m:SetTexCoord(0.49, 0.51, 0, 1)
+    r:SetTexCoord(0.5, 1, 0, 1)
+    return { l = l, m = m, r = r }
+end
+
+local function HideThreeSliceGlow(g)
+    if not g then return end
+    g.l:Hide()
+    g.m:Hide()
+    g.r:Hide()
+end
+
+local function ShowThreeSliceGlow(g, anchorFrame, xStart, width, barH, padY, capW, col, alpha)
+    if not g then return end
+    if width <= 1 then
+        HideThreeSliceGlow(g)
+        return
+    end
+    local totalH = barH + padY * 2
+    local cap = math_min(capW, math_floor((width + capW * 2) * 0.5))
+    local leftX = xStart - capW
+    local rightX = xStart + width + capW
+    local midW = rightX - leftX - cap * 2
+
+    g.l:ClearAllPoints()
+    g.l:SetPoint("TOPLEFT", anchorFrame, "TOPLEFT", leftX, padY)
+    g.l:SetSize(cap, totalH)
+
+    g.r:ClearAllPoints()
+    g.r:SetPoint("TOPRIGHT", anchorFrame, "TOPLEFT", rightX, padY)
+    g.r:SetSize(cap, totalH)
+
+    for _, t in ipairs({ g.l, g.m, g.r }) do
+        t:SetVertexColor(col[1], col[2], col[3])
+        t:SetAlpha(alpha)
+    end
+    g.l:Show()
+    g.r:Show()
+
+    if midW > 0.5 then
+        g.m:ClearAllPoints()
+        g.m:SetPoint("TOPLEFT", g.l, "TOPRIGHT", 0, 0)
+        g.m:SetPoint("BOTTOMRIGHT", g.r, "BOTTOMLEFT", 0, 0)
+        g.m:Show()
+    else
+        g.m:Hide()
+    end
+end
+
+local function BuildPillTrack(frame)
+    local maskPath = UseEUIRounded() and EUI_ROUND_MASK or PILL_MASK_TEX
+    -- 9 宫格抗锯齿圆角遮罩：任意宽高下保持 3px 柔顺胶囊圆角（优先复用 EUI 已加载圆角图，/reload 即生效）
+    if frame.CreateMaskTexture then
+        local mask = frame:CreateMaskTexture()
+        if mask then
+            ApplyNineSlice(mask, maskPath, 3, "CLAMPTOBLACKADDITIVE")
+            mask:SetAllPoints(frame)
+            frame._pillMask = mask
+        end
+    end
+
+    -- 柔和圆角底影（替代生硬黑框，亮背景与暗背景下均轻盈立体）
+    local drop = frame:CreateTexture(nil, "BACKGROUND", nil, -6)
+    ApplyNineSlice(drop, maskPath, 3)
+    drop:SetPoint("TOPLEFT", frame, "TOPLEFT", -1, 0)
+    drop:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 1, -1)
+    drop:SetVertexColor(0, 0, 0, 0.44)
+    frame._dropShadow = drop
+
+    -- 半透明深邃暗玻底槽（使用 FLAT_TEX + VertexColor 确保与 MaskTexture 100% 兼容）
+    local trackBg = frame:CreateTexture(nil, "BACKGROUND", nil, -5)
+    trackBg:SetAllPoints(frame)
+    trackBg:SetTexture(F.Theme.FLAT_TEX)
+    trackBg:SetVertexColor(0.04, 0.05, 0.085, 0.66)
+    AttachMask(trackBg, frame._pillMask)
     frame._trackBg = trackBg
-    frame._borders = CreateFlatBorder(frame, 0.02, 0.02, 0.03, 0.98)
+end
+
+local function CreatePillRim(parent, targetFrame)
+    local host = targetFrame or parent
+    local rim = parent:CreateTexture(nil, "OVERLAY", nil, 1)
+    rim:SetAllPoints(host)
+    if UseEUIRounded() and host._pillMask and parent.CreateMaskTexture then
+        local hole = parent:CreateMaskTexture()
+        if hole then
+            rim:SetTexture(F.Theme.FLAT_TEX)
+            rim:SetVertexColor(1, 1, 1, 0.14)
+            AttachMask(rim, host._pillMask)
+            ApplyNineSlice(hole, EUI_ROUND_INV2, 2, "CLAMPTOWHITE")
+            hole:SetPoint("TOPLEFT", host, "TOPLEFT", 1, -1)
+            hole:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -1, 1)
+            AttachMask(rim, hole)
+            return rim
+        end
+    end
+    ApplyNineSlice(rim, PILL_RIM_TEX, 3)
+    rim:SetVertexColor(1, 1, 1, 0.14)
+    return rim
 end
 
 local function ShowXPTooltip(anchor)
@@ -405,54 +603,92 @@ local function ShowXPTooltip(anchor)
     end
     GameTooltip:AddDoubleLine("本次获得 / 速率", string_format("%s (%s/时)", FormatComma(gained), F.FormatShortNumber(perHour)), 0.78, 0.80, 0.86, 0.37, 0.88, 0.68)
     GameTooltip:AddDoubleLine("本级耗时 / 本次在线", string_format("%s / %s", FormatDuration(levelSec), FormatDuration(sessionSec)), 0.78, 0.80, 0.86, 0.86, 0.88, 0.94)
-    GameTooltip:AddLine("Shift + 左键拖动可微调位置", 0.55, 0.58, 0.64)
+    GameTooltip:AddLine("Shift + 左键拖动可微调位置 · 右键点击重置本次速率", 0.58, 0.62, 0.70)
     GameTooltip:Show()
 end
 
 local function SyncUnifiedHoverVisual()
     if emblemIconTex then
-        emblemIconTex:SetAlpha(isUnitHovered and 1.00 or 0.82)
+        emblemIconTex:SetAlpha(isUnitHovered and 1.00 or 0.90)
+    end
+end
+
+local function UpdateBarGlow(cur, max, questXP)
+    if not xpFrame then return end
+    local db = mod:GetDB()
+    local glowOn = db.softGlow ~= false
+    local w = db.width or 430
+    local h = db.height or 7
+    local ratio = (max and max > 0) and Clamp01((cur or 0) / max) or 0
+    local fillW = math_floor(w * ratio + 0.5)
+    local showQuest = db.showQuestXP ~= false and (questXP or 0) > 0
+    local qEndW = showQuest and math_floor(w * Clamp01(((cur or 0) + questXP) / math_max(1, max or 1)) + 0.5) or fillW
+    local qW = math_max(0, qEndW - fillW)
+
+    -- 3 段均匀高斯背光晕：仅贴合已填充进度，空槽保持纯净深邃，无中心鼓包与方框糊边
+    if glowOn and fillW > 2 then
+        ShowThreeSliceGlow(fx.xpBloom, xpFrame, 0, fillW, h, 7, 10, activeFillCol, 0.28)
+    else
+        HideThreeSliceGlow(fx.xpBloom)
+    end
+
+    if glowOn and qW > 2 then
+        ShowThreeSliceGlow(fx.questBloom, xpFrame, fillW, qW, h, 5, 7, activeQuestCol, 0.14)
+    else
+        HideThreeSliceGlow(fx.questBloom)
+    end
+
+    -- 紫色经验与暖橙可交任务段之间留 1px 柔和分隔线，无刺眼白竖线
+    if fx.questSeam then
+        if showQuest and qW > 1 and fillW > 2 and fillW < w - 2 then
+            fx.questSeam:ClearAllPoints()
+            fx.questSeam:SetPoint("TOP", xpFrame, "TOPLEFT", fillW, 0)
+            fx.questSeam:SetPoint("BOTTOM", xpFrame, "BOTTOMLEFT", fillW, 0)
+            fx.questSeam:Show()
+        else
+            fx.questSeam:Hide()
+        end
     end
 end
 
 local function ApplyVisuals()
     local db = mod:GetDB()
     local w = db.width or 430
-    local h = db.height or 10
+    local h = db.height or 7
     local fsSize = db.fontSize or 11
-    local pctSize = math_max(12, fsSize + 2)
-    local lvSize = math_max(16, fsSize + 6)
+    local pctSize = math_max(13, fsSize + 2)
+    local lvSize = math_max(14, fsSize + 3)
     local subSize = math_max(10, fsSize - 1)
     local showEmblem = db.showEmblem ~= false
     local showTicks = db.showTicks == true
 
     local themeKey = db.colorTheme or (db.useClassColor and "class" or "violet")
-    local fillCol, questCol, restedCol, questHex, ilvlHex = ResolveThemeColors(themeKey)
+    local fillStart, fillEnd, questStart, questEnd, restedCol, questHex, ilvlHex = ResolveThemeColors(themeKey)
+    activeFillCol = fillEnd
     activeQuestHex = questHex
-    activeQuestCol = questCol
+    activeQuestCol = questEnd
     activeIlvlHex = ilvlHex
 
     if xpFrame then
         xpFrame:SetSize(w, h)
         if xpFrame._trackBg then
-            xpFrame._trackBg:SetColorTexture(0.07, 0.072, 0.10, 0.94)
+            xpFrame._trackBg:SetVertexColor(0.04, 0.05, 0.085, 0.66)
         end
 
-        -- 纯扁平实色三层填充：双倍蓝 → 可交任务橙 → 当前经验纯色
-        ApplyFlatBarColor(restedBar, restedCol, 0.34)
-        ApplyFlatBarColor(questBar,  questCol,  0.96)
-        ApplyFlatBarColor(xpBar,     fillCol,   1.00)
+        -- 水平哑光平滑渐变三层填充（无塑料感垂直高光）
+        ApplyHorizBarColor(restedBar, nil,        restedCol, 0.30)
+        ApplyHorizBarColor(questBar,  questStart, questEnd,  0.86)
+        ApplyHorizBarColor(xpBar,     fillStart,  fillEnd,   1.00)
 
-        -- 刻度线默认关闭（参照扁平净色风，可在设置中开启）
+        -- 刻度线默认关闭（可在设置中开启）
         if xpFrame._ticks then
-            local innerW = math_max(1, w - 2)
             for idx = 1, 9 do
                 local tk = xpFrame._ticks[idx]
                 if showTicks then
                     tk:ClearAllPoints()
-                    tk:SetPoint("TOP", xpBar, "TOPLEFT", innerW * (idx * 0.1), 0)
-                    tk:SetPoint("BOTTOM", xpBar, "BOTTOMLEFT", innerW * (idx * 0.1), 0)
-                    tk:SetColorTexture(0, 0, 0, idx == 5 and 0.28 or 0.14)
+                    tk:SetPoint("TOP", xpBar, "TOPLEFT", w * (idx * 0.1), 0)
+                    tk:SetPoint("BOTTOM", xpBar, "BOTTOMLEFT", w * (idx * 0.1), 0)
+                    tk:SetColorTexture(0, 0, 0, idx == 5 and 0.24 or 0.12)
                     tk:Show()
                 else
                     tk:Hide()
@@ -464,17 +700,17 @@ local function ApplyVisuals()
             xpPulse:SetVertexColor(1, 1, 1, 1)
         end
 
-        local topGap = 5
-        local botGap = -5
+        local topGap = 6
+        local botGap = -6
         local showBottom = db.showBottomStats ~= false
-        local emblemGap = 7
-        local iconSz = math_max(28, math_min(36, h + pctSize + 9))
+        local emblemGap = 9
+        local iconSz = math_max(28, math_min(34, h + pctSize + 10))
 
-        -- 左侧无底无框半透明简约职业徽印 + 右下角等级 + 与条下基线对齐的精准装等
+        -- 左侧简约职业徽印 + 紧致暖白等级 + 清透冰青柔光装等
         if emblemFrame then
             if showEmblem then
-                local embW = math_max(38, iconSz + 4)
-                emblemFrame:SetSize(embW, iconSz + subSize + 10)
+                local embW = math_max(40, iconSz + 6)
+                emblemFrame:SetSize(embW, iconSz + subSize + 12)
                 emblemFrame:ClearAllPoints()
                 emblemFrame:SetPoint("RIGHT", xpFrame, "LEFT", -emblemGap, 0)
                 emblemFrame:Show()
@@ -482,20 +718,19 @@ local function ApplyVisuals()
                 if emblemIconTex then
                     emblemIconTex:SetSize(iconSz, iconSz)
                     emblemIconTex:ClearAllPoints()
-                    -- 图标顶缘与条上百分比平齐、底缘紧贴经验条底，与经验条天然融为一体
                     emblemIconTex:SetPoint("BOTTOM", emblemFrame, "CENTER", 0, -math_floor(h * 0.5))
                     ApplyClassIcon(emblemIconTex, db.iconStyle or "glyph")
                     SyncUnifiedHoverVisual()
                 end
                 if emblemLevelFS then
-                    ApplyCleanBarFont(emblemLevelFS, math_max(14, lvSize - 2), 1.00, 0.99, 0.94, 1, "OUTLINE")
+                    ApplyCleanBarFont(emblemLevelFS, lvSize, 1.00, 0.99, 0.95, 1, "OUTLINE", 0.85, 0)
                     emblemLevelFS:ClearAllPoints()
                     emblemLevelFS:SetPoint("BOTTOMRIGHT", emblemIconTex, "BOTTOMRIGHT", 3, -1)
                 end
                 if emblemIlvlFS then
-                    ApplyCleanBarFont(emblemIlvlFS, math_max(10, subSize), ILVL_AION_RGB[1], ILVL_AION_RGB[2], ILVL_AION_RGB[3], 1, "OUTLINE")
+                    -- 纯净阴影 + 柔和椭圆冰青光晕（无黑描边阻挡、无生硬底线）
+                    ApplyCleanBarFont(emblemIlvlFS, math_max(11, subSize + 1), ILVL_AION_RGB[1], ILVL_AION_RGB[2], ILVL_AION_RGB[3], 1, "", 0.94, 1)
                     emblemIlvlFS:ClearAllPoints()
-                    -- 与右侧条下统计行严格同基线对齐（无底框、无边框）
                     emblemIlvlFS:SetPoint("TOP", emblemIconTex, "BOTTOM", 0, botGap)
                 end
             else
@@ -503,30 +738,30 @@ local function ApplyVisuals()
             end
         end
 
-        -- 统一整体悬停与拖拽热区（覆盖左侧图标/装等 + 间隙 + 右侧经验条与上下文字，绝不割裂或二次闪烁）
+        -- 统一整体悬停与拖拽热区
         if xpHitBox then
-            local leftExt = showEmblem and (math_max(38, iconSz + 4) + emblemGap) or 0
+            local leftExt = showEmblem and (math_max(40, iconSz + 6) + emblemGap) or 0
             local topExt = topGap + pctSize + (db.showTopTimers and (subSize + 6) or 3)
-            local botExt = (showBottom or showEmblem) and (math_max(subSize, 12) + 8) or 4
+            local botExt = (showBottom or showEmblem) and (math_max(subSize, 12) + 10) or 4
             xpHitBox:ClearAllPoints()
             xpHitBox:SetPoint("TOPLEFT", xpFrame, "TOPLEFT", -leftExt, topExt)
             xpHitBox:SetPoint("BOTTOMRIGHT", xpFrame, "BOTTOMRIGHT", 2, -botExt)
         end
 
-        -- 文字净空排版：开启左侧徽标时，条上方仅左（百分比）+ 右（数值/预计），极致清爽零拥挤
+        -- 文字净空排版：上下排统一纯净阴影无黑描边，轻盈现代零笨重
         if showEmblem then
             xpTexts.level:Hide()
             xpTexts.percent:ClearAllPoints()
             xpTexts.percent:SetJustifyH("LEFT")
-            xpTexts.percent:SetPoint("BOTTOMLEFT", xpFrame, "TOPLEFT", 2, topGap)
+            xpTexts.percent:SetPoint("BOTTOMLEFT", xpFrame, "TOPLEFT", 1, topGap)
 
             xpTexts.xp:ClearAllPoints()
             xpTexts.xp:SetJustifyH("RIGHT")
-            xpTexts.xp:SetPoint("BOTTOMRIGHT", xpFrame, "TOPRIGHT", -2, topGap)
+            xpTexts.xp:SetPoint("BOTTOMRIGHT", xpFrame, "TOPRIGHT", -1, topGap)
         else
             xpTexts.level:Show()
             xpTexts.level:ClearAllPoints()
-            xpTexts.level:SetPoint("BOTTOMLEFT", xpFrame, "TOPLEFT", 2, topGap)
+            xpTexts.level:SetPoint("BOTTOMLEFT", xpFrame, "TOPLEFT", 1, topGap)
 
             xpTexts.xp:ClearAllPoints()
             xpTexts.xp:SetJustifyH("CENTER")
@@ -534,13 +769,13 @@ local function ApplyVisuals()
 
             xpTexts.percent:ClearAllPoints()
             xpTexts.percent:SetJustifyH("RIGHT")
-            xpTexts.percent:SetPoint("BOTTOMRIGHT", xpFrame, "TOPRIGHT", -2, topGap)
+            xpTexts.percent:SetPoint("BOTTOMRIGHT", xpFrame, "TOPRIGHT", -1, topGap)
         end
 
         if xpTexts.questArrow and xpTexts.percentAfter then
-            local arrowSz = math_max(10, pctSize - 1)
+            local arrowSz = math_max(10, pctSize - 2)
             xpTexts.questArrow:SetSize(arrowSz, arrowSz)
-            xpTexts.questArrow:SetVertexColor(questCol[1], questCol[2], questCol[3], 0.96)
+            xpTexts.questArrow:SetVertexColor(questEnd[1], questEnd[2], questEnd[3], 0.94)
             xpTexts.questArrow:ClearAllPoints()
             xpTexts.percentAfter:ClearAllPoints()
             if showEmblem then
@@ -548,42 +783,41 @@ local function ApplyVisuals()
                 xpTexts.percentAfter:SetJustifyH("LEFT")
                 xpTexts.percentAfter:SetPoint("LEFT", xpTexts.questArrow, "RIGHT", 4, 0)
             else
-                -- 无徽标模式下百分比在右侧，隐藏独立箭头并在单字内展示避免越界
                 xpTexts.questArrow:Hide()
                 xpTexts.percentAfter:Hide()
             end
-            ApplyCleanBarFont(xpTexts.percentAfter, pctSize, questCol[1], questCol[2], questCol[3], 1)
+            ApplyCleanBarFont(xpTexts.percentAfter, pctSize, questEnd[1], questEnd[2], questEnd[3], 1, "", 0.94, 1)
         end
 
         local timerY = topGap + pctSize + 4
         xpTexts.levelTime:ClearAllPoints()
-        xpTexts.levelTime:SetPoint("BOTTOMLEFT", xpFrame, "TOPLEFT", 2, timerY)
+        xpTexts.levelTime:SetPoint("BOTTOMLEFT", xpFrame, "TOPLEFT", 1, timerY)
         xpTexts.sessionTime:ClearAllPoints()
-        xpTexts.sessionTime:SetPoint("BOTTOMRIGHT", xpFrame, "TOPRIGHT", -2, timerY)
+        xpTexts.sessionTime:SetPoint("BOTTOMRIGHT", xpFrame, "TOPRIGHT", -1, timerY)
 
         xpTexts.rate:ClearAllPoints()
-        xpTexts.rate:SetPoint("TOPLEFT", xpFrame, "BOTTOMLEFT", 2, botGap)
+        xpTexts.rate:SetPoint("TOPLEFT", xpFrame, "BOTTOMLEFT", 1, botGap)
         xpTexts.completedRested:ClearAllPoints()
-        xpTexts.completedRested:SetPoint("TOPRIGHT", xpFrame, "BOTTOMRIGHT", -2, botGap)
+        xpTexts.completedRested:SetPoint("TOPRIGHT", xpFrame, "BOTTOMRIGHT", -1, botGap)
 
-        ApplyCleanBarFont(xpTexts.level, math_max(13, fsSize + 2), 0.98, 0.98, 1.00, 1)
-        ApplyCleanBarFont(xpTexts.percent, pctSize, 0.98, 0.99, 1.00, 1)
-        ApplyCleanBarFont(xpTexts.xp, fsSize, 0.92, 0.94, 0.98, 1)
-        ApplyCleanBarFont(xpTexts.levelTime, subSize, 0.72, 0.78, 0.86, 0.90)
-        ApplyCleanBarFont(xpTexts.sessionTime, subSize, 0.72, 0.78, 0.86, 0.90)
-        ApplyCleanBarFont(xpTexts.rate, subSize, 0.84, 0.88, 0.94, 0.95)
-        ApplyCleanBarFont(xpTexts.completedRested, subSize, 0.84, 0.88, 0.94, 0.95)
+        ApplyCleanBarFont(xpTexts.level, math_max(13, fsSize + 2), 0.98, 0.99, 1.00, 1, "", 0.94, 1)
+        ApplyCleanBarFont(xpTexts.percent, pctSize, 0.99, 0.995, 1.00, 1, "", 0.94, 1)
+        ApplyCleanBarFont(xpTexts.xp, fsSize, 0.93, 0.95, 0.99, 0.98, "", 0.94, 1)
+        ApplyCleanBarFont(xpTexts.levelTime, subSize, 0.80, 0.86, 0.94, 0.94, "", 0.94, 1)
+        ApplyCleanBarFont(xpTexts.sessionTime, subSize, 0.80, 0.86, 0.94, 0.94, "", 0.94, 1)
+        ApplyCleanBarFont(xpTexts.rate, subSize, 0.88, 0.92, 0.98, 0.96, "", 0.94, 1)
+        ApplyCleanBarFont(xpTexts.completedRested, subSize, 0.88, 0.92, 0.98, 0.96, "", 0.94, 1)
     end
 
     if repFrame then
-        local repH = math_max(8, h)
+        local repH = math_max(6, h)
         repFrame:SetSize(w, repH)
         repLeft:ClearAllPoints()
-        repLeft:SetPoint("BOTTOMLEFT", repFrame, "TOPLEFT", 2, 5)
+        repLeft:SetPoint("BOTTOMLEFT", repFrame, "TOPLEFT", 1, 5)
         repRight:ClearAllPoints()
-        repRight:SetPoint("BOTTOMRIGHT", repFrame, "TOPRIGHT", -2, 5)
-        ApplyCleanBarFont(repLeft, fsSize, 0.96, 0.97, 1.00, 1)
-        ApplyCleanBarFont(repRight, fsSize, 0.90, 0.93, 0.98, 1)
+        repRight:SetPoint("BOTTOMRIGHT", repFrame, "TOPRIGHT", -1, 5)
+        ApplyCleanBarFont(repLeft, fsSize, 0.96, 0.97, 1.00, 1, "", 0.94, 1)
+        ApplyCleanBarFont(repRight, fsSize, 0.90, 0.93, 0.98, 1, "", 0.94, 1)
     end
 end
 
@@ -598,20 +832,42 @@ local function PlayGainPulse()
     xpPulseAG:Play()
 end
 
+local function FitHalo(halo, fs, r, g, b, a, padW, padH)
+    if not (halo and fs) then return end
+    if mod:GetDB().softGlow == false then
+        halo:Hide()
+        return
+    end
+    local sw = F.PlainNumber(fs:GetStringWidth(), 0)
+    local sh = F.PlainNumber(fs:GetStringHeight(), 0)
+    if sw <= 0 or sh <= 0 then
+        halo:Hide()
+        return
+    end
+    halo:SetSize(sw + (padW or 16), sh + (padH or 10))
+    halo:SetVertexColor(r, g, b)
+    halo:SetAlpha(a)
+    halo:Show()
+end
+
 local function UpdateEmblemStats()
     if not (mod._active and emblemFrame and emblemFrame:IsShown()) then return end
     local level = _G.UnitLevel("player") or 1
     if emblemLevelFS then
         emblemLevelFS:SetText(tostring(level))
     end
+    local hasIlvl = false
     if emblemIlvlFS then
         local eqIlvl = GetPlayerItemLevel()
         if eqIlvl and eqIlvl > 0 then
+            hasIlvl = true
             emblemIlvlFS:SetText(string_format("|cff%s%.2f|r", activeIlvlHex, eqIlvl))
         else
-            emblemIlvlFS:SetText("|cff8892a4--|r")
+            emblemIlvlFS:SetText("|cff9aa8be--|r")
         end
     end
+    FitHalo(levelHalo, emblemLevelFS, 1.00, 0.94, 0.80, 0.16, 14, 8)
+    FitHalo(ilvlHalo, emblemIlvlFS, 0.36, 0.95, 0.94, hasIlvl and 0.25 or 0.10, 22, 10)
 end
 
 local function UpdateXP()
@@ -705,7 +961,7 @@ local function UpdateXP()
             xpTexts.xp:SetText(string_format("%s / %s", FormatComma(cur), FormatComma(max)))
         end
     elseif (db.width or 430) >= 360 then
-        xpTexts.xp:SetText(string_format("%s / %s |cff9aa6b8· 剩余 %s|r", FormatComma(cur), FormatComma(max), FormatComma(rem)))
+        xpTexts.xp:SetText(string_format("%s / %s |cffb8c4d6· 剩余 %s|r", FormatComma(cur), FormatComma(max), FormatComma(rem)))
     else
         xpTexts.xp:SetText(string_format("%s / %s", FormatComma(cur), FormatComma(max)))
     end
@@ -723,11 +979,11 @@ local function UpdateXP()
     if showBottom then
         if etaRate > 1 then
             local etaSec = rem / etaRate * 3600
-            xpTexts.rate:SetText(string_format("%s %s |cff8f9bae· %s/时%s|r",
+            xpTexts.rate:SetText(string_format("%s %s |cffb8c7dc· %s/时%s|r",
                 etaIsRef and "参考预计" or "预计", FormatDuration(etaSec), F.FormatShortNumber(etaRate),
                 etaIsRef and "（上次）" or ""))
         else
-            xpTexts.rate:SetText("|cff8f9bae预计升级 · 计算中...|r")
+            xpTexts.rate:SetText("|cffb0bfd4预计升级 · 计算中...|r")
         end
 
         local rightParts = {}
@@ -736,15 +992,15 @@ local function UpdateXP()
             if questXP > 0 then
                 rightParts[#rightParts + 1] = string_format("可交 |cff%s+%.1f%%|r", activeQuestHex, qPct)
             else
-                rightParts[#rightParts + 1] = "|cff6e7887可交 0%|r"
+                rightParts[#rightParts + 1] = "|cffa8b6ca可交 0%|r"
             end
         end
         if db.showRested ~= false then
             local rPct = rested / max * 100
             if rested > 0 then
-                rightParts[#rightParts + 1] = string_format("双倍 |cff38bdf8%.0f%%|r", rPct)
+                rightParts[#rightParts + 1] = string_format("双倍 |cff5cd4ff%.0f%%|r", rPct)
             else
-                rightParts[#rightParts + 1] = "|cff6e7887双倍 0%|r"
+                rightParts[#rightParts + 1] = "|cffa8b6ca双倍 0%|r"
             end
         end
         xpTexts.completedRested:SetText(table_concat(rightParts, "   "))
@@ -756,6 +1012,7 @@ local function UpdateXP()
     end
 
     xpFrame:Show()
+    UpdateBarGlow(cur, max, questXP)
     UpdateEmblemStats()
 end
 
@@ -797,7 +1054,7 @@ local function UpdateRep()
     else
         fr, fg, fb = F.Theme.GetAccent()
     end
-    ApplyFlatBarColor(repBar, { fr, fg, fb }, 1)
+    ApplyHorizBarColor(repBar, { Clamp01(fr * 0.74), Clamp01(fg * 0.74), Clamp01(fb * 0.74) }, { fr, fg, fb }, 1)
 
     repLeft:SetText(name)
     repRight:SetText(string_format("%s / %s |cff9aa6b8(%.1f%%)|r", FormatComma(cur), FormatComma(span), cur / span * 100))
@@ -819,27 +1076,46 @@ local function CreateFrames()
     xpFrame:SetFrameStrata("LOW")
     xpFrame:EnableMouse(true)
 
-    BuildFlatTrack(xpFrame)
+    BuildPillTrack(xpFrame)
+
+    -- 3 段均匀高斯背光晕（位于暗玻底槽之后，仅贴合已填充进度与可交任务段）
+    fx.questBloom = CreateThreeSliceGlow(xpFrame, "BACKGROUND", -8)
+    fx.xpBloom = CreateThreeSliceGlow(xpFrame, "BACKGROUND", -7)
 
     restedBar = CreateFrame("StatusBar", nil, xpFrame)
-    restedBar:SetPoint("TOPLEFT", 1, -1)
-    restedBar:SetPoint("BOTTOMRIGHT", -1, 1)
+    restedBar:SetAllPoints(xpFrame)
+    restedBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    restedBar._texBound = true
+    AttachMask(restedBar.GetStatusBarTexture and restedBar:GetStatusBarTexture(), xpFrame._pillMask)
 
     questBar = CreateFrame("StatusBar", nil, xpFrame)
-    questBar:SetPoint("TOPLEFT", 1, -1)
-    questBar:SetPoint("BOTTOMRIGHT", -1, 1)
+    questBar:SetAllPoints(xpFrame)
     questBar:SetFrameLevel(restedBar:GetFrameLevel() + 1)
+    questBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    questBar._texBound = true
+    AttachMask(questBar.GetStatusBarTexture and questBar:GetStatusBarTexture(), xpFrame._pillMask)
 
     xpBar = CreateFrame("StatusBar", nil, xpFrame)
-    xpBar:SetPoint("TOPLEFT", 1, -1)
-    xpBar:SetPoint("BOTTOMRIGHT", -1, 1)
+    xpBar:SetAllPoints(xpFrame)
     xpBar:SetFrameLevel(questBar:GetFrameLevel() + 1)
+    xpBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    xpBar._texBound = true
+    AttachMask(xpBar.GetStatusBarTexture and xpBar:GetStatusBarTexture(), xpFrame._pillMask)
 
     local ov = CreateFrame("Frame", nil, xpFrame)
     ov:SetAllPoints()
     ov:SetFrameLevel(xpBar:GetFrameLevel() + 2)
 
-    -- 可选 10% 极细刻度线（默认关闭，保持纯净扁平条）
+    -- 9 宫格轻透圆角玻璃细边
+    xpFrame._glassRim = CreatePillRim(ov, xpFrame)
+
+    -- 经验进度与可交任务之间的 1px 柔和暗色分隔线
+    fx.questSeam = ov:CreateTexture(nil, "ARTWORK", nil, 2)
+    fx.questSeam:SetWidth(1)
+    fx.questSeam:SetColorTexture(0.04, 0.05, 0.08, 0.55)
+    fx.questSeam:Hide()
+
+    -- 可选 10% 极细刻度线（默认关闭，保持纯净通透条）
     xpFrame._ticks = {}
     for idx = 1, 9 do
         local tk = ov:CreateTexture(nil, "ARTWORK", nil, 3)
@@ -848,25 +1124,25 @@ local function CreateFrames()
         xpFrame._ticks[idx] = tk
     end
 
-    -- 获得经验时的克制平涂闪光脉冲
+    -- 获得经验时的克制闪光脉冲（与圆角遮罩对齐）
     xpPulse = ov:CreateTexture(nil, "ARTWORK", nil, 4)
-    xpPulse:SetPoint("TOPLEFT", xpBar, "TOPLEFT")
-    xpPulse:SetPoint("BOTTOMRIGHT", xpBar, "BOTTOMRIGHT")
+    xpPulse:SetAllPoints(xpFrame)
     xpPulse:SetTexture(F.Theme.FLAT_TEX)
     xpPulse:SetBlendMode("ADD")
     xpPulse:SetAlpha(0)
+    AttachMask(xpPulse, xpFrame._pillMask)
     xpPulse:Hide()
 
     xpPulseAG = xpPulse:CreateAnimationGroup()
     local pIn = xpPulseAG:CreateAnimation("Alpha")
     pIn:SetOrder(1)
     pIn:SetFromAlpha(0)
-    pIn:SetToAlpha(0.28)
+    pIn:SetToAlpha(0.24)
     pIn:SetDuration(0.10)
     pIn:SetSmoothing("OUT")
     local pOut = xpPulseAG:CreateAnimation("Alpha")
     pOut:SetOrder(2)
-    pOut:SetFromAlpha(0.28)
+    pOut:SetFromAlpha(0.24)
     pOut:SetToAlpha(0)
     pOut:SetDuration(0.32)
     pOut:SetSmoothing("IN")
@@ -895,15 +1171,15 @@ local function CreateFrames()
     questArrow:Hide()
     xpTexts.questArrow = questArrow
 
-    -- 左侧一体化无底无框半透明职业徽印 + 右下角等级 + 精准装等（无独立边框与底色）
+    -- 左侧一体化简约职业徽印 + 紧致等级 + 清透柔光装等
     emblemFrame = CreateFrame("Frame", nil, xpFrame)
-    emblemFrame:SetSize(40, 48)
+    emblemFrame:SetSize(42, 50)
     emblemFrame:SetFrameLevel(textLayer:GetFrameLevel() + 1)
     emblemFrame:EnableMouse(false)
 
     emblemIconTex = emblemFrame:CreateTexture(nil, "ARTWORK")
-    emblemIconTex:SetSize(34, 34)
-    emblemIconTex:SetAlpha(0.82)
+    emblemIconTex:SetSize(32, 32)
+    emblemIconTex:SetAlpha(0.90)
 
     emblemLevelFS = emblemFrame:CreateFontString(nil, "OVERLAY")
     emblemLevelFS:SetJustifyH("RIGHT")
@@ -912,6 +1188,19 @@ local function CreateFrames()
     emblemIlvlFS = emblemFrame:CreateFontString(nil, "OVERLAY")
     emblemIlvlFS:SetJustifyH("CENTER")
     emblemIlvlFS:SetWordWrap(false)
+
+    -- 等级 / 装等数字背后的克制柔光晕
+    levelHalo = emblemFrame:CreateTexture(nil, "ARTWORK", nil, 6)
+    levelHalo:SetTexture(SOFT_GLOW_TEX)
+    levelHalo:SetBlendMode("ADD")
+    levelHalo:SetPoint("CENTER", emblemLevelFS, "CENTER", 0, 0)
+    levelHalo:Hide()
+
+    ilvlHalo = emblemFrame:CreateTexture(nil, "ARTWORK", nil, 6)
+    ilvlHalo:SetTexture(SOFT_GLOW_TEX)
+    ilvlHalo:SetBlendMode("ADD")
+    ilvlHalo:SetPoint("CENTER", emblemIlvlFS, "CENTER", 0, 0)
+    ilvlHalo:Hide()
 
     -- 统一悬停与拖拽热区：鼠标从左侧职业徽印滑向经验条任意处，仅呈现一份稳定不遮挡的概览提示
     xpFrame:EnableMouse(false)
@@ -934,6 +1223,15 @@ local function CreateFrames()
         local pt, _, rpt, x, y = xpFrame:GetPoint(1)
         if type(pt) == "string" and type(x) == "number" and type(y) == "number" and F.DB and F.DB.SavePosition then
             F.DB.SavePosition("XPBar", pt, type(rpt) == "string" and rpt or pt, x, y)
+        end
+    end)
+    xpHitBox:SetScript("OnMouseUp", function(self, btn)
+        if btn == "RightButton" and not hitDragging then
+            ResetXPSession(false)
+            UpdateXP()
+            if isUnitHovered then
+                ShowXPTooltip(self)
+            end
         end
     end)
     xpHitBox:SetScript("OnEnter", function(self)
@@ -972,18 +1270,21 @@ local function CreateFrames()
         return mod:GetDB().combatFade == true
     end)
 
-    -- 同款纯扁平声望条
+    -- 同款圆角暗玻声望条
     repFrame = CreateFrame("Frame", "KkowoUI_RepBar", _G.UIParent)
     repFrame:SetFrameStrata("LOW")
-    BuildFlatTrack(repFrame)
+    BuildPillTrack(repFrame)
 
     repBar = CreateFrame("StatusBar", nil, repFrame)
-    repBar:SetPoint("TOPLEFT", 1, -1)
-    repBar:SetPoint("BOTTOMRIGHT", -1, 1)
+    repBar:SetAllPoints(repFrame)
+    repBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    repBar._texBound = true
+    AttachMask(repBar.GetStatusBarTexture and repBar:GetStatusBarTexture(), repFrame._pillMask)
 
     local repTextLayer = CreateFrame("Frame", nil, repFrame)
     repTextLayer:SetAllPoints()
     repTextLayer:SetFrameLevel(repBar:GetFrameLevel() + 2)
+    repFrame._glassRim = CreatePillRim(repTextLayer, repFrame)
     repLeft = MakeBarFS(repTextLayer, "LEFT")
     repRight = MakeBarFS(repTextLayer, "RIGHT")
 
@@ -1031,6 +1332,12 @@ function mod:OnEnable()
         db.v6IntegratedXP = true
         if not db.iconStyle or db.iconStyle == "modern" then
             db.iconStyle = "glyph"
+        end
+    end
+    if not db.v8SleekPillXP then
+        db.v8SleekPillXP = true
+        if db.height == 10 then
+            db.height = 7
         end
     end
 
@@ -1104,8 +1411,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
-        text = "扁平配色主题",
-        tooltip = "纯扁平实色配色：「经典幻紫」紫条配暖橙任务段、「职业纯色」跟随当前职业色、「翡翠纯绿」、「清透钴蓝」、「暖香槟金」。",
+        text = "经验条配色主题",
+        tooltip = "丝缎流光配色：「琉璃幻紫」紫条配暖琥珀任务段、「职业主题色」跟随当前职业色、「翡翠流光」、「冰川钴蓝」、「暖香槟金」。",
         values = THEME_VALUES,
         order = THEME_ORDER,
         getValue = function()
@@ -1168,6 +1475,24 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "经验条、等级与装等浅发光",
+        tooltip = "在已填充进度背后呈现均匀柔光晕，并为左侧等级与装等数字增添淡淡的柔光光环。",
+        getValue = function() return db.softGlow ~= false end,
+        setValue = function(v) db.softGlow = v == true; self:Refresh() end,
+    }, {
+        type = "button",
+        text = "重置本次经验速率",
+        noCapture = true,
+        tooltip = "立即清零本次在线的经验/小时统计并重新计时（也可直接右键点击经验条重置）。",
+        onClick = function()
+            ResetXPSession(false)
+            UpdateXP()
+        end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "slider",
         text = "经验条宽度",
         min = 260, max = 680, step = 10,
@@ -1176,8 +1501,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     }, {
         type = "slider",
         text = "经验条高度",
-        min = 6, max = 20, step = 1,
-        getValue = function() return db.height or 10 end,
+        min = 5, max = 18, step = 1,
+        getValue = function() return db.height or 7 end,
         setValue = function(v) db.height = v; self:Refresh() end,
     })
     y = y - h

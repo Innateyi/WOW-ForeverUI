@@ -14,7 +14,7 @@
    - **战斗与音效**：进/脱战剑盾提醒、猎人枪械 & 弓弩双套自动切换技能音效（物理建模 6 枚弓箭音效）、现代 Roll 点条、现代扁平矢量标记条 + 全局 3D/单位框体团队标记替换。
    - **社交与工具**：左侧融合聊天条（支持 `Alt+左/右键` 自定义频道排序）、右键菜单与邮件联系人、零闪烁极速静默拾取与包满低价值助手、现代拾取微播报、装备耐久与属性对齐卡片。
    - **现代视觉与性能**：全局视觉统一（世界刷新横幅去重居中无拖影、坐鸟退出钮自动去重、技能伤害飘字字体与弧度选项）、沉浸探索模式、一体化系统微菜单栏（无损 32 位 BGRA 多级 Mipmap Lucide 矢量图标）、PrettyTooltip 紧缩均衡联动与 EUI 小卡片可读性增强。
-4. **不强行合并大型第三方插件**：`EllesmereUI`、`Polestar`、`Questie`、`BigWigs`、`ArcAuras`、`DungeonsForever`、`Leatrix_Maps`、`WaypointUI` 等保持独立原版，通过 `Tools/compare_update.py` 与 `Patches/` 幂等补丁安全维护。
+4. **不强行合并大型第三方插件**：`EllesmereUI`、`Polestar`、`Questie`、`BigWigs`、`DungeonsForever`、`Leatrix_Maps`、`WaypointUI` 等保持独立原版，通过 `Tools/compare_update.py` 与 `Patches/` 幂等补丁安全维护。
 
 ## 常用工具命令
 
@@ -59,7 +59,7 @@ python -I Tools\gen_bow_sounds.py
 ## 目录结构
 
 - `Addon/KkowoUI/` — 统一模块化主插件（19 个独立模块 + 全套高清矢量图标与枪/弓音效素材）
-- `Patches/` — 4 个幂等第三方补丁（姓名板任务计数防重叠与字号同步、友方玩家名、EUI 聊天标签 0 帧极速切换、VSS 尸体切换）
+- `Patches/` — 幂等第三方补丁（姓名板任务计数防重叠与字号同步、友方玩家名、EUI 聊天标签 0 帧极速切换、Polestar 中文补全、极速导航改名为 `VamoosesSlipstream_kkowo` + 跑尸提示开关）。网易 DD 更新 EUI / Polestar 后双击 `Tools/DD更新后重打补丁.bat`（= `apply_patches.py --apply`，需先退出游戏）
 - `Tools/` — 静态检查、补丁管理、素材与音效合成、全局团队标记与多字重字体部署、脱敏打包脚本
 - `Profiles/` — 现代 UI 切换与第三方插件搭配清单
 - `Upstream/` — 上游插件更新对比报告归档目录

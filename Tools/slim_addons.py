@@ -5,7 +5,8 @@ KkowoUI — 安全插件瘦身与 6 合 1 切换脚本
   1. 检测 WoW 客户端是否在运行（若运行中默认中止，防止退出游戏时覆盖 AddOns.txt）
   2. 自动备份 AddOns.txt 到 D:\code\wow\backups\PreSlim_<timestamp>\
   3. 停用已合并进 KkowoUI 的 7 个插件 + 17 个确认闲置/重叠/重型子插件（共释放 ~36+ MB 常驻 Lua）
-  4. 完整保留全部核心玩法与界面布局插件（EllesmereUI 核心、Polestar、Questie、BigWigs、ArcAuras 核心、Auctionator、Leatrix_Maps、WaypointUI、VSS、DungeonsForever 主体等）
+  4. 完整保留全部核心玩法与界面布局插件（EllesmereUI 核心含冷却管理器、Polestar、Questie、BigWigs、Auctionator、Leatrix_Maps、WaypointUI、VSS、DungeonsForever 主体等）
+     ArcAuras 已由 EUI 冷却管理器替代（两者冲突），一并停用
 用法：
   python D:\code\wow\forever-ui\Tools\slim_addons.py
 """
@@ -34,6 +35,7 @@ MERGED_INTO_KKOWOUI = [
 IDLE_OR_REDUNDANT = [
     "TalentsForever",
     "ForeverFishing",
+    "ArcAuras",
     "ArcAuras_Finds",
     "ArcAuras_LFG",
     "ArcUI",
@@ -56,9 +58,8 @@ IDLE_OR_REDUNDANT = [
 ]
 
 TO_DISABLE = set(MERGED_INTO_KKOWOUI + IDLE_OR_REDUNDANT)
-# 仅在 ArcAuras 已启用时一并停用与之冲突的 EUI 冷却管理器（与游戏内 /kk slim 一致）
-CONFLICTS_WITH_ARCAURAS = ["EllesmereUICooldownManager"]
-TO_ENABLE = {"KkowoUI"}
+# 冷却显示改用 EUI 冷却管理器（替代 ArcAuras），与游戏内无效插件守卫一致
+TO_ENABLE = {"KkowoUI", "EllesmereUICooldownManager"}
 
 
 def is_wow_running():
@@ -102,11 +103,6 @@ def main():
     lines = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").split("\n")
 
     to_disable = set(TO_DISABLE)
-    for line in lines:
-        if ":" in line:
-            name, state = line.split(":", 1)
-            if name.strip() == "ArcAuras" and state.strip().lower() == "enabled":
-                to_disable.update(CONFLICTS_WITH_ARCAURAS)
 
     seen = set()
     changed_disable = []
