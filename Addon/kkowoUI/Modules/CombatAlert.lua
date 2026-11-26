@@ -76,8 +76,11 @@ end
 local animGroups = nil
 local allSpeedGroups = nil
 local curAlertType = nil
+local curUseAnim = false
+local alertGen = 0
 
 local function StopAllAnimations()
+    alertGen = alertGen + 1
     if animGroups then
         for _, g in ipairs(animGroups) do
             if g then g:Stop() end
@@ -101,6 +104,7 @@ local PlayAlert -- 前向声明
 local function FinishCurrent()
     isPlaying = false
     curAlertType = nil
+    curUseAnim = false
     if #alertQueue > 0 then
         local nextType = table_remove(alertQueue, 1)
         PlayAlert(nextType, false)
@@ -136,13 +140,19 @@ local function BuildFrames()
     shield.enter.move = AddAnim(shield.enter, "Translation", 0.2, 0)
     local sfIn = AddAnim(shield.enter, "Alpha", 0.2, 0); sfIn:SetFromAlpha(0); sfIn:SetToAlpha(1); sfIn:SetSmoothing("IN")
     local sfOut = AddAnim(shield.enter, "Alpha", 0.3, 0.5); sfOut:SetFromAlpha(1); sfOut:SetToAlpha(0); sfOut:SetSmoothing("OUT")
-    shield.enter:SetScript("OnFinished", function() shield:Hide(); FinishCurrent() end)
+    shield.enter:SetScript("OnFinished", function()
+        shield:Hide()
+        if isPlaying and curUseAnim then FinishCurrent() end
+    end)
 
     shield.leave = shield:CreateAnimationGroup()
     local slIn = AddAnim(shield.leave, "Alpha", 0.3, 0); slIn:SetFromAlpha(0); slIn:SetToAlpha(1); slIn:SetSmoothing("IN")
     local slSc = AddAnim(shield.leave, "Scale", 0.55, 0.55); slSc:SetScaleFrom(1, 1); slSc:SetScaleTo(0.15, 0.15)
     local slOut = AddAnim(shield.leave, "Alpha", 0.55, 0.55); slOut:SetFromAlpha(1); slOut:SetToAlpha(0); slOut:SetSmoothing("OUT")
-    shield.leave:SetScript("OnFinished", function() shield:Hide(); FinishCurrent() end)
+    shield.leave:SetScript("OnFinished", function()
+        shield:Hide()
+        if isPlaying and curUseAnim then FinishCurrent() end
+    end)
     animFrame.shield = shield
 
     -- 剑（左、右）
@@ -155,7 +165,7 @@ local function BuildFrames()
         sw.enter:SetScript("OnFinished", function() sw:Hide() end)
         if triggerShield then
             fin:SetScript("OnFinished", function()
-                if animFrame and animFrame.shield and isPlaying then
+                if animFrame and animFrame.shield and isPlaying and curUseAnim then
                     animFrame.shield:Show()
                     animFrame.shield.enter:Play()
                 end
@@ -188,9 +198,7 @@ local function BuildFrames()
 
     local function onTextFinished()
         textFrame:Hide()
-        local db = mod:GetDB()
-        local style = db.alertStyle or "modern"
-        if style == "modern" or db.animation == false then
+        if isPlaying and not curUseAnim then
             FinishCurrent()
         end
     end
@@ -262,13 +270,17 @@ local function ApplySizes()
     local fsz = db.fontSize or 24
     if style == "modern" or style == "both" then
         local italicFont = F.MEDIA .. "Fonts\\YouSheBiaoTiHei.ttf"
-        local okF = pcall(textFrame.text.SetFont, textFrame.text, italicFont, fsz, "OUTLINE")
-        if not okF then
-            F.Theme.ApplyFont(textFrame.text, fsz, "OUTLINE", 1, 1, 1, 1)
+        local okF, applied = pcall(textFrame.text.SetFont, textFrame.text, italicFont, fsz, "OUTLINE")
+        if not okF or applied == false then
+            pcall(textFrame.text.SetFont, textFrame.text, F.Theme.GetFont(), fsz, "OUTLINE")
         end
         textFrame.text:SetShadowOffset(2, -2)
     else
-        F.Theme.ApplyFont(textFrame.text, fsz, "", 1, 1, 1, 1)
+        -- 绕开 Theme.ApplyFont 的字号缓存：从 modern 切回 classic 时即使字号未变也必须把优设字体换回主题正文字体
+        pcall(textFrame.text.SetFont, textFrame.text, F.Theme.GetFont(), fsz, "")
+        textFrame.text:SetTextColor(1, 1, 1, 1)
+        textFrame.text:SetShadowColor(0, 0, 0, 0.85)
+        textFrame.text:SetShadowOffset(1, -1)
     end
     textFrame.enter.up:SetOffset(0, 150 * sz)
     textFrame.enter.down:SetOffset(0, -36 * sz)
@@ -293,7 +305,8 @@ PlayAlert = function(alertType, preview)
     local db = mod:GetDB()
     local style = db.alertStyle or "modern"
     local useAnim = (style ~= "modern") and (db.animation ~= false)
-    local useText = (style == "modern") or (db.text ~= false)
+    -- 「显示提示文字」在任何风格下都生效（关掉文字 + 开音效 = 只听声音不出字）
+    local useText = db.text ~= false
     if not preview and not useAnim and not useText and not db.sound then
         return
     end
@@ -315,6 +328,8 @@ PlayAlert = function(alertType, preview)
     end
     isPlaying = true
     curAlertType = alertType
+    curUseAnim = useAnim
+    alertGen = alertGen + 1
 
     if preview or db.sound then
         local kitKey = (alertType == "ENTER") and db.soundEnter or db.soundLeave
@@ -431,6 +446,7 @@ function mod:OnEnable()
         StopAllAnimations()
         isPlaying = false
         curAlertType = nil
+        curUseAnim = false
     end)
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function() PlayAlert("ENTER", false) end)
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function() PlayAlert("LEAVE", false) end)
@@ -441,6 +457,7 @@ function mod:OnDisable()
     StopAllAnimations()
     isPlaying = false
     curAlertType = nil
+    curUseAnim = false
     if alertFrame then alertFrame:Hide() end
 end
 
@@ -463,6 +480,22 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         order = { "modern", "classic", "both" },
         getValue = function() return db.alertStyle or "modern" end,
         setValue = function(v) db.alertStyle = v; ApplySizes() end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "显示提示文字",
+        tooltip = "关闭后不再出现进/脱战文字（可只保留音效或剑盾动画）。",
+        getValue = function() return db.text ~= false end,
+        setValue = function(v) db.text = v == true end,
+    }, {
+        type = "toggle",
+        text = "显示剑盾动画（经典 / 叠加风格）",
+        tooltip = "仅在「经典剑盾」或「剑盾 + 现代斜体」风格下生效。",
+        disabled = function() return (db.alertStyle or "modern") == "modern" end,
+        getValue = function() return db.animation ~= false end,
+        setValue = function(v) db.animation = v == true end,
     })
     y = y - h
 
@@ -511,7 +544,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         type = "slider",
         text = "文字字号",
         min = 14, max = 32, step = 1,
-        getValue = function() return db.fontSize or 22 end,
+        getValue = function() return db.fontSize or 24 end,
         setValue = function(v) db.fontSize = v; ApplySizes() end,
     })
     y = y - h

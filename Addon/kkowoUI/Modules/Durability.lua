@@ -24,18 +24,21 @@ local WorldFrame = _G.WorldFrame
 
 local mod = F.RegisterModule("durability", {
     title = "核心属性与装备耐久面板",
-    desc = "将角色核心属性与装备耐久融为一体：默认纯透明无边框清爽呈现（可自由调底板透明度）、全职业智能综合，悬停看全身耐久与修理费。",
+    desc = "将角色核心属性、装备耐久与实时背包栏位融为一体：默认纯透明无边框清爽呈现（可自由调底板透明度）、全职业智能综合，悬停看全身耐久、修理费与背包余量。",
     group = "utility",
     order = 20,
     defaults = {
         enabled = true,
         unifiedPanel = true,       -- true = 一体化现代属性+耐久面板；false = 仅在 EUI 原次要属性下追加耐久行
         statPreset = "smart",      -- "smart" | "classic" | "ranged" | "melee" | "caster"
-        showBackdrop = true,       -- 默认开启现代清透圆角玻璃卡片（与整体圆角 UI 风格统一）
-        backdropAlpha = 0.36,      -- 清透微熏玻璃透明度（0.00 纯透明 ~ 0.85 深色，推荐 0.36）
-        showTopLine = true,        -- 顶部极细职业/主题色流光点缀线
+        showBackdrop = false,      -- 默认纯透明无边框清爽呈现（可在设置里随时开启圆角玻璃底板）
+        backdropAlpha = 0,         -- 底板透明度（0.00 纯透明 ~ 0.85 深色）
+        showTopLine = false,       -- 顶部极细职业/主题色流光点缀线（开启底板时可选）
+        showBagSlots = true,       -- 底部实时显示背包栏位（已用/总格，与 EUI 背包计数一致）
         v2TransparentMigrated = false,
         v3GlassCardMigrated = false,
+        v4LightGlassMigrated = false,
+        v5TransparentStatsMigrated = false,
         useAverage = false,
         flashOnStatGain = true,    -- 触发增益 Buff 导致属性提升时数值短暂高亮闪烁
         alignLabel = "攻击强度: ",
@@ -45,6 +48,24 @@ local mod = F.RegisterModule("durability", {
 local STATS_FRAME_NAME = "EUI_SecondaryStats"
 local DEFAULT_ROW_GAP = 3
 local CARD_WIDTH = 172
+local CARD_WIDTH_ABBR = 132 -- EUI「缩写属性标签」开启时的窄卡片
+
+-- 跟随 EUI 次要属性设置：「缩写属性标签」与「数值着色」（kkowoUI 卡片替代了 EUI 原文字，
+-- 这两个开关以前只改被隐藏的 EUI 文字，于是点了只看到容器挪动、卡片毫无变化）
+local SHORT_LABELS = {
+    rap = "远攻", rcrit = "远暴", rhit = "远命", rspeed = "攻速",
+    ap = "攻强", mcrit = "暴击", mhit = "命中", armor = "护甲",
+    sp = "法强", scrit = "法暴", shit = "法命", mp5 = "回蓝", movespeed = "移速",
+}
+
+local function EUIExtra(key)
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI.QoLExtrasGet) == "function" then
+        local ok, v = pcall(EUI.QoLExtrasGet, key)
+        if ok then return v end
+    end
+    return nil
+end
 local ROW_HEIGHT = 18
 
 local SLOTS = {
@@ -68,6 +89,7 @@ local scanTip = nil
 local hookedStats = setmetatable({}, { __mode = "k" })
 local lastCleanStat = {}
 local euiHideHooked = false
+local euiStatsHooked = false
 local speedTicker = nil
 
 local function DurabilityColor(pct)
@@ -79,6 +101,65 @@ local function DurabilityColor(pct)
         return 0.96, 0.82, 0.30
     end
     return 0.37, 0.86, 0.62
+end
+
+local function BagSlotsColor(used, total)
+    if not total or total <= 0 then
+        return 0.37, 0.86, 0.62
+    end
+    local free = total - used
+    local ratio = used / total
+    if free <= 0 then
+        return 1.00, 0.30, 0.34
+    elseif free <= 4 or ratio >= 0.90 then
+        return 1.00, 0.58, 0.22
+    elseif free <= 10 or ratio >= 0.78 then
+        return 0.96, 0.82, 0.30
+    end
+    return 0.37, 0.86, 0.62
+end
+
+local function CollectBagSlots()
+    local C = _G.C_Container
+    local getNumSlots = (C and C.GetContainerNumSlots) or _G.GetContainerNumSlots
+    local getFreeSlots = (C and C.GetContainerNumFreeSlots) or _G.GetContainerNumFreeSlots
+    if not (getNumSlots and getFreeSlots) then
+        return nil, nil
+    end
+    local total, free = 0, 0
+    for bag = 0, 5 do
+        local okN, numSlots = pcall(getNumSlots, bag)
+        numSlots = okN and F.PlainNumber(numSlots, 0) or 0
+        if numSlots > 0 then
+            local okF, freeSlots, bagFamily = pcall(getFreeSlots, bag)
+            freeSlots = okF and F.PlainNumber(freeSlots, nil) or nil
+            bagFamily = okF and F.PlainNumber(bagFamily, 0) or 0
+            -- 与 EUI 背包标题统计口径一致：1-4 号包排除箭袋/弹药袋/灵魂袋/专业包（family ~= 0），
+            -- 5 号材料包位仅排除箭袋(1)/弹药袋(2)/灵魂袋(4)
+            local skip = false
+            if bag >= 1 and bag <= 4 then
+                skip = (bagFamily ~= 0)
+            elseif bag == 5 then
+                skip = (bagFamily == 1 or bagFamily == 2 or bagFamily == 4)
+            end
+            if not skip then
+                total = total + numSlots
+                if freeSlots ~= nil then
+                    free = free + freeSlots
+                end
+            end
+        end
+    end
+    if total <= 0 then
+        return nil, nil
+    end
+    local used = total - free
+    if used < 0 then
+        used = 0
+    elseif used > total then
+        used = total
+    end
+    return used, total
 end
 
 local durCachePct, durCacheBroken, durDirty = nil, false, true
@@ -125,11 +206,10 @@ local function GetSlotRepairCost(slotId)
     local C_TooltipInfo = _G.C_TooltipInfo
     if C_TooltipInfo and C_TooltipInfo.GetInventoryItem then
         local ok, data = pcall(C_TooltipInfo.GetInventoryItem, "player", slotId)
-        if ok and type(data) == "table" then
+        if ok and not F.IsSecret(data) and type(data) == "table" then
+            -- 没有 repairCost 字段时不能直接当 0：继续走下面的提示扫描（部分客户端不填该字段）
             local cost = F.PlainNumber(data.repairCost, nil)
-            if cost then
-                return cost
-            end
+            if cost then return cost end
         end
     end
     if not scanTip then
@@ -157,28 +237,45 @@ end
 
 local function ShowDurabilityTooltip(owner)
     local _, _, details = CollectDurability(true)
-    if not details then return end
+    local showBags = mod:GetDB().showBagSlots ~= false
+    local bagUsed, bagTotal = nil, nil
+    if showBags then
+        bagUsed, bagTotal = CollectBagSlots()
+    end
+    if not details and not bagTotal then return end
     GameTooltip:SetOwner(owner, "ANCHOR_TOPRIGHT", 6, 0)
     GameTooltip:SetText("核心属性与装备耐久", 1, 1, 1)
-    local totalCost = 0
-    for _, d in ipairs(details) do
-        local r, g, b = DurabilityColor(d.ratio)
-        GameTooltip:AddDoubleLine(
-            d.name,
-            string_format("%d%%  (%d/%d)", math_floor(d.ratio * 100 + 0.5), d.cur, d.max),
-            0.78, 0.81, 0.86,
-            r, g, b
-        )
-        if d.cur < d.max then
-            totalCost = totalCost + GetSlotRepairCost(d.slot)
+    if details then
+        local totalCost = 0
+        for _, d in ipairs(details) do
+            local r, g, b = DurabilityColor(d.ratio)
+            GameTooltip:AddDoubleLine(
+                d.name,
+                string_format("%d%%  (%d/%d)", math_floor(d.ratio * 100 + 0.5), d.cur, d.max),
+                0.78, 0.81, 0.86,
+                r, g, b
+            )
+            if d.cur < d.max then
+                totalCost = totalCost + GetSlotRepairCost(d.slot)
+            end
+        end
+        if totalCost > 0 then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddDoubleLine("预计修理费", FormatMoney(totalCost), 0.96, 0.80, 0.30, 1, 1, 1)
+        else
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("所有装备均处于完好状态", 0.37, 0.86, 0.62)
         end
     end
-    if totalCost > 0 then
-        GameTooltip:AddLine(" ")
-        GameTooltip:AddDoubleLine("预计修理费", FormatMoney(totalCost), 0.96, 0.80, 0.30, 1, 1, 1)
-    else
-        GameTooltip:AddLine(" ")
-        GameTooltip:AddLine("所有装备均处于完好状态", 0.37, 0.86, 0.62)
+    if bagTotal then
+        local br, bg, bb = BagSlotsColor(bagUsed, bagTotal)
+        local free = math_max(0, bagTotal - bagUsed)
+        GameTooltip:AddDoubleLine(
+            "背包栏位",
+            string_format("%d/%d（空余 %d 格）", bagUsed, bagTotal, free),
+            0.78, 0.81, 0.86,
+            br, bg, bb
+        )
     end
     GameTooltip:AddLine("在 EUI 解锁模式中拖动「次要属性」即可移动本面板", 0.56, 0.60, 0.66)
     GameTooltip:Show()
@@ -445,6 +542,22 @@ local function ResolveStatKeys()
     return BuildSmartStatKeys()
 end
 
+local STAT_PALETTE = {
+    rap       = { 0.98, 0.72, 0.34 },
+    ap        = { 0.96, 0.62, 0.36 },
+    rcrit     = { 1.00, 0.84, 0.38 },
+    mcrit     = { 0.98, 0.78, 0.42 },
+    scrit     = { 0.98, 0.82, 0.46 },
+    rhit      = { 0.46, 0.80, 1.00 },
+    mhit      = { 0.46, 0.80, 1.00 },
+    shit      = { 0.52, 0.82, 1.00 },
+    rspeed    = { 0.42, 0.90, 0.82 },
+    sp        = { 0.76, 0.60, 1.00 },
+    mp5       = { 0.44, 0.76, 0.98 },
+    armor     = { 0.74, 0.80, 0.88 },
+    movespeed = { 0.44, 0.92, 0.66 },
+}
+
 local function ToneColor(tone)
     local ar, ag, ab = F.Theme.GetAccent()
     if tone == "accent" then
@@ -457,6 +570,38 @@ local function ToneColor(tone)
         return 0.84, 0.87, 0.92
     end
     return 0.94, 0.95, 0.97
+end
+
+-- 完整对齐 EUI「次要属性显示」三枚色块与自定义取色器：
+--   secondaryStatsColorMode = "palette"(多色) | "class"(职业色) | "custom"(自定义色)
+--   为空时按 EUI 原版逻辑：设置了 secondaryStatsColor 则 "custom"，否则 "class"
+local function ResolveEUIStatsColorConfig()
+    local mode = EUIExtra("secondaryStatsColorMode")
+    local custom = EUIExtra("secondaryStatsColor")
+    if mode ~= "palette" and mode ~= "class" and mode ~= "custom" then
+        mode = (type(custom) == "table" and F.PlainNumber(custom.r, nil) ~= nil) and "custom" or "class"
+    end
+    local cr, cg, cb
+    if mode == "custom" and type(custom) == "table" then
+        cr = F.PlainNumber(custom.r, nil)
+        cg = F.PlainNumber(custom.g, nil)
+        cb = F.PlainNumber(custom.b, nil)
+    end
+    if not (cr and cg and cb) then
+        cr, cg, cb = F.Theme.GetClassColor()
+    end
+    -- EUI 原版 coloredPercentages 默认 false（默认仅标签着色、数值纯白；勾选后数值一并着色）
+    local coloredPct = EUIExtra("coloredPercentages") == true
+    return mode, cr, cg, cb, coloredPct
+end
+
+local function ResolveStatColor(k, def, colorMode, cr, cg, cb)
+    if colorMode == "palette" then
+        local pal = STAT_PALETTE[k]
+        if pal then return pal[1], pal[2], pal[3] end
+        return ToneColor(def.tone)
+    end
+    return cr, cg, cb
 end
 
 local refTextCache = setmetatable({}, { __mode = "k" })
@@ -478,6 +623,7 @@ end
 
 local UpdateAll
 local ScheduleUpdate
+local SyncStatsContainer -- 定义在卡片渲染段
 
 local function OnStatsFrameChange()
     if not mod._active then return end
@@ -515,7 +661,8 @@ local function EnsureCard(parent)
 
     local glassBg = cardFrame:CreateTexture(nil, "BACKGROUND", nil, -6)
     glassBg:SetAllPoints(cardFrame)
-    glassBg:SetColorTexture(0.042, 0.048, 0.066, 0.36)
+    local gc = F.StyleTokens and F.StyleTokens.COLORS.glass or { 0.04, 0.046, 0.062, 0.24 }
+    glassBg:SetColorTexture(gc[1], gc[2], gc[3], gc[4])
     cardFrame._glassBg = glassBg
 
     local glassSheen = cardFrame:CreateTexture(nil, "BACKGROUND", nil, -5)
@@ -537,7 +684,7 @@ local function EnsureCard(parent)
     cardFrame._topLine = topLine
 
     local divider = cardFrame:CreateTexture(nil, "ARTWORK")
-    divider:SetHeight(1)
+    if F.StyleTokens then F.StyleTokens.Hairline(divider) else divider:SetHeight(1) end
     divider:SetColorTexture(1, 1, 1, 0.09)
     cardFrame._divider = divider
 
@@ -597,6 +744,46 @@ local function AcquireCardRow(index)
     return row
 end
 
+local statsSizeBusy = false
+local statsSizeHooked = setmetatable({}, { __mode = "k" })
+local statsCardSize = setmetatable({}, { __mode = "k" })
+
+SyncStatsContainer = function(stats, w, h)
+    if not (stats and stats.SetSize) then return end
+    local rec = statsCardSize[stats]
+    if not rec then
+        rec = {}
+        statsCardSize[stats] = rec
+    end
+    rec.w, rec.h = w, h
+    if not statsSizeHooked[stats] then
+        statsSizeHooked[stats] = true
+        _G.hooksecurefunc(stats, "SetSize", function(self)
+            local sz = statsCardSize[self]
+            if statsSizeBusy or not (sz and sz.w) then return end
+            if not (mod._active and mod:GetDB().unifiedPanel ~= false) then return end
+            statsSizeBusy = true
+            pcall(self.SetSize, self, sz.w, sz.h)
+            statsSizeBusy = false
+        end)
+    end
+    local cw = F.PlainNumber(stats:GetWidth(), 0) or 0
+    local ch = F.PlainNumber(stats:GetHeight(), 0) or 0
+    if math.abs(cw - w) > 0.5 or math.abs(ch - h) > 0.5 then
+        statsSizeBusy = true
+        pcall(stats.SetSize, stats, w, h)
+        statsSizeBusy = false
+    end
+end
+
+-- 停用卡片 / 切回旧版耐久行时把容器尺寸交还 EUI
+local function ReleaseStatsContainer(stats)
+    if not (stats and statsCardSize[stats]) then return end
+    statsCardSize[stats] = nil
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI._applySecondaryStats) == "function" then pcall(EUI._applySecondaryStats) end
+end
+
 local function RenderUnifiedPanel(stats, refText)
     if legacyRowFrame then legacyRowFrame:Hide() end
     local db = mod:GetDB()
@@ -609,17 +796,21 @@ local function RenderUnifiedPanel(stats, refText)
 
     local ST = F.StyleTokens
     local ar, ag, ab = F.Theme.GetAccent()
-    local bgAlpha = (db.showBackdrop == false) and 0 or (F.PlainNumber(db.backdropAlpha, 0.36) or 0.36)
+    local bgAlpha = (db.showBackdrop == false) and 0 or (F.PlainNumber(db.backdropAlpha, 0) or 0)
     if bgAlpha < 0 then bgAlpha = 0 elseif bgAlpha > 0.85 then bgAlpha = 0.85 end
     local showBg = bgAlpha >= 0.03
     local padX = showBg and 11 or 2
     local padTop = showBg and 9 or 2
     local padBot = showBg and 8 or 2
-    local fontOutline = (bgAlpha < 0.24) and "OUTLINE" or ""
+    local abbrev = EUIExtra("secondaryStatsAbbreviateLabels") == true
+    local colorMode, cr, cg, cb, coloredPct = ResolveEUIStatsColorConfig()
+    local cardW = abbrev and CARD_WIDTH_ABBR or CARD_WIDTH
+    local fontSig = string_format("%s:%s:%s:%.2f:%.2f:%.2f",
+        abbrev and "a" or "f", coloredPct and "c" or "w", colorMode, cr, cg, cb)
     local rad = ST and ST.GetCornerRadius(8) or 8
 
     local chromeSig = string_format("%.2f:%d:%d:%d:%.2f:%.2f:%.2f:%s",
-        bgAlpha, showBg and 1 or 0, db.showTopLine ~= false and 1 or 0, rad, ar, ag, ab, fontOutline)
+        bgAlpha, showBg and 1 or 0, db.showTopLine ~= false and 1 or 0, rad, ar, ag, ab, fontSig)
     local chromeDirty = (card._chromeSig ~= chromeSig)
     if chromeDirty then
         card._chromeSig = chromeSig
@@ -628,7 +819,8 @@ local function RenderUnifiedPanel(stats, refText)
             for _, ln in ipairs(card._fuiBorders) do ln:Hide() end
         end
         if showBg then
-            card._glassBg:SetColorTexture(0.042, 0.048, 0.066, bgAlpha)
+            local gc = ST and ST.COLORS.glass or { 0.04, 0.046, 0.062 }
+            card._glassBg:SetColorTexture(gc[1], gc[2], gc[3], bgAlpha)
             card._glassBg:Show()
             card._glassSheen:Show()
             if ST then
@@ -638,7 +830,6 @@ local function RenderUnifiedPanel(stats, refText)
             end
             if db.showTopLine ~= false then
                 card._topLine:SetColorTexture(ar, ag, ab, 0.72)
-                if ST then ST.MaskTexture(card, card._topLine, 2) end
                 card._topLine:Show()
             else
                 card._topLine:Hide()
@@ -651,6 +842,7 @@ local function RenderUnifiedPanel(stats, refText)
         end
     end
 
+    local shadowA = showBg and 0.78 or 0.92
     local keys = ResolveStatKeys()
     local count = 0
     local y = -padTop
@@ -674,18 +866,26 @@ local function RenderUnifiedPanel(stats, refText)
                     row:SetPoint("TOPLEFT", card, "TOPLEFT", padX, y)
                     row:SetPoint("TOPRIGHT", card, "TOPRIGHT", -padX, y)
                 end
-                if chromeDirty or row._lastKey ~= k then
-                    row._lastKey = k
-                    F.Theme.ApplyFont(row._label, 11, fontOutline, 0.72, 0.76, 0.82, 0.96)
-                    local vr, vg, vb = ToneColor(def.tone)
-                    F.Theme.ApplyFont(row._value, 12, fontOutline, vr, vg, vb, 1)
-                    if fontOutline == "" then
-                        row._label:SetShadowColor(0, 0, 0, 0.85); row._label:SetShadowOffset(1, -1)
-                        row._value:SetShadowColor(0, 0, 0, 0.90); row._value:SetShadowOffset(1, -1)
+                local keyChanged = (row._lastKey ~= k)
+                if chromeDirty or keyChanged then
+                    if keyChanged then
+                        row._lastKey = k
+                        row._lastNum = nil
+                        row._lastVal = nil
                     end
-                    if row._dot then row._dot:SetVertexColor(vr, vg, vb, 0.88) end
+                    local sr, sg, sb = ResolveStatColor(k, def, colorMode, cr, cg, cb)
+                    local vr, vg, vb = 0.96, 0.97, 0.99
+                    if coloredPct then vr, vg, vb = sr, sg, sb end
+                    local fs = ST and ST.FONT or { body = 12 }
+                    if ST then
+                        ST.ApplyText(row._label, fs.body, sr, sg, sb, 0.98)
+                        ST.ApplyText(row._value, fs.body, vr, vg, vb, 1)
+                        row._label:SetShadowColor(0, 0, 0, shadowA)
+                        row._value:SetShadowColor(0, 0, 0, shadowA)
+                    end
+                    if row._dot then row._dot:SetVertexColor(sr, sg, sb, 0.92) end
                     if row._zebra then row._zebra:SetShown(showBg and (count % 2 == 0)) end
-                    row._label:SetText(def.label)
+                    row._label:SetText(abbrev and (SHORT_LABELS[k] or def.label) or def.label)
                 end
                 local valText = num ~= nil and def.fmt(num) or "--"
                 if row._lastVal ~= valText then
@@ -713,9 +913,14 @@ local function RenderUnifiedPanel(stats, refText)
         end
     end
 
-    -- 装备耐久原生融入同一面板底部，以 1px 细分隔线自然区分（仅耐久变更事件时重扫装备，UNIT_AURA 零扫描）
+    -- 装备耐久与实时背包栏位原生融入同一面板底部，以 1px 细分隔线自然区分（仅耐久变更事件时重扫装备，UNIT_AURA 零扫描）
     local pct, broken = GetCachedDurability()
-    if pct ~= nil then
+    local bagUsed, bagTotal = nil, nil
+    if db.showBagSlots ~= false then
+        bagUsed, bagTotal = CollectBagSlots()
+    end
+    local hasFooter = (pct ~= nil) or (bagTotal ~= nil)
+    if hasFooter then
         y = y - 4
         if card._divPadX ~= padX or card._divY ~= y then
             card._divPadX, card._divY = padX, y
@@ -725,7 +930,11 @@ local function RenderUnifiedPanel(stats, refText)
         end
         card._divider:SetShown(showBg)
         y = y - 2
+    else
+        card._divider:Hide()
+    end
 
+    if pct ~= nil then
         count = count + 1
         local row = AcquireCardRow(count)
         if row._lastPadX ~= padX or row._lastY ~= y then
@@ -735,40 +944,92 @@ local function RenderUnifiedPanel(stats, refText)
             row:SetPoint("TOPRIGHT", card, "TOPRIGHT", -padX, y)
         end
         local durValText = broken and "已损坏" or string_format("%d%%", math_floor(pct * 100 + 0.5))
-        if chromeDirty or row._lastKey ~= "__dur__" or row._lastVal ~= durValText then
+        if chromeDirty or row._lastKey ~= "__dur__" or row._lastVal ~= durValText or row._lastSig ~= fontSig then
+            row._lastSig = fontSig
             row._lastKey = "__dur__"
+            row._lastNum = nil
             row._lastVal = durValText
             local dr, dg, dbCol = DurabilityColor(pct)
-            F.Theme.ApplyFont(row._label, 11, fontOutline, 0.72, 0.76, 0.82, 0.96)
-            F.Theme.ApplyFont(row._value, 12, fontOutline, dr, dg, dbCol, 1)
-            if fontOutline == "" then
-                row._label:SetShadowColor(0, 0, 0, 0.85); row._label:SetShadowOffset(1, -1)
-                row._value:SetShadowColor(0, 0, 0, 0.90); row._value:SetShadowOffset(1, -1)
+            local lr, lg, lb = (colorMode == "palette") and dr or cr,
+                (colorMode == "palette") and dg or cg,
+                (colorMode == "palette") and dbCol or cb
+            if ST then
+                ST.ApplyText(row._label, ST.FONT.body, lr, lg, lb, 0.98)
+                ST.ApplyText(row._value, ST.FONT.body, dr, dg, dbCol, 1)
+                row._label:SetShadowColor(0, 0, 0, shadowA)
+                row._value:SetShadowColor(0, 0, 0, shadowA)
             end
             if row._dot then row._dot:SetVertexColor(dr, dg, dbCol, 0.95) end
             if row._zebra then row._zebra:Hide() end
-            row._label:SetText("装备耐久")
+            row._label:SetText(abbrev and "耐久" or "装备耐久")
             row._value:SetText(durValText)
         end
         if not row:IsShown() then row:Show() end
         y = y - ROW_HEIGHT
-        -- 底部微型圆角耐久健康度进度条
+        -- 底部微型耐久健康度进度条（纯透明模式下用深色微透轨道确保野外草地/亮场景也清晰可读）
         if card._durBarBg and card._durBarFill then
             local dr, dg, dbCol = DurabilityColor(pct)
-            local barW = math_max(40, CARD_WIDTH - padX * 2)
+            local barW = math_max(40, cardW - padX * 2)
             card._durBarBg:ClearAllPoints()
             card._durBarBg:SetPoint("TOPLEFT", card, "TOPLEFT", padX, y - 1)
             card._durBarBg:SetPoint("TOPRIGHT", card, "TOPRIGHT", -padX, y - 1)
+            if showBg then
+                card._durBarBg:SetColorTexture(1, 1, 1, 0.10)
+            else
+                card._durBarBg:SetColorTexture(0.03, 0.035, 0.05, 0.48)
+            end
             card._durBarBg:Show()
-            card._durBarFill:SetColorTexture(dr, dg, dbCol, 0.90)
+            card._durBarFill:SetColorTexture(dr, dg, dbCol, 0.92)
             card._durBarFill:SetWidth(math_max(2, math_floor(barW * pct + 0.5)))
             card._durBarFill:Show()
             y = y - 6
         end
     else
-        card._divider:Hide()
         if card._durBarBg then card._durBarBg:Hide() end
         if card._durBarFill then card._durBarFill:Hide() end
+    end
+
+    if bagTotal ~= nil then
+        if pct ~= nil then y = y - 2 end
+        count = count + 1
+        local row = AcquireCardRow(count)
+        if row._lastPadX ~= padX or row._lastY ~= y then
+            row._lastPadX, row._lastY = padX, y
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", card, "TOPLEFT", padX, y)
+            row:SetPoint("TOPRIGHT", card, "TOPRIGHT", -padX, y)
+        end
+        local bagValText = string_format("%d/%d", bagUsed, bagTotal)
+        if chromeDirty or row._lastKey ~= "__bag__" or row._lastVal ~= bagValText or row._lastSig ~= fontSig then
+            row._lastSig = fontSig
+            row._lastKey = "__bag__"
+            row._lastNum = nil
+            row._lastVal = bagValText
+            local br, bgCol, bb = BagSlotsColor(bagUsed, bagTotal)
+            local lr, lg, lb = (colorMode == "palette") and br or cr,
+                (colorMode == "palette") and bgCol or cg,
+                (colorMode == "palette") and bb or cb
+            if ST then
+                ST.ApplyText(row._label, ST.FONT.body, lr, lg, lb, 0.98)
+                ST.ApplyText(row._value, ST.FONT.body, br, bgCol, bb, 1)
+                row._label:SetShadowColor(0, 0, 0, shadowA)
+                row._value:SetShadowColor(0, 0, 0, shadowA)
+            end
+            if row._dot then row._dot:SetVertexColor(br, bgCol, bb, 0.95) end
+            if row._zebra then row._zebra:Hide() end
+            row._label:SetText(abbrev and "背包" or "背包栏位")
+            row._value:SetText(bagValText)
+        end
+        if not row:IsShown() then row:Show() end
+        card._bagRow = row
+        card._lastBagUsed = bagUsed
+        card._lastBagTotal = bagTotal
+        card._bagColorMode = colorMode
+        y = y - ROW_HEIGHT
+    else
+        card._bagRow = nil
+        card._lastBagUsed = nil
+        card._lastBagTotal = nil
     end
 
     for i = count + 1, #cardRows do
@@ -776,13 +1037,16 @@ local function RenderUnifiedPanel(stats, refText)
     end
 
     local totalH = math_max(24, (-y) + padBot)
-    if card._lastH ~= totalH or card._lastHost ~= stats then
+    if card._lastH ~= totalH or card._lastHost ~= stats or card._lastW ~= cardW then
         card._lastH = totalH
+        card._lastW = cardW
         card._lastHost = stats
-        card:SetSize(CARD_WIDTH, totalH)
+        card:SetSize(cardW, totalH)
         card:ClearAllPoints()
         card:SetPoint("TOPLEFT", stats, "TOPLEFT", 0, 0)
     end
+    -- EUI 容器按它（已隐藏）文字的尺寸改大小：改成跟卡片一致，解锁拖动框与设置弹窗才对得上卡片，也不会乱跳
+    SyncStatsContainer(stats, cardW, totalH)
     if not card:IsShown() then card:Show() end
 end
 
@@ -839,8 +1103,16 @@ local function RenderLegacyDurabilityRow(stats, refText)
     local r, g, b = DurabilityColor(pct)
     local hex = F.RGBToHex(r, g, b)
     local valStr = broken and "已损坏" or string_format("%d%%", math_floor(pct * 100 + 0.5))
+    local bagSuffix = ""
+    if mod:GetDB().showBagSlots ~= false then
+        local bagUsed, bagTotal = CollectBagSlots()
+        if bagTotal then
+            local br, bgCol, bb = BagSlotsColor(bagUsed, bagTotal)
+            bagSuffix = string_format("  |cff%s背包 %d/%d|r", F.RGBToHex(br, bgCol, bb), bagUsed, bagTotal)
+        end
+    end
     legacyRowFrame.label:SetText(string_format("|cff%s耐久度: |r", hex))
-    legacyRowFrame.value:SetText(string_format("|cff%s%s|r", hex, valStr))
+    legacyRowFrame.value:SetText(string_format("|cff%s%s|r%s", hex, valStr, bagSuffix))
     legacyRowFrame.measure:SetText("耐久度: ")
     local offsetX = F.PlainNumber(legacyRowFrame.measure:GetStringWidth(), 48)
 
@@ -870,6 +1142,7 @@ UpdateAll = function()
         if cardFrame then cardFrame:Hide() end
         if legacyRowFrame then legacyRowFrame:Hide() end
         if refText and refText.SetAlpha then refText:SetAlpha(1) end
+        ReleaseStatsContainer(stats)
         return
     end
     if not (stats and stats:IsShown()) then
@@ -881,6 +1154,7 @@ UpdateAll = function()
     if mod:GetDB().unifiedPanel ~= false then
         RenderUnifiedPanel(stats, refText)
     else
+        ReleaseStatsContainer(stats)
         RenderLegacyDurabilityRow(stats, refText)
     end
 end
@@ -890,6 +1164,50 @@ ScheduleUpdate = F.Debounce(0.35, UpdateAll)
 local function ScheduleDurabilityUpdate()
     durDirty = true
     ScheduleUpdate()
+end
+
+-- 实时背包栏位轻量刷新：同帧内合并多次 BAG_UPDATE，下一帧即刻仅改单行文字与语义色（零卡顿、实时同步）
+local bagRefreshPending = false
+local function RefreshBagSlotsNow()
+    bagRefreshPending = false
+    if not mod._active then return end
+    local db = mod:GetDB()
+    if db.showBagSlots == false then return end
+    if db.unifiedPanel == false then
+        UpdateAll()
+        return
+    end
+    if not (cardFrame and cardFrame:IsShown()) then return end
+    local used, total = CollectBagSlots()
+    local row = cardFrame._bagRow
+    if total == nil then
+        if row then UpdateAll() end
+        return
+    end
+    if not row then
+        UpdateAll()
+        return
+    end
+    if used == cardFrame._lastBagUsed and total == cardFrame._lastBagTotal then
+        return
+    end
+    cardFrame._lastBagUsed = used
+    cardFrame._lastBagTotal = total
+    local txt = string_format("%d/%d", used, total)
+    row._lastVal = txt
+    row._value:SetText(txt)
+    local br, bgCol, bb = BagSlotsColor(used, total)
+    row._value:SetTextColor(br, bgCol, bb, 1)
+    if row._dot then row._dot:SetVertexColor(br, bgCol, bb, 0.95) end
+    if cardFrame._bagColorMode == "palette" then
+        row._label:SetTextColor(br, bgCol, bb, 0.98)
+    end
+end
+
+local function ScheduleBagRefresh()
+    if bagRefreshPending then return end
+    bagRefreshPending = true
+    C_Timer.After(0, RefreshBagSlotsNow)
 end
 
 local function HookEUIHideOnce()
@@ -906,22 +1224,50 @@ local function HookEUIHideOnce()
     end
 end
 
+local function HookEUIStatsApplyOnce()
+    if euiStatsHooked then return end
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI._applySecondaryStats) == "function" then
+        euiStatsHooked = true
+        _G.hooksecurefunc(EUI, "_applySecondaryStats", function()
+            if mod._active then
+                if cardFrame then cardFrame._chromeSig = nil end
+                C_Timer.After(0, UpdateAll)
+            end
+        end)
+    end
+end
+
 function mod:OnEnable()
     local db = self:GetDB()
-    -- 一次性迁移：自动切换至纯透明无边框、无顶部横线状态
     if not db.v2TransparentMigrated then
         db.v2TransparentMigrated = true
     end
     if not db.v3GlassCardMigrated then
         db.v3GlassCardMigrated = true
         db.showBackdrop = true
-        db.backdropAlpha = 0.36
+        db.backdropAlpha = 0.24
         db.showTopLine = true
     end
+    if not db.v4LightGlassMigrated then
+        db.v4LightGlassMigrated = true
+        if (F.PlainNumber(db.backdropAlpha, 0.24) or 0.24) >= 0.30 then db.backdropAlpha = 0.24 end
+    end
+    -- v5 一次性迁移：回归纯透明无底板清爽风格（保留设置项让玩家按需再开启玻璃底板）
+    if not db.v5TransparentStatsMigrated then
+        db.v5TransparentStatsMigrated = true
+        db.showBackdrop = false
+        db.backdropAlpha = 0
+        db.showTopLine = false
+    end
+    HookEUIStatsApplyOnce()
     durDirty = true
 
     self:RegisterEvent("UPDATE_INVENTORY_DURABILITY", ScheduleDurabilityUpdate)
     self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED", ScheduleDurabilityUpdate)
+    self:RegisterEvent("BAG_UPDATE", ScheduleBagRefresh)
+    self:RegisterEvent("BAG_UPDATE_DELAYED", RefreshBagSlotsNow)
+    self:RegisterEvent("BAG_CONTAINER_UPDATE", ScheduleBagRefresh)
     self:RegisterUnitEvent("UNIT_STATS", "player", ScheduleUpdate)
     self:RegisterUnitEvent("UNIT_AURA", "player", ScheduleUpdate)
     self:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED", ScheduleUpdate)
@@ -930,8 +1276,12 @@ function mod:OnEnable()
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA", ScheduleUpdate)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         durDirty = true
+        HookEUIStatsApplyOnce()
         ScheduleUpdate()
-        C_Timer.After(0.8, HookEUIHideOnce)
+        C_Timer.After(0.8, function()
+            HookEUIHideOnce()
+            HookEUIStatsApplyOnce()
+        end)
         C_Timer.After(1.5, function() if mod._active then UpdateAll() end end)
     end)
 
@@ -947,9 +1297,17 @@ function mod:OnEnable()
         local num = ReadCachedStat("movespeed", def.get)
         local txt = num ~= nil and def.fmt(num) or "--"
         if txt ~= cardFrame._lastSpeedText then
+            local prevNum = row._lastNum
             cardFrame._lastSpeedText = txt
             row._lastVal = txt
+            row._lastNum = num
             row._value:SetText(txt)
+            if mod:GetDB().flashOnStatGain ~= false and F.Motion and F.Motion.PlayStatBlink
+                and type(prevNum) == "number" and type(num) == "number" and num > prevNum + 0.01 then
+                F.Motion.PlayStatBlink(row._value, 0.36)
+            end
+        elseif num ~= nil and row._lastNum == nil then
+            row._lastNum = num
         end
     end)
 
@@ -1035,7 +1393,13 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         tooltip = "当触发饰品、嗜血、光环或增益 Buff 令攻强/暴击/法强/移速上升时，对应属性数字短促高亮回弹提示。",
         getValue = function() return db.flashOnStatGain ~= false end,
         setValue = function(v) db.flashOnStatGain = v == true end,
-    }, blank)
+    }, {
+        type = "toggle",
+        text = "底部实时显示背包栏位（如 18/72）",
+        tooltip = "在装备耐久下方实时显示当前已用/总背包格数（自动排除箭袋/弹药袋/灵魂袋，与 EUI 背包标题一致）。",
+        getValue = function() return db.showBagSlots ~= false end,
+        setValue = function(v) db.showBagSlots = v == true; UpdateAll() end,
+    })
     y = y - h
     return y
 end

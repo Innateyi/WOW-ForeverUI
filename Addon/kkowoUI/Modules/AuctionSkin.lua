@@ -245,8 +245,10 @@ LayoutTabRow = function()
             else
                 t:Show()
                 if key == "Cancelling" then
-                    local wantLabel = merge and "压价扫描" or (origTabLabel[t] or "取消")
-                    local wantHeader = merge and "拍卖行 · 压价与市价扫描" or (origTabHeader[t] or "Auctionator - 取消")
+                    local origLbl = origTabLabel[t]
+                    local wantLabel = merge and "压价扫描" or ((origLbl and origLbl ~= "" and origLbl) or "取消")
+                    local origHdr = origTabHeader[t]
+                    local wantHeader = merge and "拍卖行 · 压价与市价扫描" or ((origHdr and origHdr ~= "" and origHdr) or "Auctionator - 取消")
                     t.tabHeader = wantHeader
                     if t.SetText and F.PlainString(t.GetText and t:GetText(), "") ~= wantLabel then
                         pcall(t.SetText, t, wantLabel)
@@ -270,12 +272,12 @@ LayoutTabRow = function()
                 else
                     t:SetPoint("BOTTOMLEFT", ah, "BOTTOMLEFT", 20, -28)
                 end
-                PolishTabLabel(t)
+                if mod._active then PolishTabLabel(t) end
                 prev = t
             end
         end
     end
-    PolishWindowHeader(ah)
+    if mod._active then PolishWindowHeader(ah) end
 end
 
 local function SyncEUIZoneDividers(ah, anyOurs, isConfigPage)
@@ -370,7 +372,7 @@ local function EnsureScanProgressListener()
     if #evs == 0 then return end
     scanBusHooked = true
     function scanEventSink:ReceiveEvent(ev, data)
-        if not Usable(scanStatusFS) then return end
+        if not (mod._active and ShouldMergeTabs() and Usable(scanStatusFS)) then return end
         local fEv = A.FullScan and A.FullScan.Events or {}
         local iEv = A.IncrementalScan and A.IncrementalScan.Events or {}
         if ev == fEv.ScanStart or ev == iEv.ScanStart then
@@ -381,7 +383,7 @@ local function EnsureScanProgressListener()
         elseif ev == fEv.ScanComplete or ev == iEv.ScanComplete then
             scanStatusFS:SetText("扫描完成")
             C_Timer.After(3, function()
-                if Usable(scanStatusFS) and scanStatusFS:GetText() == "扫描完成" then
+                if mod._active and Usable(scanStatusFS) and scanStatusFS:GetText() == "扫描完成" then
                     scanStatusFS:SetText("")
                 end
             end)
@@ -395,8 +397,11 @@ end
 local function TriggerMarketScan()
     local A = _G.Auctionator
     if type(A) ~= "table" or not A.State then return end
-    local useRep = A.Config and A.Config.Options and A.Config.Get
-        and A.Config.Get(A.Config.Options.REPLICATE_SCAN)
+    local useRep = false
+    if A.Config and A.Config.Options and A.Config.Options.REPLICATE_SCAN ~= nil and type(A.Config.Get) == "function" then
+        local ok, val = pcall(A.Config.Get, A.Config.Options.REPLICATE_SCAN)
+        useRep = ok and val == true
+    end
     if useRep and A.State.FullScanFrameRef and A.State.FullScanFrameRef.InitiateScan then
         pcall(A.State.FullScanFrameRef.InitiateScan, A.State.FullScanFrameRef)
     elseif A.State.IncrementalScanFrameRef and A.State.IncrementalScanFrameRef.InitiateScan then
@@ -526,8 +531,8 @@ local function PolishMoneyEditBox(eb)
     end
     if not moneyHooked[eb] and eb.HookScript then
         moneyHooked[eb] = true
-        eb:HookScript("OnShow", PolishMoneyEditBox)
-        eb:HookScript("OnEditFocusLost", PolishMoneyEditBox)
+        eb:HookScript("OnShow", function(self) if mod._active then PolishMoneyEditBox(self) end end)
+        eb:HookScript("OnEditFocusLost", function(self) if mod._active then PolishMoneyEditBox(self) end end)
     end
 end
 
@@ -590,14 +595,17 @@ local function PolishButtonFont(btn, size)
 end
 
 -- 先铺平按钮底板，再直接绘制白色去色刷新图标（公开 SkinAPI 不含 RefreshGlyph，必须自绘以防空白框体）
+local refreshIcons = setmetatable({}, { __mode = "k" })
+
 local function PolishRefreshButton(S, btn)
     if not Usable(btn) then return end
     if not done[btn] then
         done[btn] = true
         if S and S.Button then Call(S.Button, btn) end
     end
-    if not btn._kkRefreshIcon then
-        local glyph = btn:CreateTexture(nil, "OVERLAY", nil, 5)
+    local glyph = refreshIcons[btn]
+    if not glyph then
+        glyph = btn:CreateTexture(nil, "OVERLAY", nil, 5)
         glyph:SetSize(14, 14)
         glyph:SetPoint("CENTER", btn, "CENTER", 0, 0)
         local hasAtlas = _G.C_Texture and _G.C_Texture.GetAtlasInfo and _G.C_Texture.GetAtlasInfo("UI-RefreshButton")
@@ -608,19 +616,23 @@ local function PolishRefreshButton(S, btn)
         end
         if glyph.SetDesaturated then pcall(glyph.SetDesaturated, glyph, true) end
         pcall(glyph.SetVertexColor, glyph, 0.90, 0.93, 0.98, 0.90)
-        btn._kkRefreshIcon = glyph
+        refreshIcons[btn] = glyph
         if btn.HookScript then
             btn:HookScript("OnEnter", function(self)
-                if self._kkRefreshIcon then self._kkRefreshIcon:SetVertexColor(1, 1, 1, 1) end
+                if not mod._active then return end
+                local ic = refreshIcons[self]
+                if ic then ic:SetVertexColor(1, 1, 1, 1) end
             end)
             btn:HookScript("OnLeave", function(self)
-                if self._kkRefreshIcon then self._kkRefreshIcon:SetVertexColor(0.90, 0.93, 0.98, 0.90) end
+                if not mod._active then return end
+                local ic = refreshIcons[self]
+                if ic then ic:SetVertexColor(0.90, 0.93, 0.98, 0.90) end
             end)
         end
     end
-    if btn._kkRefreshIcon then
-        btn._kkRefreshIcon:SetAlpha(1)
-        btn._kkRefreshIcon:Show()
+    if glyph then
+        glyph:SetAlpha(1)
+        glyph:Show()
     end
 end
 
@@ -823,6 +835,8 @@ local function ApplyAll()
             end
         end
     end
+    if Usable(scanBtnRef) then scanBtnRef:SetShown(ShouldMergeTabs()) end
+    if Usable(scanStatusFS) then scanStatusFS:SetShown(ShouldMergeTabs()) end
     LayoutTabRow()
     SyncTabSelection()
 end
@@ -848,6 +862,7 @@ end
 function mod:OnDisable()
     if Usable(scanBtnRef) then scanBtnRef:Hide() end
     if Usable(scanStatusFS) then scanStatusFS:Hide() end
+    SyncEUIZoneDividers(_G.AuctionHouseFrame, false, false)
     LayoutTabRow()
 end
 
@@ -860,6 +875,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         getValue = function() return db.mergeTabs ~= false end,
         setValue = function(v)
             db.mergeTabs = v == true
+            if Usable(scanBtnRef) then scanBtnRef:SetShown(ShouldMergeTabs()) end
+            if Usable(scanStatusFS) then scanStatusFS:SetShown(ShouldMergeTabs()) end
             if db.mergeTabs then RestoreAuctionatorRightClickIfNeeded() end
             if _G.AuctionHouseFrame and _G.AuctionHouseFrame:IsShown() then
                 ApplyAll()

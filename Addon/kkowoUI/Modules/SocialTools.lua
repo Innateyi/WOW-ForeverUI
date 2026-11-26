@@ -28,15 +28,47 @@ local mod = F.RegisterModule("socialTools", {
 
 
 local function GetPlayerMailName()
-    local first, second = _G.UnitName("player")
+    local fn = _G.UnitNameUnmodified or _G.UnitName
+    local ok, first, second = pcall(fn, "player")
+    if not ok then return nil end
     first = F.PlainString(first, nil)
     second = F.PlainString(second, nil)
     if not first or first == "" then return nil end
-    -- 无限服（16001）角色带姓氏：UnitName("player") 第 2 返回值为姓氏，寄信必须填「名 姓」
-    if second and second ~= "" and _G.EllesmereUI and _G.EllesmereUI.IS_FOREVER then
-        return first .. " " .. second
+    -- 无限服（16001）角色带姓氏：UnitName 第 2 返回值为姓氏，寄信必须填「名 姓」
+    local EUI = _G.EllesmereUI
+    if second and second ~= "" and EUI and EUI.IS_FOREVER then
+        if type(EUI.WithSurname) == "function" then
+            local joined = F.PlainString(EUI.WithSurname(first, second, true), nil)
+            if joined and joined ~= "" then return joined end
+        end
+        local suffix = " " .. second
+        if first:sub(-#suffix) == suffix then
+            return first
+        end
+        return first .. suffix
     end
     return first
+end
+
+local function GetMailRealmKey(fallback)
+    local EUI = _G.EllesmereUI
+    if EUI and EUI.IS_FOREVER and type(EUI.RealmGroupName) == "function" then
+        local ok, grp = pcall(EUI.RealmGroupName)
+        grp = ok and F.PlainString(grp, nil) or nil
+        if grp and grp ~= "" then return grp end
+    end
+    local rlm = _G.GetRealmName and F.PlainString(_G.GetRealmName(), nil) or nil
+    if rlm and rlm ~= "" then return rlm end
+    return fallback or ""
+end
+
+local function GetPlayerFactionKey()
+    if _G.UnitFactionGroup then
+        local ok, fac = pcall(_G.UnitFactionGroup, "player")
+        fac = ok and F.PlainString(fac, nil) or nil
+        if fac and fac ~= "" then return fac end
+    end
+    return "Neutral"
 end
 
 local copyBoxFrame = nil
@@ -153,23 +185,49 @@ local function HookContextMenus()
             if not name or name == "" then
                 return
             end
-            local realm = F.PlainString(contextData.server, nil)
-            local full = (realm and realm ~= "") and (name .. "-" .. realm) or name
+            local unit = F.PlainString(contextData.unit, nil)
+            local EUI = _G.EllesmereUI
+            local full
+            if EUI and EUI.IS_FOREVER then
+                if _G.UnitPopupSharedUtil and type(_G.UnitPopupSharedUtil.GetFullPlayerName) == "function" then
+                    local okU, ufull = pcall(_G.UnitPopupSharedUtil.GetFullPlayerName, contextData)
+                    full = okU and F.PlainString(ufull, nil) or nil
+                end
+                if (not full or full == "") and unit and _G.UnitName then
+                    local okN, n1, n2 = pcall(_G.UnitName, unit)
+                    n1 = okN and F.PlainString(n1, nil) or nil
+                    n2 = okN and F.PlainString(n2, nil) or nil
+                    if n1 and n1 ~= "" then
+                        if n2 and n2 ~= "" then
+                            full = (type(EUI.WithSurname) == "function" and F.PlainString(EUI.WithSurname(n1, n2, true), nil))
+                                or (n1 .. " " .. n2)
+                        else
+                            full = n1
+                        end
+                    end
+                end
+                if not full or full == "" then full = name end
+            else
+                local realm = F.PlainString(contextData.server, nil)
+                full = (realm and realm ~= "") and (name .. "-" .. realm) or name
+            end
             rootDescription:CreateDivider()
-            rootDescription:CreateButton("复制名字：" .. name, function()
+            rootDescription:CreateButton("复制名字：" .. full, function()
                 ShowCopyDialog(full)
             end)
-            -- 公会邀请：12.x 起 GuildInvite 迁到 C_GuildInfo.Invite；自己、已是公会成员、NPC/怪物目标不显示
+            -- 公会邀请：12.x 起 GuildInvite 迁到 C_GuildInfo.Invite；自己、敌对玩家、已是公会成员、NPC/怪物目标不显示
             local inviteFn = (_G.C_GuildInfo and _G.C_GuildInfo.Invite) or _G.GuildInvite
             local showInvite = inviteFn and _G.CanGuildInvite and _G.CanGuildInvite()
                 and tag ~= "MENU_UNIT_PLAYER" and tag ~= "MENU_UNIT_COMMUNITIES_GUILD_MEMBER"
-            if showInvite then
-                local unit = F.PlainString(contextData.unit, nil)
-                if unit and _G.UnitExists and _G.UnitExists(unit) then
+            if showInvite and unit and _G.UnitExists then
+                local okE, exists = pcall(_G.UnitExists, unit)
+                if okE and not F.IsSecret(exists) and exists then
                     local okP, isPlayer = pcall(_G.UnitIsPlayer, unit)
                     local okS, isSelf = pcall(_G.UnitIsUnit, unit, "player")
+                    local okF, isFriend = pcall(_G.UnitIsFriend, "player", unit)
                     if not okP or F.IsSecret(isPlayer) or not isPlayer then showInvite = false end
                     if okS and not F.IsSecret(isSelf) and isSelf then showInvite = false end
+                    if not okF or F.IsSecret(isFriend) or not isFriend then showInvite = false end
                 end
             end
             if showInvite then
@@ -184,7 +242,7 @@ end
 local function RecordCurrentAlt()
     local db = mod:GetDB()
     local name = GetPlayerMailName()
-    local realm = (_G.GetRealmName and _G.GetRealmName()) or ""
+    local realm = GetMailRealmKey("")
     if not realm or realm == "" then
         return
     end
@@ -192,7 +250,7 @@ local function RecordCurrentAlt()
     if db.alts[""] then
         db.alts[""] = nil
     end
-    local faction = _G.UnitFactionGroup and _G.UnitFactionGroup("player") or "Neutral"
+    local faction = GetPlayerFactionKey()
     local class = F.GetPlayerClass()
     if name and name ~= "" then
         db.alts[realm] = db.alts[realm] or {}
@@ -216,8 +274,8 @@ local function RefreshMailDrawer()
         return
     end
 
-    local realm = (_G.GetRealmName and _G.GetRealmName()) or "Default"
-    local faction = _G.UnitFactionGroup and _G.UnitFactionGroup("player") or "Neutral"
+    local realm = GetMailRealmKey("Default")
+    local faction = GetPlayerFactionKey()
     local selfName = GetPlayerMailName()
 
     local list = {}
@@ -249,7 +307,7 @@ local function RefreshMailDrawer()
     -- 它显示时本抽屉改为接在它下方，避免两块面板完全重叠
     mailDrawer:ClearAllPoints()
     local euiList = _G.EllesmereUIMailAltList
-    if euiList and euiList.IsShown and euiList:IsShown() and not (euiList.IsForbidden and euiList:IsForbidden()) then
+    if euiList and not (euiList.IsForbidden and euiList:IsForbidden()) and euiList.IsShown and euiList:IsShown() then
         mailDrawer:SetPoint("TOPLEFT", euiList, "BOTTOMLEFT", 0, -6)
     else
         mailDrawer:SetPoint("TOPLEFT", _G.MailFrame, "TOPRIGHT", 6, 0)
@@ -292,8 +350,8 @@ local function RefreshMailDrawer()
                     if self._kind == "fav" and type(sdb.favorites) == "table" then
                         sdb.favorites[self._recipient] = nil
                     elseif self._kind == "alt" then
-                        local rlm = (_G.GetRealmName and _G.GetRealmName()) or "Default"
-                        local fac = _G.UnitFactionGroup and _G.UnitFactionGroup("player") or "Neutral"
+                        local rlm = GetMailRealmKey("Default")
+                        local fac = GetPlayerFactionKey()
                         if sdb.alts and sdb.alts[rlm] and sdb.alts[rlm][fac] then
                             sdb.alts[rlm][fac][self._recipient] = nil
                         end

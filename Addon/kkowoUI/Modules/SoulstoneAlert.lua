@@ -646,12 +646,33 @@ local function ShouldTrackForClass()
 end
 
 local function SafeUnitName(unit)
-    local ok, name, realm = pcall(_G.UnitName, unit)
+    local fn = (unit == "player" and _G.UnitNameUnmodified) or _G.UnitName
+    local ok, name, realm = pcall(fn, unit)
     if not ok then return nil, nil end
     name = F.PlainString(name, nil)
     realm = F.PlainString(realm, nil)
     if not name or name == "" then return nil, nil end
-    local full = (realm and realm ~= "") and (name .. "-" .. realm) or name
+    local EUI = _G.EllesmereUI
+    local full
+    if EUI and EUI.IS_FOREVER then
+        if realm and realm ~= "" then
+            if type(EUI.WithSurname) == "function" then
+                full = F.PlainString(EUI.WithSurname(name, realm, true), nil)
+            end
+            if not full or full == "" then
+                local suffix = " " .. realm
+                if name:sub(-#suffix) == suffix then
+                    full = name
+                else
+                    full = name .. suffix
+                end
+            end
+        else
+            full = name
+        end
+    else
+        full = (realm and realm ~= "") and (name .. "-" .. realm) or name
+    end
     return name, full
 end
 
@@ -906,8 +927,8 @@ local function ProcessUnit(info)
 
         local isMine, srcCertain = EvaluateAuraOwnership(aura, guid)
         if db.trackScope ~= "any" and not isMine then
-            -- 若之前记录为我的灵魂石，但现在确认已被其他术士顶掉，则清除旧记录
-            if existing and existing.isMine and srcCertain then
+            -- 若之前记录为非自己的灵魂石（切换为仅追踪自己），或我的灵魂石被其他术士顶掉，均清除旧记录
+            if existing and (not existing.isMine or srcCertain) then
                 tracked[guid] = nil
                 if myCastTargetGUID == guid then myCastTargetGUID = nil end
                 return true
@@ -1098,7 +1119,8 @@ end
 
 -- 40 人团本 O(1) 快速过滤：仅与灵魂石相关的光环变动才触发该单位复查
 local function OnUnitAura(_, _, unit, updateInfo)
-    if not (type(unit) == "string" and GROUP_UNIT_SET[unit]) then return end
+    unit = F.PlainString(unit, nil)
+    if not (unit and GROUP_UNIT_SET[unit]) then return end
     if not ShouldTrackForClass() then return end
     if AreAurasSecret() then return end
 
@@ -1837,15 +1859,15 @@ local function OnTick()
                 if myCastTargetGUID == guid then myCastTargetGUID = nil end
                 stateChanged = true
             else
-                if rem <= warnSec and not e.warned then
-                    e.warned = true
-                    TriggerNotification("warn", e, nil)
-                    stateChanged = true
-                end
                 if db.voiceSecondAlert == true and warnSec >= 60
                     and rem <= urgentVoiceSec and not e.urgentWarned then
+                    e.warned = true
                     e.urgentWarned = true
                     TriggerNotification("urgent", e, nil)
+                    stateChanged = true
+                elseif rem <= warnSec and not e.warned then
+                    e.warned = true
+                    TriggerNotification("warn", e, nil)
                     stateChanged = true
                 end
             end
@@ -2026,7 +2048,8 @@ local function SyncEventRegistration()
     mod:RegisterEvent("GROUP_ROSTER_UPDATE", debouncedRosterScan)
     mod:RegisterEvent("PLAYER_ROLES_ASSIGNED", debouncedRosterScan)
     mod:RegisterEvent("UNIT_CONNECTION", function(_, _, unit)
-        if type(unit) == "string" and GROUP_UNIT_SET[unit] then
+        unit = F.PlainString(unit, nil)
+        if unit and GROUP_UNIT_SET[unit] then
             MarkUnitDirty(unit)
         end
     end)
@@ -2194,6 +2217,19 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         getValue = function() return db.trackScope or "mine" end,
         setValue = function(v)
             db.trackScope = v
+            if v ~= "any" then
+                local pruned = false
+                for g, e in pairs(tracked) do
+                    if not e.isMine then
+                        tracked[g] = nil
+                        pruned = true
+                    end
+                end
+                if pruned then
+                    SaveTrackedToCharDB()
+                    RenderAll()
+                end
+            end
             ScanGroup()
         end,
     }, {
@@ -2203,6 +2239,20 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         getValue = function() return db.includeSelf ~= false end,
         setValue = function(v)
             db.includeSelf = v == true
+            if not db.includeSelf then
+                local pruned = false
+                for g, e in pairs(tracked) do
+                    if e.isSelf then
+                        tracked[g] = nil
+                        if myCastTargetGUID == g then myCastTargetGUID = nil end
+                        pruned = true
+                    end
+                end
+                if pruned then
+                    SaveTrackedToCharDB()
+                    RenderAll()
+                end
+            end
             ScanGroup()
         end,
     })

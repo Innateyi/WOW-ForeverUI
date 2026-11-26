@@ -81,11 +81,11 @@ function Copy-VssSV([string]$svDir) {
     return 0
 }
 
-# 角色的启用插件列表：整合包里的插件按整合包的启用 / 停用设置（插件集保持干净一致），其他行原样保留
+# 角色的启用插件列表：整合包里的插件按整合包的启用 / 停用设置，已移进备份的其他第三方插件条目同步清理（Blizzard_ 原生条目保留），避免旧插件残留冲突
 function Merge-AddOnsTxt([string]$path, [string]$tpl) {
     $theirs = [System.IO.File]::ReadAllText($path, $utf8)
-    $nl = "`n"
-    if ($theirs.Contains("`r`n")) { $nl = "`r`n" }
+    $nl = "`r`n"
+    if (-not [string]::IsNullOrEmpty($theirs) -and -not $theirs.Contains("`r`n") -and $theirs.Contains("`n")) { $nl = "`n" }
     $pack = [ordered]@{}
     foreach ($ln in [System.IO.File]::ReadAllLines($tpl, $utf8)) {
         $i = $ln.IndexOf(':')
@@ -94,19 +94,30 @@ function Merge-AddOnsTxt([string]$path, [string]$tpl) {
     $used = @{}
     $changed = 0
     $out = New-Object System.Collections.Generic.List[string]
-    foreach ($ln in ($theirs.TrimEnd("`r", "`n") -split "`r?`n")) {
-        $i = $ln.IndexOf(':')
-        if ($i -gt 0) {
-            $k = $ln.Substring(0, $i).Trim().ToLower()
-            if ($pack.Contains($k)) {
-                if ($used.ContainsKey($k)) { $changed++; continue }   # 重复的行只留一行
-                $used[$k] = $true
-                if ($ln.Trim() -cne $pack[$k]) { $changed++ }
-                $out.Add($pack[$k])
+    if (-not [string]::IsNullOrWhiteSpace($theirs)) {
+        foreach ($ln in ($theirs.TrimEnd("`r", "`n") -split "`r?`n")) {
+            $trim = $ln.Trim()
+            if (-not $trim) { $changed++; continue }
+            $i = $trim.IndexOf(':')
+            if ($i -gt 0) {
+                $k = $trim.Substring(0, $i).Trim().ToLower()
+                if ($pack.Contains($k)) {
+                    if ($used.ContainsKey($k)) { $changed++; continue }   # 重复的行只留一行
+                    $used[$k] = $true
+                    if ($trim -cne $pack[$k]) { $changed++ }
+                    $out.Add($pack[$k])
+                    continue
+                }
+                if ($k.StartsWith('blizzard_')) {
+                    $out.Add($trim)
+                    continue
+                }
+                # 其余旧第三方插件已整体移入备份，从 AddOns.txt 中移除，保持插件列表干净
+                $changed++
                 continue
             }
+            $out.Add($ln)
         }
-        $out.Add($ln)
     }
     foreach ($k in $pack.Keys) {
         if (-not $used.ContainsKey($k)) { $out.Add($pack[$k]); $changed++ }
@@ -163,27 +174,34 @@ $bk = Join-Path $wowRoot ("kkowoUI安装备份_" + $stamp)
 Say ''
 Say '即将进行：' 'Cyan'
 Say "  1. 备份到 $bk ："
-Say '     你原来的全部插件和图标（Interface）、字体（Fonts）整夹移进备份，WTF 配置（账号与各角色）完整复制一份'
-Say '  2. 装上整合包：插件只保留整合包这一套（其他插件不再加载，避免冲突），字体和图标用整合包的'
-Say '  3. 合并配置：你配置过的插件保留你的设置和布局，没配置过的插件使用整合包布局'
+Say '     你原来的全部插件和图标（Interface）、全部字体（Fonts）整夹移进备份，完整 WTF 配置（含 Config.wtf、账号与各角色）整夹复制一份'
+Say '  2. 干净安装整合包：只复制本整合包这一套插件、图标和字体，确保不含其他未知插件避免冲突'
+Say '  3. 合并配置：你配置过的插件保留你的设置和布局，没配置过的插件使用整合包布局，并清理旧第三方插件列表残留'
 if (-not (Ask-YesNo '确定开始安装吗？')) { Fail '已取消。' }
 
 # ---------- 备份（只移动、复制，不删除） ----------
 New-Item -ItemType Directory -Force -Path $bk | Out-Null
-Say '备份 WTF 配置……' 'Cyan'
+Say '备份 WTF 配置（含 Config.wtf、账号与角色配置）……' 'Cyan'
 Robo (Join-Path $forever 'WTF') (Join-Path $bk 'WTF')
 if ((Count-Files (Join-Path $bk 'WTF')) -lt (Count-Files (Join-Path $forever 'WTF'))) { Fail "WTF 备份不完整，已停止（未改动任何插件）。备份位置：$bk" }
 foreach ($rel in 'Interface', 'Fonts') {
     $p = Join-Path $forever $rel
     if (Test-Path -LiteralPath $p) {
-        Move-Item -LiteralPath $p -Destination (Join-Path $bk $rel)
+        try {
+            Move-Item -LiteralPath $p -Destination (Join-Path $bk $rel)
+        } catch {
+            Fail "无法将 $rel 移入备份（可能有程序或资源管理器正占用其中文件）：$($_.Exception.Message)。已停止，备份位置：$bk"
+        }
+        if (Test-Path -LiteralPath $p) {
+            Fail "$rel 移动后仍存在残留目录，为避免新旧插件混合冲突已中止。备份位置：$bk"
+        }
         Say "  已移进备份：$rel"
     }
 }
-Say "  已备份：WTF、全部插件 $($origAddons.Count) 个、图标与字体"
+Say "  已备份：全部 WTF 配置、全部旧插件 $($origAddons.Count) 个、图标与字体"
 
-# ---------- 安装整合包 ----------
-Say '安装插件、图标和字体（文件较多，请稍等）……' 'Cyan'
+# ---------- 干净安装整合包（此时 _forever_\Interface 与 Fonts 已清空） ----------
+Say '干净安装整合包插件、图标和字体（文件较多，请稍等）……' 'Cyan'
 Robo (Join-Path $payload 'Interface') (Join-Path $forever 'Interface')
 if (Test-Path -LiteralPath (Join-Path $payload 'Fonts')) { Robo (Join-Path $payload 'Fonts') (Join-Path $forever 'Fonts') }
 

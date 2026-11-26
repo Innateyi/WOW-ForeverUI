@@ -141,14 +141,19 @@ local function EnsureSecretCurve(thrFrac)
     return curve
 end
 
+local inSecretMode = false
+local previewGen = 0
+
 local function SetVignetteActive(on)
     if not vignetteFrame then return end
     local core = F.Modules.Get("coreHUD")
+    local maxA = math_max(0.25, math_min(1.0, F.PlainNumber(mod:GetDB().maxAlpha, 0.78) or 0.78))
     if on then
         local c = ST.COLORS.vignette
         PaintEdgesColor(c[1], c[2], c[3], 1)
+        -- 先中止可能仍在进行的淡出，并保持可读基础透明度，确保之后关闭时 0.35s 淡出动画能平滑过渡
+        F.Theme.FadeTo(vignetteFrame, maxA * 0.70, 0)
         if not vignetteFrame:IsShown() then
-            vignetteFrame:SetAlpha(0.01)
             vignetteFrame:Show()
         end
         if pulseAG and not pulseAG:IsPlaying() then pulseAG:Play() end
@@ -158,6 +163,8 @@ local function SetVignetteActive(on)
     else
         if pulseAG and pulseAG:IsPlaying() then pulseAG:Stop() end
         if vignetteFrame:IsShown() then
+            local curA = F.PlainNumber(vignetteFrame:GetAlpha(), 0) or 0
+            if curA < 0.05 then vignetteFrame:SetAlpha(maxA * 0.55) end
             F.Theme.FadeTo(vignetteFrame, 0, 0.35, true)
         end
         if core and core.SetLowHealthPulse then
@@ -169,8 +176,9 @@ end
 local function EvaluateHealth()
     if previewing then return end
     if not mod._active then
-        if isLowNow then
+        if isLowNow or inSecretMode then
             isLowNow = false
+            inSecretMode = false
             SetVignetteActive(false)
         end
         return
@@ -180,8 +188,9 @@ local function EvaluateHealth()
         or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
     if (_G.UnitIsDeadOrGhost and _G.UnitIsDeadOrGhost("player"))
         or (db.combatOnly == true and not inCombat) then
-        if isLowNow then
+        if isLowNow or inSecretMode then
             isLowNow = false
+            inSecretMode = false
             SetVignetteActive(false)
         end
         return
@@ -199,36 +208,45 @@ local function EvaluateHealth()
             if ok and col and col.GetRGBA then
                 local r, g, b = col:GetRGBA()
                 PaintEdgesColor(r, g, b, 1)
+                local maxA = math_max(0.25, math_min(1.0, F.PlainNumber(db.maxAlpha, 0.78) or 0.78))
+                if not inSecretMode then F.Theme.FadeTo(vignetteFrame, maxA * 0.70, 0) end
                 if not vignetteFrame:IsShown() then
                     vignetteFrame:Show()
                 end
                 if pulseAG and not pulseAG:IsPlaying() then pulseAG:Play() end
-                isLowNow = true
+                inSecretMode = true
             end
         end
         return
     end
 
+    local wasSecret = inSecretMode
+    inSecretMode = false
     local pHp = F.PlainNumber(hp, 1) or 1
     local pMx = F.PlainNumber(mx, 1) or 1
     local pct = (pMx > 0) and (pHp / pMx * 100) or 100
     local wantLow = (pct > 0 and pct <= thr)
-    if wantLow ~= isLowNow then
+    if wasSecret or wantLow ~= isLowNow then
+        local newlyLow = wantLow and not isLowNow
         isLowNow = wantLow
         SetVignetteActive(wantLow)
-        if wantLow then PlayLowHealthAudio() end
+        if newlyLow then PlayLowHealthAudio() end
     end
 end
 
 function mod:PreviewVignette()
     BuildVignette()
     ApplyVignetteGeom()
+    previewGen = previewGen + 1
+    local myGen = previewGen
     previewing = true
     SetVignetteActive(true)
     PlayLowHealthAudio()
     C_Timer.After(2.8, function()
+        if myGen ~= previewGen then return end
         previewing = false
         isLowNow = false
+        inSecretMode = false
         SetVignetteActive(false)
         EvaluateHealth()
     end)
@@ -248,8 +266,10 @@ function mod:OnEnable()
 end
 
 function mod:OnDisable()
+    previewGen = previewGen + 1
     previewing = false
     isLowNow = false
+    inSecretMode = false
     if pulseAG and pulseAG:IsPlaying() then pulseAG:Stop() end
     if vignetteFrame then
         vignetteFrame:SetAlpha(0)
@@ -304,8 +324,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         setValue = function(v) db.combatOnly = v == true; EvaluateHealth() end,
     }, {
         type = "toggle",
-        text = "联动核心血条微频闪烁 + 音效",
-        tooltip = "低血量时同步让核心血条脉动，并可播放警报音效（可在存档 customSoundPath 填自定义语音路径）。",
+        text = "低血量音效提醒",
+        tooltip = "低血量触发预警时播放警报音效（可在存档 customSoundPath 填自定义语音路径）。",
         getValue = function() return db.playSound == true end,
         setValue = function(v) db.playSound = v == true end,
     })
@@ -322,7 +342,13 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         type = "toggle",
         text = "联动血条呼吸闪烁",
         getValue = function() return db.pulseBar ~= false end,
-        setValue = function(v) db.pulseBar = v == true end,
+        setValue = function(v)
+            db.pulseBar = v == true
+            local core = F.Modules.Get("coreHUD")
+            if core and core.SetLowHealthPulse then
+                core:SetLowHealthPulse(db.pulseBar and (isLowNow or previewing))
+            end
+        end,
     })
     y = y - h
 

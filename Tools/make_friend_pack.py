@@ -43,12 +43,39 @@ SKIP_ACC_SV = re.compile(r'^(!BugGrabber|BugSack|Auctionator|QuestieTrace|RXPGui
 ACC_FILES = ('bindings-cache.wtf', 'config-cache.wtf', 'edit-mode-cache-account.txt', 'macros-cache.txt')
 CHAR_FILES = ('AddOns.txt', 'chat-cache.txt', 'click-bindings-cache.txt', 'config-cache.wtf',
               'edit-mode-cache-character.txt', 'layout-local.txt', 'macros-cache.txt')
-# 只属于作者本机的 kkowoUI 状态：带给别人会误判（例如把对方的 ArcAuras 停掉、按作者的原值还原 EUI 设置）
+# 只属于作者本机的 kkowoUI 状态：带给别人会误判（例如把对方的 ArcAuras 停掉、按作者的原值还原 EUI/CVar 设置）
 KKOWO_DROP = [
-    ('cdmReplacesArc',), ('slimBackup',),
-    ('modules', 'modernChrome', 'euiSheetBackup'), ('modules', 'modernChrome', 'wmDisabledLeatrix'),
-    ('modules', 'modernChrome', 'wmDisabledCVars'), ('modules', 'modernChrome', 'soundMuteApplied'),
+    ('cdmReplacesArc',),
+    ('slimBackup',),
+    ('modules', 'modernChrome', 'euiSheetBackup'),
+    ('modules', 'modernChrome', 'erbStyleBackup'),
+    ('modules', 'modernChrome', 'wmDisabledLeatrix'),
+    ('modules', 'modernChrome', 'wmDisabledCVars'),
+    ('modules', 'modernChrome', 'soundMuteApplied'),
+    ('modules', 'modernChrome', 'ftDisabledPolestar'),
+    ('modules', 'modernChrome', 'ftDisabledEUI'),
+    ('modules', 'modernChrome', 'savedWorldTextScale'),
     ('modules', 'tooltipStyle', 'ptipPanelsSynced'),
+    ('modules', 'systemBar', 'euiFriendsTakenOver'),
+    ('modules', 'systemBar', 'euiFriendsPrevHidden'),
+    ('modules', 'chatBar', 'savedEUIShowFriends'),
+    ('modules', 'chatBar', 'savedEUISidebarVis'),
+    ('modules', 'chatBar', 'savedEUIScrollOnChat'),
+    ('modules', 'chatBar', 'savedEUIExtendBg'),
+    ('modules', 'chatBar', 'savedEUITabBg'),
+    ('modules', 'chatBar', 'savedEUITabActA'),
+    ('modules', 'chatBar', 'leftRoomDelta'),
+    ('modules', 'questBar', 'zoneFilterSuspended'),
+    ('modules', 'nodeReminder', 'savedCVars'),
+    ('modules', 'nodeReminder', 'savedSparkleCVar'),
+    ('modules', 'nameplateSmart', 'savedFriendly'),
+    ('modules', 'nameplateSmart', 'savedNpcPlates'),
+    ('modules', 'nameplateSmart', 'savedGuild'),
+    ('modules', 'nameplateSmart', 'savedDistantNpc'),
+    ('modules', 'nameplateMotion', 'savedEUICornerRadius'),
+    ('modules', 'nameplateMotion', 'savedEUICornerRadiusAuras'),
+    ('modules', 'lootToast', 'savedEUILootFeed'),
+    ('modules', 'perfAutoTier', 'savedCVars'),
 ]
 
 
@@ -63,8 +90,8 @@ PSW = load('prepare_share_wtf', os.path.join(HERE, 'prepare_share_wtf.py'))
 VSS = load('vss_kkowo_rename', os.path.join(ROOT, 'Patches', 'vss_kkowo_rename.py'))
 
 
-def kkowo_version():
-    toc = open(os.path.join(ROOT, 'Addon', 'kkowoUI', 'kkowoUI.toc'), encoding='utf-8').read()
+def kkowo_version(kkowo_src):
+    toc = open(os.path.join(kkowo_src, 'kkowoUI.toc'), encoding='utf-8').read()
     return re.search(r'^## Version:\s*(\S+)', toc, re.M).group(1)
 
 
@@ -94,6 +121,7 @@ def scrub_kkowo(text):
 
 def addons_txt_for_pack(text, pack_addons):
     out = []
+    seen = set()
     for ln in text.replace('\r\n', '\n').split('\n'):
         if ':' not in ln:
             continue
@@ -101,8 +129,13 @@ def addons_txt_for_pack(text, pack_addons):
         name = name.strip()
         if name == VSS.OLD_NAME:
             name = VSS.NEW_NAME
-        if name in pack_addons:
+        elif name == 'KkowoUI':
+            name = 'kkowoUI'
+        if name in pack_addons and name not in seen:
+            seen.add(name)
             out.append(f'{name}: {st.strip()}')
+    if 'kkowoUI' in pack_addons and 'kkowoUI' not in seen:
+        out.append('kkowoUI: enabled')
     return '\r\n'.join(out) + '\r\n'
 
 
@@ -111,8 +144,16 @@ def main():
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default=OUT_DEFAULT)
+    ap.add_argument('--kkowo-src', default=os.path.join(ROOT, 'Addon', 'kkowoUI'),
+                    help='kkowoUI 源码目录（默认使用仓库 Addon\\kkowoUI，避免打包到游戏目录里的旧副本）')
+    ap.add_argument('--version', default='', help='可选：覆盖压缩包版本号标签')
+    ap.add_argument('--suffix', default='', help='可选：追加在日期前的说明后缀（如 任务追踪修复）')
     ap.add_argument('--dry-run', action='store_true')
     args = ap.parse_args()
+
+    kkowo_src = os.path.abspath(args.kkowo_src)
+    if not os.path.isfile(os.path.join(kkowo_src, 'kkowoUI.toc')):
+        sys.exit(f'找不到 kkowoUI.toc：{kkowo_src}')
 
     acc = PSW.detect_account()
     if not acc:
@@ -130,16 +171,20 @@ def main():
         sys.exit(f'脱敏副本里应只有一个角色模板，实际 {len(chars)} 个')
     char_tpl = chars[0]
 
-    # 2) 插件清单
+    # 2) 插件清单（kkowoUI 始终取自 --kkowo-src，其余插件取自游戏目录）
     addon_dirs = sorted(d for d in os.listdir(ADDONS) if os.path.isdir(os.path.join(ADDONS, d)) and d not in SKIP_ADDON_DIRS)
+    if 'kkowoUI' not in addon_dirs:
+        addon_dirs.append('kkowoUI')
+        addon_dirs.sort()
     if VSS.OLD_NAME in addon_dirs and VSS.NEW_NAME in addon_dirs:
         addon_dirs.remove(VSS.OLD_NAME)          # 已有改名版就用改名版
     pack_addons = {VSS.NEW_NAME if d == VSS.OLD_NAME else d for d in addon_dirs}
     pack_lower = {a.lower(): a for a in pack_addons}   # 存档文件名可能是改名前的大小写（KkowoUI.lua）
-    print(f'插件 {len(pack_addons)} 个（排除：{"、".join(sorted(SKIP_ADDON_DIRS))}）')
+    print(f'插件 {len(pack_addons)} 个（kkowoUI 来源：{kkowo_src}；排除：{"、".join(sorted(SKIP_ADDON_DIRS))}）')
 
-    ver = kkowo_version()
+    ver = args.version.strip() or kkowo_version(kkowo_src)
     top = f'kkowoUI整合包_{ver}'
+    zip_base = f'{top}_{args.suffix.strip()}' if args.suffix.strip() else top
     build = os.path.join(args.out, '_build_' + time.strftime('%Y%m%d_%H%M%S'))
     wtf_acc = os.path.join(build, 'acc')            # 按真实账号目录结构摆放，便于复用 residual_scan
     os.makedirs(os.path.join(wtf_acc, 'SavedVariables'))
@@ -206,7 +251,7 @@ def main():
 
         # 7) 写压缩包
         os.makedirs(args.out, exist_ok=True)
-        zpath = os.path.join(args.out, f'{top}_{time.strftime("%Y%m%d")}.zip')
+        zpath = os.path.join(args.out, f'{zip_base}_{time.strftime("%Y%m%d")}.zip')
         with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             def add_tree(src, arc_base):
                 for dp, _, fns in os.walk(src):
@@ -219,6 +264,8 @@ def main():
             for d in addon_dirs:
                 if d == VSS.OLD_NAME:
                     add_tree(vss_src, f'{top}/payload/Interface/AddOns/{VSS.NEW_NAME}')
+                elif d == 'kkowoUI':
+                    add_tree(kkowo_src, f'{top}/payload/Interface/AddOns/kkowoUI')
                 else:
                     add_tree(os.path.join(ADDONS, d), f'{top}/payload/Interface/AddOns/{d}')
             fonts = os.path.join(GAME, 'Fonts')

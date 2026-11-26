@@ -185,6 +185,15 @@ function Mover.Register(opts)
     return applyPos
 end
 
+function Mover.ApplyRegistered(key)
+    local fn = key and registeredApply[key]
+    if type(fn) == "function" then
+        fn()
+        return true
+    end
+    return false
+end
+
 function Mover.FlushRegistration()
     if flushed then
         return

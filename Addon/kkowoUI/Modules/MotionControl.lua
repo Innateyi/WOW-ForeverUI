@@ -7,7 +7,7 @@
 local _, F = ...
 
 local _G = _G
-local ipairs, pcall, math_floor = ipairs, pcall, math.floor
+local ipairs, pairs, pcall, type, math_floor = ipairs, pairs, pcall, type, math.floor
 
 local MOTION_SUBMODULES = {
     "coreHUD",
@@ -44,6 +44,8 @@ local function SyncSubModules()
                     else
                         sub:Refresh()
                     end
+                elseif sub._active then
+                    sub:Disable()
                 end
             else
                 if sub._active then
@@ -72,23 +74,59 @@ local function ResetAllMotionDefaults()
     for _, k in ipairs(keys) do
         local sub = F.Modules.Get(k)
         if sub and sub.defaults then
-            F.db.modules[k] = F.DeepCopy(sub.defaults)
-            if F.db.modules[k].enabled == nil then
-                F.db.modules[k].enabled = true
+            local old = F.db.modules[k]
+            local fresh = F.DeepCopy(sub.defaults)
+            if fresh.enabled == nil then
+                fresh.enabled = true
+            end
+            -- defaults 已是最新版本默认值：所有 ^v%d+ 一次性迁移标记保持为 true，避免下次 /reload 重跑旧迁移覆盖用户设置
+            for dk, dv in pairs(fresh) do
+                if type(dk) == "string" and dk:find("^v%d+") and type(dv) == "boolean" then
+                    fresh[dk] = true
+                end
+            end
+            -- saved* 是模块改动 EUI 存档前备份的「用户原值」（如 EUI 姓名板圆角）：重置绝不能丢，
+            -- 否则下次会把已被改过的值当成原值，停用后再也还原不回用户自己的设置
+            if type(old) == "table" then
+                for key, val in pairs(old) do
+                    if type(key) == "string" and key:find("^saved") and val ~= nil then
+                        fresh[key] = val
+                    end
+                end
+                -- 原地覆写旧表，确保当前打开的设置页缓存的 db 引用即时生效不孤立
+                for key in pairs(old) do
+                    old[key] = nil
+                end
+                for key, val in pairs(fresh) do
+                    old[key] = val
+                end
+            else
+                F.db.modules[k] = fresh
             end
         end
     end
-    -- 清空新增 HUD 自定义拖动坐标
+    -- 清空新增 HUD 自定义拖动坐标并立即归位
+    local posKeys = { "CoreHUD", "PetHUD", "TopTargetHUD", "SwingTimerHUD", "CastbarOverlay" }
     if F.DB and F.DB.ClearPosition then
-        F.DB.ClearPosition("CoreHUD")
-        F.DB.ClearPosition("PetHUD")
-        F.DB.ClearPosition("TopTargetHUD")
-        F.DB.ClearPosition("SwingTimerHUD")
+        for _, pk in ipairs(posKeys) do
+            F.DB.ClearPosition(pk)
+        end
     end
-    SyncSubModules()
+    if F.Mover and F.Mover.ApplyRegistered then
+        for _, pk in ipairs(posKeys) do
+            F.Mover.ApplyRegistered(pk)
+        end
+    end
+    if mod:IsEnabled() and not mod._active then
+        mod:Enable()
+    elseif not mod:IsEnabled() and mod._active then
+        mod:Disable()
+    else
+        SyncSubModules()
+    end
     RefreshAllMotion()
     local EUI = _G.EllesmereUI
-    if EUI and EUI.RefreshPage then pcall(EUI.RefreshPage, EUI) end
+    if EUI and EUI.RefreshPage then pcall(EUI.RefreshPage, EUI, true) end
     F.Print("已将「动效与视觉增强」全部参数恢复为默认值。")
 end
 

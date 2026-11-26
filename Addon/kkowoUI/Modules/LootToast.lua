@@ -155,7 +155,12 @@ local function AcquireToast()
 
     t = CreateFrame("Frame", nil, container)
     t:SetSize(236, 26)
-    t:EnableMouse(true)
+    if t.SetMouseMotionEnabled and t.SetMouseClickEnabled then
+        t:SetMouseMotionEnabled(true)
+        t:SetMouseClickEnabled(false)
+    else
+        t:EnableMouse(true)
+    end
     F.Theme.StylePanel(t, 0.80, 0.72)
 
     local ST = F.StyleTokens
@@ -233,6 +238,7 @@ local function AcquireToast()
 
     t:SetScript("OnEnter", function(self)
         self._hovered = true
+        self._fadingOut = false
         self._animOut:Stop()
         self:SetAlpha(1)
         if self._link and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
@@ -364,6 +370,8 @@ local function ArmToastExpire(t, preserveFadeIn)
 end
 
 local function IsEUILootFeedEnabled()
+    local EUI = _G.EllesmereUI
+    if not (EUI and EUI._LootFeed) then return false end
     local euiDB = _G.EllesmereUIDB
     return type(euiDB) == "table" and type(euiDB.lootFeed) == "table" and euiDB.lootFeed.enabled == true
 end

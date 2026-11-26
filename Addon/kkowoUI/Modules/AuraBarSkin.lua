@@ -32,7 +32,42 @@ local mod = F.RegisterModule("auraBarSkin", {
 local ROOT_NAMES = { "BuffFrame", "DebuffFrame" }
 local skinned = setmetatable({}, { __mode = "k" })
 local origBorderAlpha = setmetatable({}, { __mode = "k" })
+local origCountStyle = setmetatable({}, { __mode = "k" })
 local buttonList = {}
+
+local BORDER_KEYS = { "Border", "DebuffBorder", "TempEnchantBorder" }
+
+local function SetSquareBorder(ov, show, r, g, b, a)
+    if not ov or not ov.wrap then return end
+    if show and not ov.sqEdges then
+        local edges = {}
+        local specs = {
+            { "TOPLEFT", "TOPRIGHT", nil, 1 },
+            { "BOTTOMLEFT", "BOTTOMRIGHT", nil, 1 },
+            { "TOPLEFT", "BOTTOMLEFT", 1, nil },
+            { "TOPRIGHT", "BOTTOMRIGHT", 1, nil },
+        }
+        for i, sp in ipairs(specs) do
+            local ln = ov.wrap:CreateTexture(nil, "OVERLAY", nil, 4)
+            ln:SetPoint(sp[1], ov.wrap, sp[1])
+            ln:SetPoint(sp[2], ov.wrap, sp[2])
+            if sp[3] then ln:SetWidth(sp[3]) end
+            if sp[4] then ln:SetHeight(sp[4]) end
+            edges[i] = ln
+        end
+        ov.sqEdges = edges
+    end
+    if ov.sqEdges then
+        for _, ln in ipairs(ov.sqEdges) do
+            if show then
+                ln:SetColorTexture(r, g, b, a)
+                ln:Show()
+            else
+                ln:Hide()
+            end
+        end
+    end
+end
 
 local function IsSafe(f)
     if not f then return false end
@@ -75,14 +110,26 @@ local function SkinAuraButton(btn, isDebuff)
     if not mod._active then
         if ov and ov.wrap then
             ST.ClearRoundedMask(ov.wrap)
+            SetSquareBorder(ov, false)
             ov.wrap:Hide()
         end
-        if ov and ov.bg then ov.bg:Hide() end
-        if btn.Border and origBorderAlpha[btn.Border] ~= nil then
-            pcall(btn.Border.SetAlpha, btn.Border, origBorderAlpha[btn.Border])
+        if ov and ov.bgHost then
+            ST.ClearRoundedMask(ov.bgHost)
+            ov.bgHost:Hide()
         end
-        if btn.DebuffBorder and origBorderAlpha[btn.DebuffBorder] ~= nil then
-            pcall(btn.DebuffBorder.SetAlpha, btn.DebuffBorder, origBorderAlpha[btn.DebuffBorder])
+        if ov and ov.bg then ov.bg:Hide() end
+        pcall(icon.SetTexCoord, icon, 0, 1, 0, 1)
+        for _, bk in ipairs(BORDER_KEYS) do
+            local brd = btn[bk]
+            if brd and origBorderAlpha[brd] ~= nil and brd.SetAlpha then
+                pcall(brd.SetAlpha, brd, origBorderAlpha[brd])
+            end
+        end
+        local cnt = btn.Count
+        local oc = cnt and origCountStyle[cnt]
+        if cnt and oc then
+            if oc.face and cnt.SetFont then pcall(cnt.SetFont, cnt, oc.face, oc.size, oc.flags) end
+            if oc.r and cnt.SetTextColor then pcall(cnt.SetTextColor, cnt, oc.r, oc.g, oc.b, oc.a) end
         end
         return
     end
@@ -97,12 +144,20 @@ local function SkinAuraButton(btn, isDebuff)
         local lvl = F.PlainNumber(btn.GetFrameLevel and btn:GetFrameLevel(), 5) or 5
         wrap:SetFrameLevel(lvl + 1)
 
+        -- 独立外扩 1px 底衬遮罩宿主，避免被 wrap 内缩圆角遮罩裁成不可见
+        local bgHost = CreateFrame("Frame", nil, btn)
+        bgHost:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
+        bgHost:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
+        bgHost:EnableMouse(false)
+        bgHost:SetFrameLevel(lvl)
+
         local bg = btn:CreateTexture(nil, "BACKGROUND", nil, -6)
         bg:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
         bg:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
         bg:SetColorTexture(0.03, 0.035, 0.045, 0.72)
 
         ov.wrap = wrap
+        ov.bgHost = bgHost
         ov.bg = bg
         skinned[btn] = ov
         buttonList[#buttonList + 1] = btn
@@ -112,32 +167,66 @@ local function SkinAuraButton(btn, isDebuff)
     ov.wrap:SetPoint("TOPLEFT", icon, "TOPLEFT", 0, 0)
     ov.wrap:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 0, 0)
     ov.wrap:Show()
+    if ov.bgHost then
+        ov.bgHost:ClearAllPoints()
+        ov.bgHost:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
+        ov.bgHost:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
+        ov.bgHost:Show()
+    end
 
     pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
     if ov.bg then
-        ov.bg:SetShown(db.showShadow ~= false)
-        if rad > 0 then ST.MaskTexture(ov.wrap, ov.bg, rad) end
+        local showSh = db.showShadow ~= false
+        ov.bg:SetShown(showSh)
+        if showSh and rad > 0 and ov.bgHost then
+            ST.MaskTexture(ov.bgHost, ov.bg, math_min(12, rad + 1))
+        elseif ov.bgHost then
+            ST.ClearRoundedMask(ov.bgHost)
+        end
     end
 
-    -- 静音暴雪厚重方形原生边框，改由 1px 抗锯齿圆角描边呈现
-    local brd = btn.Border or btn.DebuffBorder
-    if brd and brd.SetAlpha then
-        if origBorderAlpha[brd] == nil and brd.GetAlpha then
-            local okA, a = pcall(brd.GetAlpha, brd)
-            origBorderAlpha[brd] = (okA and F.PlainNumber(a, 1)) or 1
+    -- 静音暴雪厚重方形原生边框（含 Border / DebuffBorder / TempEnchantBorder），改由 1px 描边呈现
+    for _, bk in ipairs(BORDER_KEYS) do
+        local brd = btn[bk]
+        if brd and brd.SetAlpha then
+            if origBorderAlpha[brd] == nil and brd.GetAlpha then
+                local okA, a = pcall(brd.GetAlpha, brd)
+                origBorderAlpha[brd] = (okA and F.PlainNumber(a, 1)) or 1
+            end
+            pcall(brd.SetAlpha, brd, 0)
         end
-        pcall(brd.SetAlpha, brd, 0)
     end
 
     local r, g, b, a = ResolveBorderColor(btn, isDebuff)
     if rad > 0 then
+        SetSquareBorder(ov, false)
         ST.MaskTexture(ov.wrap, icon, rad)
         ST.ApplyRoundedBorder(ov.wrap, rad, r, g, b, a, 4)
     else
         ST.ClearRoundedMask(ov.wrap)
+        SetSquareBorder(ov, true, r, g, b, a)
     end
 
     if btn.Count and btn.Count.SetFont then
+        if not origCountStyle[btn.Count] then
+            local rec = {}
+            if btn.Count.GetFont then
+                local okF, face, sz, fl = pcall(btn.Count.GetFont, btn.Count)
+                if okF and type(face) == "string" and face ~= "" then
+                    rec.face, rec.size, rec.flags = face, F.PlainNumber(sz, 12) or 12, F.PlainString(fl, "") or ""
+                end
+            end
+            if btn.Count.GetTextColor then
+                local okC, cr, cg, cb, ca = pcall(btn.Count.GetTextColor, btn.Count)
+                if okC then
+                    rec.r = F.PlainNumber(cr, 1) or 1
+                    rec.g = F.PlainNumber(cg, 1) or 1
+                    rec.b = F.PlainNumber(cb, 1) or 1
+                    rec.a = F.PlainNumber(ca, 1) or 1
+                end
+            end
+            origCountStyle[btn.Count] = rec
+        end
         F.Theme.ApplyFont(btn.Count, 11, "OUTLINE", 1, 0.96, 0.80, 1)
     end
 end

@@ -111,10 +111,10 @@ do
         for i = #targetBuf, 1, -1 do targetBuf[i] = nil end
         local function addByName(name)
             local f = _G[name]
-            if f and f.IsShown and f:IsShown() then
+            if f and not (f.IsForbidden and f:IsForbidden()) and f.IsShown and f:IsShown() then
                 -- 不抢占被 EUI 自身 visibility="never" 隐藏（alpha==0 且未由本模块接管）的框体
                 local a = F.PlainNumber(f:GetAlpha(), 1)
-                if managed[f] or a > 0.02 then
+                if managed[f] or animTargets[f] ~= nil or a > 0.02 then
                     targetBuf[#targetBuf + 1] = f
                 end
             end
@@ -149,21 +149,34 @@ do
     end
 
     local function IsPlayerVitalHealthy(db)
-        local hp = F.PlainNumber(_G.UnitHealth and _G.UnitHealth("player"), 1)
-        local hpMax = F.PlainNumber(_G.UnitHealthMax and _G.UnitHealthMax("player"), 1)
-        if hpMax > 0 and (hp / hpMax * 100) < (db.hpThreshold or 95) then
+        local hp = F.PlainNumber(_G.UnitHealth and _G.UnitHealth("player"), nil)
+        local hpMax = F.PlainNumber(_G.UnitHealthMax and _G.UnitHealthMax("player"), nil)
+        if hp and hpMax and hpMax > 0 and (hp / hpMax * 100) < (db.hpThreshold or 95) then
             return false
         end
         local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("player"), 0) or 0
         -- 仅对蓝条（MANA = 0）检查回蓝不满；怒气/能量/集中值平时为 0 或自回，不触发常亮
         if pType == 0 then
-            local mp = F.PlainNumber(_G.UnitPower and _G.UnitPower("player", 0), 1)
-            local mpMax = F.PlainNumber(_G.UnitPowerMax and _G.UnitPowerMax("player", 0), 1)
-            if mpMax > 0 and (mp / mpMax * 100) < (db.powerThreshold or 85) then
+            local mp = F.PlainNumber(_G.UnitPower and _G.UnitPower("player", 0), nil)
+            local mpMax = F.PlainNumber(_G.UnitPowerMax and _G.UnitPowerMax("player", 0), nil)
+            if mp and mpMax and mpMax > 0 and (mp / mpMax * 100) < (db.powerThreshold or 85) then
                 return false
             end
         end
         return true
+    end
+
+    local function SafeBoolCall(fn, ...)
+        if type(fn) ~= "function" then return false end
+        local ok, val = pcall(fn, ...)
+        if not ok or F.IsSecret(val) then return false end
+        return val == true
+    end
+
+    local function SafeHasCast(fn, unit)
+        if type(fn) ~= "function" then return false end
+        local ok, name = pcall(fn, unit)
+        return ok and type(name) ~= "nil"
     end
 
     local function ShouldImmerse()
@@ -171,10 +184,10 @@ do
         local db = mod:GetDB()
         if _G.EllesmereUI and _G.EllesmereUI._unlockActive then return false end
         if _G.InCombatLockdown and _G.InCombatLockdown() then return false end
-        if _G.UnitAffectingCombat and _G.UnitAffectingCombat("player") then return false end
-        if _G.UnitExists and _G.UnitExists("target") then return false end
-        if _G.UnitCastingInfo and _G.UnitCastingInfo("player") then return false end
-        if _G.UnitChannelInfo and _G.UnitChannelInfo("player") then return false end
+        if SafeBoolCall(_G.UnitAffectingCombat, "player") then return false end
+        if SafeBoolCall(_G.UnitExists, "target") then return false end
+        if SafeHasCast(_G.UnitCastingInfo, "player") then return false end
+        if SafeHasCast(_G.UnitChannelInfo, "player") then return false end
         if db.disableInInstance ~= false and IsInCombatInstance() then return false end
         if _G.WorldMapFrame and _G.WorldMapFrame:IsShown() then return false end
         if not IsPlayerVitalHealthy(db) then return false end
@@ -189,9 +202,9 @@ do
     local function IsYieldedToCombatFade(frame)
         if not frame then return false end
         local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-            or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
+            or SafeBoolCall(_G.UnitAffectingCombat, "player")
         if not inCombat then return false end
-        local fname = frame.GetName and frame:GetName()
+        local fname = frame.GetName and F.PlainString(frame:GetName(), nil) or nil
         local modKey = fname and COMBAT_FADE_OWNERS[fname]
         if not modKey then return false end
         local mdb = F.db and F.db.modules and F.db.modules[modKey]
@@ -199,13 +212,20 @@ do
     end
 
     local function RestoreAllManaged(instant)
+        local toRestore = {}
         for frame in pairs(managed) do
+            toRestore[frame] = true
+            managed[frame] = nil
+        end
+        for frame in pairs(animTargets) do
+            toRestore[frame] = true
+        end
+        for frame in pairs(toRestore) do
             if IsYieldedToCombatFade(frame) then
                 animTargets[frame] = nil
             else
                 FadeFrameTo(frame, 1.0, instant)
             end
-            managed[frame] = nil
         end
         if instant then
             for k in pairs(animTargets) do animTargets[k] = nil end
@@ -226,9 +246,9 @@ do
         local wantImmerse = ShouldImmerse()
         isImmersiveNow = wantImmerse
 
-        -- 非沉浸态且没有任何已接管框体时零开销直接返回（彻底消除战斗中 UNIT_HEALTH/UNIT_POWER 的无效遍历与 OnUpdate 唤醒）
+        -- 非沉浸态且没有任何已接管框体或残留淡入动画时零开销直接返回（彻底消除战斗中高频事件唤醒）
         if not wantImmerse then
-            if next(managed) ~= nil then
+            if next(managed) ~= nil or next(animTargets) ~= nil then
                 RestoreAllManaged(instant)
             elseif hoverTicker then
                 hoverTicker:Cancel()
@@ -266,8 +286,12 @@ do
                     return
                 end
                 local a = mod:GetDB().idleAlpha or 0.28
+                local curTargets = CollectTargets()
+                for _, f in ipairs(curTargets) do
+                    if not managed[f] then managed[f] = true end
+                end
                 for f in pairs(managed) do
-                    if f and f.IsShown and f:IsShown() then
+                    if f and not (f.IsForbidden and f:IsForbidden()) and f.IsShown and f:IsShown() then
                         local over = f.IsMouseOver and f:IsMouseOver()
                         local want = over and 1.0 or a
                         local curGoal = animTargets[f]
@@ -287,10 +311,10 @@ do
     local function OnVitalEvent()
         if not mod._active then return end
         -- 战斗中或选中目标时一定处于非沉浸态，且无已接管框体时直接短路，避免高频回血/回蓝触发防抖计时器
-        if next(managed) == nil and (
+        if next(managed) == nil and next(animTargets) == nil and (
             (_G.InCombatLockdown and _G.InCombatLockdown())
-            or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
-            or (_G.UnitExists and _G.UnitExists("target"))
+            or SafeBoolCall(_G.UnitAffectingCombat, "player")
+            or SafeBoolCall(_G.UnitExists, "target")
         ) then
             return
         end
@@ -526,13 +550,15 @@ do
             local db = pMod:GetDB()
             local tier = DetectTier(db)
             if tier == "normal" then
-                if fpsGuarded then
+                if fpsGuarded and db.fpsGuard ~= false then
                     return
                 end
+                fpsGuarded = false
                 if db.savedCVars then RestoreCVars(db) end
                 currentTier = "normal"
                 return
             end
+            fpsGuarded = false
             SnapshotCVars(db)
             if tier == "raid" then
                 SafeSetCVar("weatherDensity", "0")
@@ -549,7 +575,7 @@ do
         end)
     end
 
-    local function InstanceChatFilter(_, _, _, _, _, _, _, _, _, chanNum, chanBaseName)
+    local function InstanceChatFilter(_, _, _, _, _, _, _, _, zoneChanID, _, chanBaseName)
         if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
             return false
         end
@@ -559,8 +585,8 @@ do
         if not IsInCombatInstance() then
             return false
         end
-        local num = F.PlainNumber(chanNum, 0)
-        if num == 1 or num == 2 then
+        local zid = F.PlainNumber(zoneChanID, 0)
+        if zid == 1 or zid == 2 then
             return true
         end
         local base = F.PlainString(chanBaseName, nil)
@@ -681,7 +707,13 @@ do
             text = "持续低帧自动介入保护",
             tooltip = "脱战检测到帧率连续低于阈值时自动收紧天气与杂项粒子。",
             getValue = function() return db.fpsGuard ~= false end,
-            setValue = function(v) db.fpsGuard = v == true end,
+            setValue = function(v)
+                db.fpsGuard = v == true
+                if not db.fpsGuard and fpsGuarded then
+                    fpsGuarded = false
+                    ApplyTier()
+                end
+            end,
         }, {
             type = "toggle",
             text = "手动锁定强力稳帧（/kk boost）",

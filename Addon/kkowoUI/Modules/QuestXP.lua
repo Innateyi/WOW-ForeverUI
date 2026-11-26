@@ -68,7 +68,7 @@ local function ColorizeLevelTag(tag, questID)
     return label
 end
 
-local function ApplyTitleLevel(titleFS, questID, wantLevel)
+local function ApplyTitleLevel(titleFS, questID, active, wantLevel)
     if not (titleFS and titleFS.GetText and titleFS.SetText) then
         return
     end
@@ -78,10 +78,13 @@ local function ApplyTitleLevel(titleFS, questID, wantLevel)
     end
     local existingTag, rest = SplitLevelPrefix(cur)
     local want
-    if wantLevel then
+    if active and wantLevel then
         -- 已有暴雪/EUI 前缀（如 [21+]）时仅原地着色，零额外字符，绝不改变 EUI 已测量的行高
         local colored = ColorizeLevelTag(existingTag, questID)
         want = colored ~= "" and (colored .. " " .. rest) or rest
+    elseif not active then
+        -- 模块停用时仅去掉我们的染色代码，完整保留暴雪/EUI 原生 [等级] 前缀
+        want = (existingTag and existingTag ~= "") and (existingTag .. " " .. rest) or rest
     else
         want = rest
     end
@@ -126,7 +129,7 @@ local function ScheduleItemSync()
 end
 
 local function IsEUIQuestItemButton(f)
-    if type(f) ~= "table" or not f.IsObjectType then return false end
+    if type(f) ~= "table" or (f.IsForbidden and f:IsForbidden()) or not f.IsObjectType then return false end
     local ok, isBtn = pcall(f.IsObjectType, f, "Button")
     if not (ok and isBtn) then return false end
     if type(f.questID) ~= "number" or not f.icon or not f.cd or not f.count then
@@ -168,7 +171,7 @@ end
 
 -- 将带任务道具行的道具图标安放在经验数字左侧（不污染安全按钮字段，战斗中顺延至脱战）
 local function RepositionItemButton(b, expectedY)
-    if movingItemBtn or not (b and b.IsShown and b:IsShown()) then return end
+    if movingItemBtn or not (b and not (b.IsForbidden and b:IsForbidden()) and b.IsShown and b:IsShown()) then return end
     if _G.InCombatLockdown and _G.InCombatLockdown() then
         F.RunOutOfCombat("FUI_QuestXPItems", SyncAllItemButtons)
         return
@@ -215,8 +218,8 @@ local function RepositionItemButton(b, expectedY)
 
     local targetX = targetLeft * s
     movingItemBtn = true
-    b:ClearAllPoints()
-    b:SetPoint("TOPLEFT", _G.UIParent, "BOTTOMLEFT", targetX, targetY)
+    pcall(b.ClearAllPoints, b)
+    pcall(b.SetPoint, b, "TOPLEFT", _G.UIParent, "BOTTOMLEFT", targetX, targetY)
     movingItemBtn = false
 end
 
@@ -280,7 +283,7 @@ local function RenderRow(slot, questID, titleFS)
     local active = mod._active == true
 
     -- 1) 任务等级前缀（原地着色不重复、不触发额外换行）
-    ApplyTitleLevel(titleFS, questID, active and db.showQuestLevel ~= false)
+    ApplyTitleLevel(titleFS, questID, active, db.showQuestLevel ~= false)
 
     -- 2) 最右侧齐平的经验标注（含道具按钮的行自动将道具图标放到经验左侧）
     local fs = slotTexts[slot]
@@ -348,6 +351,9 @@ function mod:OnEnable()
         db.cache = {}
     end
     self:RegisterEvent("QUEST_LOG_UPDATE", RefreshRows)
+    self:RegisterEvent("QUEST_REMOVED", function(_, _, qid)
+        if qid then itemRows[qid] = nil end
+    end)
     self:RegisterEvent("PLAYER_LEVEL_UP", function()
         -- 任务经验随等级变化：升级后旧值作废
         for k in pairs(sessionXP) do sessionXP[k] = nil end
@@ -365,6 +371,7 @@ function mod:OnEnable()
 end
 
 function mod:OnDisable()
+    for k in pairs(itemRows) do itemRows[k] = nil end
     RefreshRows()
 end
 

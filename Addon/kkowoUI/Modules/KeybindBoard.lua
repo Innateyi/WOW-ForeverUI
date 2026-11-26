@@ -38,6 +38,11 @@ local modTabButtons = {}
 local layoutTabButtons = {}
 local barTabButtons = {}
 local combatBanner = nil
+local inCombat = false
+
+local function IsCombatLocked()
+    return inCombat or ((InCombatLockdown and InCombatLockdown()) == true)
+end
 
 local MOD_TABS = {
     { prefix = "",            label = "常规" },
@@ -140,7 +145,7 @@ for _, b in ipairs(BAR_SPECS) do
 end
 
 local function SaveCurrentBindings()
-    if InCombatLockdown and InCombatLockdown() then return end
+    if IsCombatLocked() then return end
     if _G.SaveBindings and _G.GetCurrentBindingSet then
         pcall(_G.SaveBindings, _G.GetCurrentBindingSet())
     end
@@ -151,7 +156,8 @@ local function ResolveBindingInfo(cmd)
     local slot = CMD_TO_SLOT[cmd]
     if slot and _G.GetActionTexture then
         local tex = _G.GetActionTexture(slot)
-        local kind, id = _G.GetActionInfo and _G.GetActionInfo(slot)
+        local kind, id
+        if _G.GetActionInfo then kind, id = _G.GetActionInfo(slot) end
         return tex, "action", slot, kind, id
     end
     local spellName = cmd:match("^SPELL (.+)$")
@@ -173,7 +179,11 @@ local function ResolveBindingInfo(cmd)
     end
     local itemName = cmd:match("^ITEM (.+)$")
     if itemName then
-        local tex = _G.C_Item and _G.C_Item.GetItemIconByID and select(2, pcall(_G.C_Item.GetItemIconByID, itemName)) or nil
+        local tex
+        if _G.C_Item and _G.C_Item.GetItemIconByID then
+            local ok, t = pcall(_G.C_Item.GetItemIconByID, itemName)
+            if ok then tex = t end
+        end
         return tex or 134400, "item", itemName
     end
     return nil, "command", cmd
@@ -189,11 +199,12 @@ end
 local RefreshAllKeys -- 前向声明
 
 local function HandleDropOnKey(btn)
-    if InCombatLockdown and InCombatLockdown() then
+    if IsCombatLocked() then
         F.Print("|cffff5555战斗中已锁定键位修改，脱战后再拖放绑定。|r")
         return
     end
-    local cursorType, a1, a2, a3 = _G.GetCursorInfo and _G.GetCursorInfo()
+    local cursorType, a1, a2, a3
+    if _G.GetCursorInfo then cursorType, a1, a2, a3 = _G.GetCursorInfo() end
     if not cursorType then return end
 
     local fullKey = currentModPrefix .. btn._baseKey
@@ -202,7 +213,9 @@ local function HandleDropOnKey(btn)
     if cursorType == "spell" then
         local spellID = a3
         if (not spellID) and _G.C_SpellBook and _G.C_SpellBook.GetSpellBookItemInfo then
-            local ok, info = pcall(_G.C_SpellBook.GetSpellBookItemInfo, a1, _G.Enum.SpellBookSpellBank.Player)
+            local bank = (a2 == "pet" and _G.Enum and _G.Enum.SpellBookSpellBank and _G.Enum.SpellBookSpellBank.Pet)
+                or (_G.Enum and _G.Enum.SpellBookSpellBank and _G.Enum.SpellBookSpellBank.Player)
+            local ok, info = pcall(_G.C_SpellBook.GetSpellBookItemInfo, a1, bank)
             if ok and type(info) == "table" then spellID = info.actionID or info.spellID end
         elseif (not spellID) and _G.GetSpellBookItemInfo then
             local ok, _, id = pcall(_G.GetSpellBookItemInfo, a1, a2 or "spell")
@@ -217,25 +230,36 @@ local function HandleDropOnKey(btn)
             if ok then spellName = F.PlainString(nm, nil) end
         end
         if spellName and _G.SetBindingSpell then
-            pcall(_G.SetBindingSpell, fullKey, spellName)
-            bound = true
+            local ok, res = pcall(_G.SetBindingSpell, fullKey, spellName)
+            bound = (ok and res ~= false)
         end
     elseif cursorType == "macro" then
         local mName = _G.GetMacroInfo and select(1, _G.GetMacroInfo(a1)) or nil
         if mName and _G.SetBindingMacro then
-            pcall(_G.SetBindingMacro, fullKey, mName)
-            bound = true
+            local ok, res = pcall(_G.SetBindingMacro, fullKey, mName)
+            bound = (ok and res ~= false)
         end
     elseif cursorType == "item" then
-        local itemName = (type(a2) == "string" and a2) or (_G.C_Item and _G.C_Item.GetItemNameByID and _G.C_Item.GetItemNameByID(a1)) or nil
-        if itemName and _G.SetBindingItem then
-            pcall(_G.SetBindingItem, fullKey, itemName)
-            bound = true
+        local itemName
+        if a1 and _G.C_Item and _G.C_Item.GetItemNameByID then
+            local ok, nm = pcall(_G.C_Item.GetItemNameByID, a1)
+            if ok then itemName = F.PlainString(nm, nil) end
+        end
+        if not itemName and a1 and _G.C_Item and _G.C_Item.GetItemInfo then
+            local ok, nm = pcall(_G.C_Item.GetItemInfo, a1)
+            if ok then itemName = F.PlainString(nm, nil) end
+        end
+        if not itemName and type(a2) == "string" then
+            itemName = a2:match("%[(.-)%]") or a2
+        end
+        if itemName and itemName ~= "" and _G.SetBindingItem then
+            local ok, res = pcall(_G.SetBindingItem, fullKey, itemName)
+            bound = (ok and res ~= false)
         end
     elseif cursorType == "petaction" then
         if _G.SetBinding and a1 then
-            pcall(_G.SetBinding, fullKey, "BONUSACTIONBUTTON" .. tostring(a1))
-            bound = true
+            local ok, res = pcall(_G.SetBinding, fullKey, "BONUSACTIONBUTTON" .. tostring(a1))
+            bound = (ok and res ~= false)
         end
     end
 
@@ -248,13 +272,15 @@ local function HandleDropOnKey(btn)
 end
 
 local function BindSlotToKey(slotCmd, btn)
-    if InCombatLockdown and InCombatLockdown() then return end
+    if IsCombatLocked() then return end
     local fullKey = currentModPrefix .. btn._baseKey
     if _G.SetBinding then
-        pcall(_G.SetBinding, fullKey, slotCmd)
-        SaveCurrentBindings()
-        RefreshAllKeys()
-        F.Print("已将 |cff52d669" .. fullKey .. "|r 绑定至动作槽 " .. tostring(slotCmd) .. "。")
+        local ok, res = pcall(_G.SetBinding, fullKey, slotCmd)
+        if ok and res ~= false then
+            SaveCurrentBindings()
+            RefreshAllKeys()
+            F.Print("已将 |cff52d669" .. fullKey .. "|r 绑定至动作槽 " .. tostring(slotCmd) .. "。")
+        end
     end
 end
 
@@ -311,6 +337,7 @@ local function CreateKeyButton(parent, baseKey, label, w, h)
     sub:SetJustifyH("RIGHT")
     sub:SetWidth(w - 4)
     sub:SetWordWrap(false)
+    if sub.SetMaxLines then sub:SetMaxLines(1) end
     b._sub = sub
 
     b:SetScript("OnReceiveDrag", function(self)
@@ -318,17 +345,19 @@ local function CreateKeyButton(parent, baseKey, label, w, h)
     end)
 
     b:SetScript("OnClick", function(self, mouseBtn)
-        if InCombatLockdown and InCombatLockdown() then
+        if IsCombatLocked() then
             F.Print("|cffff5555战斗中已锁定键位编辑，脱战后可继续调整。|r")
             return
         end
         if mouseBtn == "RightButton" then
             local fullKey = currentModPrefix .. self._baseKey
             if _G.SetBinding then
-                pcall(_G.SetBinding, fullKey)
-                SaveCurrentBindings()
-                RefreshAllKeys()
-                F.Print("已解绑按键 |cffe05263" .. fullKey .. "|r。")
+                local ok, res = pcall(_G.SetBinding, fullKey)
+                if ok and res ~= false then
+                    SaveCurrentBindings()
+                    RefreshAllKeys()
+                    F.Print("已解绑按键 |cffe05263" .. fullKey .. "|r。")
+                end
             end
             return
         end
@@ -445,7 +474,7 @@ local function RebuildKeyboardGrid()
             b:ClearAllPoints()
             b:SetPoint("TOPLEFT", boardFrame._keyArea, "TOPLEFT", npX + col * (unit + gap), -(npY + row * (unit + gap)))
         end
-        boardFrame:SetSize(836, 424)
+        boardFrame:SetSize(862, 424)
     elseif layout == "60" then
         boardFrame:SetSize(692, 386)
     else
@@ -456,7 +485,7 @@ end
 RefreshAllKeys = function()
     if not (boardFrame and boardFrame:IsShown()) then return end
     local ar, ag, ab = F.Theme.GetAccent()
-    local locked = (InCombatLockdown and InCombatLockdown()) == true
+    local locked = IsCombatLocked()
     if combatBanner then combatBanner:SetShown(locked) end
 
     for _, t in ipairs(modTabButtons) do StylePillBtn(t, t._prefix == currentModPrefix) end
@@ -478,7 +507,7 @@ RefreshAllKeys = function()
                     ST.ApplyRoundedBorder(b, 5, ar * 0.85, ag * 0.85, ab * 0.85, 0.94, 4)
                 else
                     b._icon:Hide()
-                    b._sub:SetText(GetKeyFriendlyLabel(cmd):sub(1, 8))
+                    b._sub:SetText(GetKeyFriendlyLabel(cmd))
                     ST.ApplyRoundedBorder(b, 5, 0.34, 0.38, 0.46, 0.88, 4)
                 end
             else
@@ -592,8 +621,9 @@ local function BuildBoard()
         layoutTabButtons[i] = tb
     end
 
-    -- 战斗锁定提示条
+    -- 战斗锁定提示条（置于键位按钮之上）
     combatBanner = CreateFrame("Frame", nil, f)
+    combatBanner:SetFrameLevel(f:GetFrameLevel() + 20)
     combatBanner:SetHeight(20)
     combatBanner:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -66)
     combatBanner:SetPoint("TOPRIGHT", f, "TOPRIGHT", -14, -66)
@@ -665,7 +695,7 @@ local function BuildBoard()
         idxFS:SetText(tostring(i))
 
         sb:SetScript("OnClick", function(self)
-            if InCombatLockdown and InCombatLockdown() then return end
+            if IsCombatLocked() then return end
             if _G.GetCursorInfo and _G.GetCursorInfo() and _G.PlaceAction and self._slot then
                 pcall(_G.PlaceAction, self._slot)
                 RefreshAllKeys()
@@ -678,7 +708,7 @@ local function BuildBoard()
             RefreshAllKeys()
         end)
         sb:SetScript("OnReceiveDrag", function(self)
-            if InCombatLockdown and InCombatLockdown() then return end
+            if IsCombatLocked() then return end
             if _G.PlaceAction and self._slot then
                 pcall(_G.PlaceAction, self._slot)
                 RefreshAllKeys()
@@ -722,13 +752,21 @@ function mod:ToggleBoard()
 end
 
 function mod:OnEnable()
+    inCombat = (InCombatLockdown and InCombatLockdown()) == true
     self:RegisterEvent("UPDATE_BINDINGS", RefreshAllKeys)
     self:RegisterEvent("ACTIONBAR_SLOT_CHANGED", RefreshAllKeys)
-    self:RegisterEvent("PLAYER_REGEN_DISABLED", RefreshAllKeys)
-    self:RegisterEvent("PLAYER_REGEN_ENABLED", RefreshAllKeys)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        inCombat = true
+        RefreshAllKeys()
+    end)
+    self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+        inCombat = false
+        RefreshAllKeys()
+    end)
 end
 
 function mod:OnDisable()
+    inCombat = false
     pendingSlotCmd = nil
     if boardFrame then boardFrame:Hide() end
 end

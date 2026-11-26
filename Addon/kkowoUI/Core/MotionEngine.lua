@@ -272,9 +272,12 @@ function M.AttachHealthTrail(healthBar, opts)
             self:SetValue(0, 1, true)
             return
         end
-        if _G.UnitIsDead and _G.UnitIsDead(unit) then
-            self:SetValue(0, 1, true)
-            return
+        if _G.UnitIsDead then
+            local okD, dead = pcall(_G.UnitIsDead, unit)
+            if okD and not F.IsSecret(dead) and dead then
+                self:SetValue(0, 1, true)
+                return
+            end
         end
         local hp = _G.UnitHealth and _G.UnitHealth(unit) or 0
         local mx = _G.UnitHealthMax and _G.UnitHealthMax(unit) or 1
@@ -431,9 +434,18 @@ local function GetSlot(obj, key)
     return t[key], t
 end
 
+function M.StopFrameAnims(frame)
+    local t = frame and animCache[frame]
+    if not t then return end
+    for _, ag in pairs(t) do
+        if ag and ag.Stop then ag:Stop() end
+    end
+end
+
 -- 5a) 完成白闪 + 轻上浮平滑淡出（0.22s）
 function M.PlayFlashFade(frame, duration, liftY, onDone)
     if not (frame and frame.CreateAnimationGroup) then return end
+    M.StopFrameAnims(frame)
     local ag, cache = GetSlot(frame, "flashFade")
     if not ag then
         ag = frame:CreateAnimationGroup()
@@ -468,6 +480,7 @@ end
 -- 5b) 打断警示短促水平抖动（±4px, 0.18s）+ 淡出
 function M.PlayInterruptShake(frame, amplitude, duration, onDone)
     if not (frame and frame.CreateAnimationGroup) then return end
+    M.StopFrameAnims(frame)
     local ag, cache = GetSlot(frame, "shake")
     if not ag then
         ag = frame:CreateAnimationGroup()

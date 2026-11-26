@@ -132,13 +132,13 @@ local function MuteOriginalERBCastBar(mute)
         if erb.HookScript then erb:HookScript("OnShow", EnforceERBMute) end
         if erb.SetAlpha then
             _G.hooksecurefunc(erb, "SetAlpha", function(_, a)
-                if not erbAlphaBusy and a ~= 0 then EnforceERBMute() end
+                if not erbAlphaBusy and F.PlainNumber(a, 1) ~= 0 then EnforceERBMute() end
             end)
         end
         for _, part in ipairs({ erb._barClip, erb._bg, erb._border, erb._iconFrame, erb._textFrame }) do
             if part and part.SetAlpha then
                 _G.hooksecurefunc(part, "SetAlpha", function(_, a)
-                    if not erbAlphaBusy and a ~= 0 then EnforceERBMute() end
+                    if not erbAlphaBusy and F.PlainNumber(a, 1) ~= 0 then EnforceERBMute() end
                 end)
             end
         end
@@ -165,20 +165,119 @@ local function MuteOriginalERBCastBar(mute)
     erbAlphaBusy = false
 end
 
+----------------------------------------------------------------------
+--  宿主选择：圆角施法条只替换玩家「实际在用」的那条施法条，绝不在被关掉的施法条位置上另起一条
+--    1) EUI 资源条施法条（ERB）开启时 -> 覆盖在 ERB 上并静音 ERB
+--    2) EUI 单位框架的玩家施法条开启时 -> 覆盖在它上面并静音它
+--    3) 都没开（使用暴雪原生施法条）-> 停在暴雪原生施法条的位置，并通过 EUI 的协作接口收起暴雪原生条
+----------------------------------------------------------------------
+local castHostKind = nil
+local mutedUFBar = nil
+local ufAlphaBusy = false
+local ufHooked = setmetatable({}, { __mode = "k" })
+local blizzSuppressed = false
+
+local function GetERBCastCfg()
+    local EUI = _G.EllesmereUI
+    local rb = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIResourceBars
+    local erbObj = rb and rb.ERB
+    local prof = erbObj and erbObj.db and erbObj.db.profile
+    return prof and prof.castBar or nil
+end
+
+local function GetUFPlayerCastbarHost()
+    local EUI = _G.EllesmereUI
+    local uf = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIUnitFrames
+    local s = uf and uf.db and uf.db.profile and uf.db.profile.player
+    if not (s and s.showPlayerCastbar) then return nil end
+    local pf = (uf.frames and uf.frames.player) or _G.EllesmereUIUnitFrames_Player
+    local cb = pf and pf.Castbar
+    if not cb then return nil end
+    if pf.IsElementEnabled then
+        local ok, en = pcall(pf.IsElementEnabled, pf, "Castbar")
+        if ok and not en then return nil end
+    end
+    return (cb.GetParent and cb:GetParent()) or cb
+end
+
+local function ResolveCastHost()
+    local erb = _G.ERB_CastBarFrame
+    local cfg = GetERBCastCfg()
+    if erb and ((type(cfg) == "table" and cfg.enabled == true) or (cfg == nil and erb:IsShown())) then
+        return "erb", erb
+    end
+    local ufHost = GetUFPlayerCastbarHost()
+    if ufHost then return "uf", ufHost end
+    return "blizz", _G.PlayerCastingBarFrame
+end
+
+local function SetBlizzCastSuppressed(on)
+    on = on == true
+    if on == blizzSuppressed then return end
+    blizzSuppressed = on
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI.SetPlayerCastBarSuppressed) == "function" then
+        pcall(EUI.SetPlayerCastBarSuppressed, "kkowoUI_Castbar", on)
+    end
+end
+
+local function MuteUFCastbar(host, on)
+    if mutedUFBar and (mutedUFBar ~= host or not on) then
+        ufAlphaBusy = true
+        pcall(mutedUFBar.SetAlpha, mutedUFBar, 1)
+        ufAlphaBusy = false
+        mutedUFBar = nil
+    end
+    if not (on and host and host.SetAlpha) then return end
+    if not ufHooked[host] then
+        ufHooked[host] = true
+        local function Enforce(self)
+            if ufAlphaBusy or mutedUFBar ~= self or not mod._active then return end
+            if _G.EllesmereUI and _G.EllesmereUI._unlockActive == true then return end
+            ufAlphaBusy = true
+            pcall(self.SetAlpha, self, 0)
+            ufAlphaBusy = false
+        end
+        _G.hooksecurefunc(host, "SetAlpha", function(self, a) if F.PlainNumber(a, 1) ~= 0 then Enforce(self) end end)
+        if host.HookScript then host:HookScript("OnShow", Enforce) end
+    end
+    mutedUFBar = host
+    ufAlphaBusy = true
+    pcall(host.SetAlpha, host, 0)
+    ufAlphaBusy = false
+end
+
+local function ApplyHostMute(on)
+    local unlockOn = _G.EllesmereUI and _G.EllesmereUI._unlockActive == true
+    local want = on and not unlockOn
+    local kind, host = ResolveCastHost()
+    castHostKind = kind
+    MuteOriginalERBCastBar(want and kind == "erb")
+    MuteUFCastbar(host, want and kind == "uf")
+    SetBlizzCastSuppressed(want and kind == "blizz")
+end
+
 local function SyncOverlayAnchor()
     if not overlay then return end
     local db = mod:GetDB()
     local h = math_max(8, math_min(26, F.PlainNumber(db.barHeight, 14) or 14))
-    local erb = _G.ERB_CastBarFrame
     local core = F.Modules.Get("coreHUD")
     local coreAnchor = core and core.GetAnchorFrame and core:GetAnchorFrame()
+    local kind, host = ResolveCastHost()
+    castHostKind = kind
 
     overlay:ClearAllPoints()
-    if erb then
-        local w = F.PlainNumber(erb:GetWidth(), 249) or 249
+    if (kind == "erb" or kind == "uf") and host then
+        local w = F.PlainNumber(host:GetWidth(), 249) or 249
         if w < 120 then w = 249 end
         overlay:SetSize(w, h)
-        overlay:SetPoint("CENTER", erb, "CENTER", 0, 0)
+        overlay:SetPoint("CENTER", host, "CENTER", 0, 0)
+        return
+    end
+    -- 暴雪原生施法条当宿主：圆角施法条自己占位，位置由 EUI 解锁模式拖动保存（默认底部居中）
+    if kind == "blizz" and overlay._applyMoverPos then
+        overlay:SetSize(249, h)
+        overlay._applyMoverPos()
     elseif coreAnchor then
         overlay:SetSize(256, h)
         overlay:SetPoint("TOP", coreAnchor, "BOTTOM", 0, -34)
@@ -309,14 +408,21 @@ local function BuildCastbarOverlay()
 
     f._spark = M.AttachEdgeSpark(sb, { width = 18, extraHeight = 6, a = 0.96, levelOffset = 4 })
 
-    local nameFS = f:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(nameFS, 12, "OUTLINE", 0.96, 0.97, 0.99, 1)
+    -- 文字宿置于高于 StatusBar 与圆角边框的子框体，避免“条内显示”时被血条/圆角遮挡
+    local textHost = CreateFrame("Frame", nil, f)
+    textHost:SetAllPoints(f)
+    textHost:SetFrameLevel(30)
+    textHost:EnableMouse(false)
+    f._textHost = textHost
+
+    local nameFS = textHost:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(nameFS, ST.FONT.body, 0.96, 0.97, 0.99, 1)
     nameFS:SetJustifyH("LEFT")
     nameFS:SetWordWrap(false)
     f._nameFS = nameFS
 
-    local timeFS = f:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(timeFS, 12, "OUTLINE", 0.94, 0.96, 0.99, 1)
+    local timeFS = textHost:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(timeFS, ST.FONT.body, 0.94, 0.96, 0.99, 1)
     timeFS:SetJustifyH("RIGHT")
     timeFS:SetWordWrap(false)
     f._timeFS = timeFS
@@ -334,13 +440,27 @@ local function BuildCastbarOverlay()
     g._fill = gFill
 
     local gLabel = g:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(gLabel, 12, "OUTLINE", 1, 1, 1, 1)
+    ST.ApplyText(gLabel, ST.FONT.body, 1, 1, 1, 1)
     gLabel:SetPoint("TOPLEFT", g, "BOTTOMLEFT", 2, -4)
     gLabel:SetJustifyH("LEFT")
     g._label = gLabel
 
     ghostFrame = g
     overlay = f
+    f._applyMoverPos = F.Mover.Register({
+        key = "CastbarOverlay",
+        label = "kkowoUI 圆角施法条",
+        frame = f,
+        order = 17,
+        defaultPoint = "BOTTOM",
+        defaultRelPoint = "BOTTOM",
+        defaultX = 0,
+        defaultY = 215,
+        -- 覆盖在 ERB / 单位框架施法条上时跟随宿主（拖宿主即可），只有暴雪宿主模式才由它自己占位
+        isHidden = function() return not (mod._active and castHostKind == "blizz") end,
+        isAnchored = function() return castHostKind ~= "blizz" end,
+        onReanchor = function() end,
+    })
     RefreshOverlayChrome()
 end
 
@@ -370,7 +490,10 @@ local function LayoutLatencyZone()
     local lat = castState.latency or 0
     if lat <= 0.01 and _G.GetNetStats then
         local _, _, homeMS, worldMS = _G.GetNetStats()
-        lat = (F.PlainNumber(worldMS, 0) or F.PlainNumber(homeMS, 0) or 0) / 1000
+        -- PlainNumber 的回退值 0 在 Lua 里也是真值，`a or b` 永远走不到 homeMS，必须显式判断
+        local ms = F.PlainNumber(worldMS, 0) or 0
+        if ms <= 0 then ms = F.PlainNumber(homeMS, 0) or 0 end
+        lat = ms / 1000
     end
     local frac = math_max(0, math_min(0.42, lat / castState.duration))
     if frac < 0.015 then
@@ -390,14 +513,59 @@ local function LayoutLatencyZone()
     overlay._latency:Show()
 end
 
+local function GetEUICastBarProfile()
+    local EUI = _G.EllesmereUI
+    local rbNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIResourceBars
+    local p = rbNS and rbNS.ERB and rbNS.ERB.db and rbNS.ERB.db.profile
+    if type(p) == "table" and type(p.castBar) == "table" then
+        return p.castBar
+    end
+    local raw = _G.EllesmereUIResourceBarsDB
+    if type(raw) == "table" and type(raw.profiles) == "table" then
+        local def = raw.profiles.Default
+        if type(def) == "table" and type(def.castBar) == "table" then
+            return def.castBar
+        end
+    end
+    return nil
+end
+
 local function PaintCastFillColor()
     if not overlay then return end
-    if castState.uninterruptible then
-        ST.ApplyBarGradient(overlay._bar, 0.36, 0.38, 0.44, 0.62, 0.65, 0.72, 0.98, false)
-    elseif castState.isChannel then
+    local cb = GetEUICastBarProfile()
+    -- 玩家自己的读条不看「不可打断」标记（无限服对自身施法常返回 true，整条会变成灰色）
+    if castState.isChannel then
+        if cb and cb.channelOverride == true and F.PlainNumber(cb.channelR, nil) then
+            local cr = F.PlainNumber(cb.channelR, 0.30) or 0.30
+            local cg = F.PlainNumber(cb.channelG, 0.80) or 0.80
+            local cbCol = F.PlainNumber(cb.channelB, 0.70) or 0.70
+            ST.ApplyBarGradient(overlay._bar,
+                cr * 0.76, cg * 0.76, cbCol * 0.76,
+                math_min(1, cr * 0.82 + 0.22), math_min(1, cg * 0.82 + 0.22), math_min(1, cbCol * 0.82 + 0.22),
+                0.98, false)
+            return
+        end
         local cc = ST.COLORS.channel
         ST.ApplyBarGradient(overlay._bar, cc[1] * 0.75, cc[2] * 0.85, cc[3] * 0.90, 0.78, 0.98, 0.94, 0.98, false)
     else
+        -- 同步尊重 EUI 施法条的自定义颜色设置（取消「职业着色」并自选颜色时立刻生效）
+        if cb and cb.classColored == false and F.PlainNumber(cb.fillR, nil) then
+            local fr = F.PlainNumber(cb.fillR, 0.90) or 0.90
+            local fg = F.PlainNumber(cb.fillG, 0.70) or 0.70
+            local fb = F.PlainNumber(cb.fillB, 0.20) or 0.20
+            if cb.gradientEnabled and F.PlainNumber(cb.gradientR, nil) then
+                local gr = F.PlainNumber(cb.gradientR, fr) or fr
+                local gg = F.PlainNumber(cb.gradientG, fg) or fg
+                local gb = F.PlainNumber(cb.gradientB, fb) or fb
+                ST.ApplyBarGradient(overlay._bar, fr, fg, fb, gr, gg, gb, 0.98, false)
+            else
+                ST.ApplyBarGradient(overlay._bar,
+                    fr * 0.78, fg * 0.78, fb * 0.78,
+                    math_min(1, fr * 0.80 + 0.24), math_min(1, fg * 0.80 + 0.24), math_min(1, fb * 0.80 + 0.24),
+                    0.98, false)
+            end
+            return
+        end
         local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
         ST.ApplyBarGradient(overlay._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
     end
@@ -423,6 +591,7 @@ local function SpawnGhostFeedback(kind)
         ST.ApplyRoundedBorder(ghostFrame, rad, 0.02, 0.02, 0.03, 0.95, 4)
     end
 
+    M.StopFrameAnims(ghostFrame)
     if kind == "success" then
         local _, _, _, r2, g2, b2 = ST.GetClassGradient()
         ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", r2, g2, b2, 0.95, 1, 1, 1, 1)
@@ -431,7 +600,7 @@ local function SpawnGhostFeedback(kind)
         M.PlayFlashFade(ghostFrame, 0.22, 5)
     else
         local ic = ST.COLORS.interrupt
-        ghostFrame._fill:SetVertexColor(ic[1], ic[2], ic[3], ic[4])
+        ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", ic[1], ic[2], ic[3], ic[4], ic[1], ic[2], ic[3], ic[4])
         ghostFrame._label:SetText("已打断")
         ghostFrame._label:SetTextColor(1, 0.45, 0.48, 1)
         M.PlayInterruptShake(ghostFrame, 4, 0.18)
@@ -449,6 +618,14 @@ local function OnCastUpdate(self)
     local elapsed = now - castState.startTime
     local rem = castState.endTime - now
     if rem <= 0 then
+        if rem <= -0.35 then
+            if not F.UnitIsCasting("player", castState.isChannel) then
+                castState.active = false
+                self:SetScript("OnUpdate", nil)
+                self:Hide()
+                return
+            end
+        end
         if castState.isChannel then
             overlay._bar:SetValue(0)
         else
@@ -480,7 +657,7 @@ local function StartCast(isChannel)
         notInt = castID
         castID = nil
     end
-    if not name then return end
+    if type(name) == "nil" then return end
 
     local sMS = F.PlainNumber(startMS, nil)
     local eMS = F.PlainNumber(endMS, nil)
@@ -489,10 +666,10 @@ local function StartCast(isChannel)
     local now = GetTime()
     castState.active = true
     castState.isChannel = isChannel == true
-    castState.castGUID = (not F.IsSecret(castID)) and castID or nil
+    castState.castGUID = (type(castID) ~= "nil" and not F.IsSecret(castID)) and castID or nil
     castState.spellName = CleanSpellName(name)
     castState.spellID = F.PlainNumber(spellID, nil)
-    castState.icon = (not F.IsSecret(tex)) and tex or nil
+    castState.icon = (type(tex) ~= "nil" and not F.IsSecret(tex)) and tex or nil
     castState.startTime = sMS / 1000
     castState.endTime = eMS / 1000
     castState.duration = math_max(0.05, castState.endTime - castState.startTime)
@@ -504,9 +681,12 @@ local function StartCast(isChannel)
     end
     castState.sentTime = 0
 
-    MuteOriginalERBCastBar(true)
     RefreshOverlayChrome()
-    if ghostFrame then ghostFrame:Hide() end
+    ApplyHostMute(true)
+    if ghostFrame then
+        M.StopFrameAnims(ghostFrame)
+        ghostFrame:Hide()
+    end
     if castState.icon then overlay._iconTex:SetTexture(castState.icon) end
     overlay._nameFS:SetText(castState.spellName)
     PaintCastFillColor()
@@ -524,8 +704,8 @@ end
 
 local function StopCast(feedbackKind, eventCastGUID)
     if not castState.active then return end
-    if not castState.isChannel and eventCastGUID and castState.castGUID
-        and not F.IsSecret(eventCastGUID) and eventCastGUID ~= castState.castGUID then
+    if not castState.isChannel and type(eventCastGUID) ~= "nil" and not F.IsSecret(eventCastGUID)
+        and castState.castGUID and eventCastGUID ~= castState.castGUID then
         return
     end
     castState.active = false
@@ -556,7 +736,7 @@ end
 
 function mod:OnEnable()
     BuildCastbarOverlay()
-    MuteOriginalERBCastBar(true)
+    ApplyHostMute(true)
     AttachTargetCastSpark()
 
     local EUI = _G.EllesmereUI
@@ -564,11 +744,22 @@ function mod:OnEnable()
         pcall(EUI.RegisterUnlockModeListener, EUI, "kkowoUI_CastbarMotion", function(active)
             if not mod._active then return end
             if active then
-                MuteOriginalERBCastBar(false)
-                if overlay then overlay:Hide() end
+                ApplyHostMute(false)
+                if overlay and castHostKind == "blizz" and not castState.active then
+                    -- 解锁预览：显示一条静态示意条，方便在 EUI 解锁模式里拖动摆放
+                    overlay:SetScript("OnUpdate", nil)
+                    overlay._bar:SetValue(0.6)
+                    overlay._nameFS:SetText("kkowoUI 圆角施法条")
+                    overlay._timeFS:SetText("拖动调整位置")
+                    PaintCastFillColor()
+                    overlay:Show()
+                elseif overlay then
+                    overlay:Hide()
+                end
             else
                 SyncOverlayAnchor()
-                MuteOriginalERBCastBar(true)
+                ApplyHostMute(true)
+                if overlay and not castState.active then overlay:Hide() end
                 if castState.active and overlay then
                     overlay:Show()
                 end
@@ -583,21 +774,31 @@ function mod:OnEnable()
     self:RegisterUnitEvent("UNIT_SPELLCAST_DELAYED", "player", function() if castState.active and not castState.isChannel then StartCast(false) end end)
     self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player", function() StartCast(true) end)
     self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_UPDATE", "player", function() if castState.active and castState.isChannel then StartCast(true) end end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", function(_, _, _, castGUID)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", function(_, _, _, castGUID, spellID)
+        -- 只认当前读条的法术：无限服读条信息可能不带 castGUID，此时自动射击等别的法术的成功事件
+        -- 不能把正在读的瞄准射击提前判成「施法成功」
+        local sid = F.PlainNumber(spellID, nil)
+        if sid and castState.spellID and sid ~= castState.spellID then return end
         if castState.active and not castState.isChannel then
             StopCast("success", castGUID)
         end
     end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player", function(_, _, _, castGUID)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "player", function(_, _, _, castGUID, spellID)
+        local sid = F.PlainNumber(spellID, nil)
+        if sid and castState.spellID and sid ~= castState.spellID then return end
         StopCast("interrupt", castGUID)
     end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player", function(_, _, _, castGUID)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "player", function(_, _, _, castGUID, spellID)
+        local sid = F.PlainNumber(spellID, nil)
+        if sid and castState.spellID and sid ~= castState.spellID then return end
         if castState.active and not castState.isChannel then
-            if _G.UnitCastingInfo and _G.UnitCastingInfo("player") then return end
+            if F.UnitIsCasting("player") then return end
             StopCast("interrupt", castGUID)
         end
     end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player", function(_, _, _, castGUID)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player", function(_, _, _, castGUID, spellID)
+        local sid = F.PlainNumber(spellID, nil)
+        if sid and castState.spellID and sid ~= castState.spellID then return end
         if castState.active and not castState.isChannel then
             StopCast(nil, castGUID)
         end
@@ -608,12 +809,22 @@ function mod:OnEnable()
         end
     end)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
-        MuteOriginalERBCastBar(true)
+        if castState.active then
+            local stillCasting = F.UnitIsCasting("player") or F.UnitIsCasting("player", true)
+            if not stillCasting then
+                castState.active = false
+                if overlay then
+                    overlay:SetScript("OnUpdate", nil)
+                    overlay:Hide()
+                end
+            end
+        end
         AttachTargetCastSpark()
         RefreshOverlayChrome()
-        C_Timer.After(0.5, function() if mod._active then MuteOriginalERBCastBar(true) end end)
+        ApplyHostMute(true)
+        C_Timer.After(0.5, function() if mod._active then RefreshOverlayChrome(); ApplyHostMute(true) end end)
     end)
-    C_Timer.After(0.6, function() if mod._active then MuteOriginalERBCastBar(true) end end)
+    C_Timer.After(0.6, function() if mod._active then RefreshOverlayChrome(); ApplyHostMute(true) end end)
 end
 
 function mod:OnDisable()
@@ -626,13 +837,17 @@ function mod:OnDisable()
         overlay:SetScript("OnUpdate", nil)
         overlay:Hide()
     end
-    if ghostFrame then ghostFrame:Hide() end
+    if ghostFrame then
+        M.StopFrameAnims(ghostFrame)
+        ghostFrame:Hide()
+    end
     if targetCastSpark then targetCastSpark:SetShown(false) end
-    MuteOriginalERBCastBar(false)
+    ApplyHostMute(false)
 end
 
 function mod:OnRefresh()
     RefreshOverlayChrome()
+    ApplyHostMute(true)
     AttachTargetCastSpark()
 end
 

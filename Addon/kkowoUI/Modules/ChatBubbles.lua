@@ -121,6 +121,7 @@ end
 --  我们的气泡框
 ----------------------------------------------------------------------
 local Release   -- forward
+local fading = {}
 
 local function OnFadeFinished(ag)
     local f = ag:GetParent()
@@ -166,6 +167,7 @@ end
 
 function Release(f)
     if not f then return end
+    fading[f] = nil
     f.anim:Stop()
     f._fadingOut = false
     f:SetScript("OnUpdate", nil)
@@ -178,6 +180,11 @@ end
 local function PlayFade(f, from, to, dur, out)
     f.anim:Stop()
     f._fadingOut = out == true
+    if out then
+        fading[f] = true
+    else
+        fading[f] = nil
+    end
     if dur <= 0.01 then
         f:SetAlpha(to)
         if out then Release(f) end
@@ -450,6 +457,9 @@ local function ReleaseAll()
     for outer in pairs(live) do
         Detach(outer, true)
     end
+    for f in pairs(fading) do
+        Release(f)
+    end
 end
 
 local function RestyleAll()
@@ -499,7 +509,14 @@ local function ApplyCVars()
     HoldCVar("chatBubblesParty", mod:GetDB().partyBubbles ~= false)
 end
 
-local function RestoreCVars()
+local function RestoreCVars(immediate)
+    if next(heldCVars) == nil then return end
+    if not immediate and _G.InCombatLockdown and _G.InCombatLockdown() then
+        F.RunOutOfCombat("chatBubblesCVars", function()
+            if not mod._active then RestoreCVars(true) end
+        end)
+        return
+    end
     for name, prev in pairs(heldCVars) do
         SetCVarSafe(name, prev)
         heldCVars[name] = nil
@@ -608,14 +625,14 @@ function mod:OnEnable()
     self:RegisterEvent("PLAYER_LEAVING_WORLD", ReleaseAll)
     self:RegisterEvent("PLAYER_LOGOUT", function()
         ReleaseAll()
-        RestoreCVars()
+        RestoreCVars(true)
     end)
     QueueScan()
 end
 
 function mod:OnDisable()
     ReleaseAll()
-    RestoreCVars()
+    RestoreCVars(false)
     SetEUIBubblesSuppressed(false)
 end
 

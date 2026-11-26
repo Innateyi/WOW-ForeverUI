@@ -1006,7 +1006,7 @@ do
         end
         if not cachedStatsChild then return end
         local db = mod:GetDB()
-        local statSz = math_max(10, math_min(14, F.PlainNumber(db.charStatFontSize, 12)))
+        local statSz = math_max(11, math_min(16, F.PlainNumber(db.charStatFontSize, 13)))
         ApplyStatFontsIn(cachedStatsChild, statSz, mod._active == true, 0)
     end
 end
@@ -1188,7 +1188,7 @@ local function ExpandFriendsIfEnabled()
         -- 关闭「好友列表加高」或停用模块时还原原始高度
         if friendsOrigH then
             F.RunOutOfCombat("FUI_ExpandFriends", function()
-                if friendsOrigH and ff then
+                if not (mod._active and mod:GetDB().expandFriends) and friendsOrigH and ff then
                     ff:SetHeight(friendsOrigH)
                     friendsOrigH = nil
                 end
@@ -1197,6 +1197,7 @@ local function ExpandFriendsIfEnabled()
         return
     end
     F.RunOutOfCombat("FUI_ExpandFriends", function()
+        if not (mod._active and mod:GetDB().expandFriends) then return end
         local h = ff and F.PlainNumber(ff:GetHeight(), 560)
         if h and h < 520 then
             friendsOrigH = friendsOrigH or h
@@ -1457,7 +1458,8 @@ local function ApplyUnifiedResourceBars(forceApply)
     local prof, applyFn = GetERBProfileAndApply()
     if type(prof) ~= "table" then return false end
 
-    F.RunOutOfCombat("FUI_UnifyResourceBars", function()
+    F.RunOutOfCombat("FUI_ResourceBarsStyle", function()
+        if not (mod._active and db.unifyResourceBars ~= false) then return end
         if type(db.erbStyleBackup) ~= "table" then
             local snap = {}
             for sec, spec in pairs(ERB_UNIFY_PLAN) do
@@ -1497,7 +1499,7 @@ local function RestoreResourceBarsStyle(notify)
         if notify then F.Print("当前没有可还原的资源条样式备份。") end
         return
     end
-    F.RunOutOfCombat("FUI_RestoreResourceBars", function()
+    F.RunOutOfCombat("FUI_ResourceBarsStyle", function()
         -- 按统一方案逐键还原：备份里原本为 nil 的键（pairs 遍历不到）也要写回 nil，
         -- 否则 249px 宽度 / solid 边框等会永久留在 EUI 配置里；备份时不存在的整段同理清回默认
         for sec, spec in pairs(ERB_UNIFY_PLAN) do
@@ -1971,8 +1973,8 @@ local function ApplyEUIBuiltinHUDSkinsOnce()
 end
 
 local function ApplyFlightTimerDedup()
-    if not mod._active then return end
-    local mode = mod:GetDB().flightTimerMode or "keep_eui"
+    local db = mod:GetDB()
+    local mode = mod._active and (db.flightTimerMode or "keep_eui") or "both"
     local pFrame = _G.PolestarFlightTimer
     local pDB = _G.PolestarDB
     local euiDB = _G.EllesmereUIDB
@@ -1985,8 +1987,6 @@ local function ApplyFlightTimerDedup()
             end
         end)
     end
-
-    local db = mod:GetDB()
     if mode == "keep_eui" then
         -- 关闭 Polestar 重复的黑影飞行卡片，保留下方极简细线 EUI 飞行条并同步职业色
         if type(pDB) == "table" and type(pDB.settings) == "table" then
@@ -3761,10 +3761,9 @@ do
             end
         end
         -- 顺手补齐竞价区全部金/银/铜币输入框的币标与对齐（如存在且可见）
-        for _, host in ipairs({
-            type(ah.ItemBuyFrame) == "table" and ah.ItemBuyFrame.BidFrame or nil,
-            type(ah.AuctionsFrame) == "table" and ah.AuctionsFrame.BidFrame or nil,
-        }) do
+        for _, hostKey in ipairs({ "ItemBuyFrame", "AuctionsFrame" }) do
+            local sub = ah[hostKey]
+            local host = type(sub) == "table" and sub.BidFrame or nil
             if type(host) == "table" and type(host.BidAmount) == "table" and host.BidAmount:IsShown() then
                 PolishMoneyInputFrame(host.BidAmount)
             end
@@ -4248,7 +4247,20 @@ do
     local hookedSF   = setmetatable({}, { __mode = "k" })
     local skillsBoxHooked = false
     local gossipScrollHooked = false
-    local questDialogHooked = false
+    local questDialogHooked = setmetatable({}, { __mode = "k" })
+
+    local function IsSafeObj(o)
+        if type(o) ~= "table" then return false end
+        if o.IsForbidden then
+            local ok, forb = pcall(o.IsForbidden, o)
+            if not ok or forb then return false end
+        end
+        return true
+    end
+
+    local function IsTopPoint(pt)
+        return pt == "TOP" or pt == "TOPLEFT" or pt == "TOPRIGHT"
+    end
 
     -- 修复 NPC 对话窗（GossipFrame）与任务对话/邮件/书信窗在鸿蒙大字号下的文字与选项重叠问题：
     -- 12.x GossipFrame 使用 ScrollBox，GreetingText 换行高度在大字号下常超过预估行高，导致下方对话选项压在正文上。
@@ -4430,19 +4442,6 @@ do
         "AuctionHouseFrame", "DressUpFrame", "CommunitiesFrame", "EncounterJournal",
     }
 
-    local function IsSafeObj(o)
-        if type(o) ~= "table" then return false end
-        if o.IsForbidden then
-            local ok, forb = pcall(o.IsForbidden, o)
-            if not ok or forb then return false end
-        end
-        return true
-    end
-
-    local function IsTopPoint(pt)
-        return pt == "TOP" or pt == "TOPLEFT" or pt == "TOPRIGHT"
-    end
-
     local function ReadAllPoints(region)
         local pts = {}
         local n = region.GetNumPoints and F.PlainNumber(region:GetNumPoints(), 1) or 1
@@ -4575,14 +4574,14 @@ do
                     if IsSafeObj(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
                         local txt = reg.GetText and F.PlainString(reg:GetText(), "") or ""
                         local isDesc = #txt >= 18 or (reg.CanWordWrap and reg:CanWordWrap() and #txt >= 8)
-                        if isDesc then
+                        if isDesc or (not want and origAnchor[reg]) then
                             ShiftAnchorY(reg, -7, want, -6)
                             if want and reg.SetHeight then pcall(reg.SetHeight, reg, 0) end
                             -- 说明装得下才关裁切；换成更长的说明时（每次列表刷新都会重算）立即恢复裁切
                             if (clips or unclippedNodes[node]) and node.SetClipsChildren then
                                 local nh = F.PlainNumber(node:GetHeight(), 0)
                                 local rh = F.PlainNumber(reg:GetStringHeight(), 0)
-                                local off = want and nh > 0 and rh > 0 and rh + 12 <= nh
+                                local off = want and isDesc and nh > 0 and rh > 0 and rh + 12 <= nh
                                 pcall(node.SetClipsChildren, node, not off)
                                 unclippedNodes[node] = off or nil
                             end
@@ -4591,6 +4590,10 @@ do
                         end
                     end
                 end
+            end
+            if not want and unclippedNodes[node] and node.SetClipsChildren then
+                pcall(node.SetClipsChildren, node, true)
+                unclippedNodes[node] = nil
             end
             if node.GetChildren then
                 for _, ch in ipairs({ node:GetChildren() }) do
@@ -4603,6 +4606,8 @@ do
 
     local function GuardWindowTree(root, want, depth)
         if not IsSafeObj(root) or depth > 5 or root == _G.kkowoUI_CharHeroCard then return end
+        local rname = root.GetName and F.PlainString(root:GetName(), nil) or nil
+        if rname and rname:sub(1, 8) == "kkowoUI_" then return end
         local otype = root.GetObjectType and root:GetObjectType()
         -- 跳过 ScrollBox 虚拟化行池本身（避免破坏暴雪滚动布局），但处理常规 ScrollFrame
         if root.ScrollTarget then return end
@@ -4706,18 +4711,16 @@ do
             FixSimilarDialogOverlaps()
         end
 
-        -- 任务对话页/邮件/书信页防多行文字重叠钩子
-        if not questDialogHooked then
-            questDialogHooked = true
-            for _, qName in ipairs({ "QuestFrameGreetingPanel", "QuestFrameDetailPanel", "QuestFrameProgressPanel", "QuestFrameRewardPanel", "OpenMailFrame", "ItemTextFrame" }) do
-                local qf = _G[qName]
-                if IsSafeObj(qf) and qf.HookScript then
-                    qf:HookScript("OnShow", function()
-                        if mod._active and mod:GetDB().harmonyFontGuard ~= false then
-                            C_Timer.After(0, FixSimilarDialogOverlaps)
-                        end
-                    end)
-                end
+        -- 任务对话页/邮件/书信页防多行文字重叠钩子（逐框体 weak 表记录，支持晚加载的邮件/书信窗）
+        for _, qName in ipairs({ "QuestFrameGreetingPanel", "QuestFrameDetailPanel", "QuestFrameProgressPanel", "QuestFrameRewardPanel", "OpenMailFrame", "ItemTextFrame" }) do
+            local qf = _G[qName]
+            if IsSafeObj(qf) and not questDialogHooked[qf] and qf.HookScript then
+                questDialogHooked[qf] = true
+                qf:HookScript("OnShow", function()
+                    if mod._active and mod:GetDB().harmonyFontGuard ~= false then
+                        C_Timer.After(0, FixSimilarDialogOverlaps)
+                    end
+                end)
             end
         end
         for _, winName in ipairs(FONT_GUARD_WINDOWS) do
@@ -4928,11 +4931,17 @@ do
 
         if want then
             modelCtrlDriver._shown = false
+            modelCtrlDriver:Show()
             pcall(ctrl.SetAlpha, ctrl, 0)
             pcall(ctrl.EnableMouse, ctrl, false)
         else
+            modelCtrlDriver._shown = false
+            modelCtrlDriver:Hide()
             pcall(ctrl.SetAlpha, ctrl, 1)
             pcall(ctrl.EnableMouse, ctrl, true)
+            if ctrl.IsShown and ctrl:IsShown() and not (ctrl.IsMouseOver and ctrl:IsMouseOver()) then
+                pcall(ctrl.Hide, ctrl)
+            end
         end
     end
 
@@ -5040,7 +5049,7 @@ do
         if IsSafe(rph) then
             if not sidebarDivider then
                 local ln = rph:CreateTexture(nil, "OVERLAY", nil, 2)
-                ln:SetWidth(1)
+                if F.StyleTokens then F.StyleTokens.Hairline(ln, true) else ln:SetWidth(1) end
                 ln:SetPoint("TOPLEFT", rph, "TOPLEFT", 0, -28)
                 ln:SetPoint("BOTTOMLEFT", rph, "BOTTOMLEFT", 0, 10)
                 ln:SetColorTexture(1, 1, 1, 0.08)
@@ -5095,7 +5104,7 @@ do
             })
 
             local midLine = card:CreateTexture(nil, "OVERLAY", nil, 2)
-            midLine:SetWidth(1)
+            if F.StyleTokens then F.StyleTokens.Hairline(midLine, true) else midLine:SetWidth(1) end
             midLine:SetPoint("TOP", card, "TOP", 0, -9)
             midLine:SetPoint("BOTTOM", card, "BOTTOM", 0, 9)
             midLine:SetColorTexture(1, 1, 1, 0.10)
@@ -5132,12 +5141,22 @@ do
             durVal:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", -6, 7)
             card._durVal = durVal
 
-            card:RegisterEvent("PLAYER_AVG_ITEM_LEVEL_UPDATE")
-            card:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
-            card:RegisterEvent("UPDATE_INVENTORY_DURABILITY")
-            card:RegisterEvent("UPDATE_INVENTORY_ALERTS")
             card:SetScript("OnEvent", UpdateHeroCardData)
-            card:SetScript("OnShow", UpdateHeroCardData)
+            local function RegisterCardEvents(self)
+                self:RegisterEvent("PLAYER_AVG_ITEM_LEVEL_UPDATE")
+                self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+                self:RegisterEvent("UPDATE_INVENTORY_DURABILITY")
+                self:RegisterEvent("UPDATE_INVENTORY_ALERTS")
+            end
+            card:SetScript("OnShow", function(self)
+                RegisterCardEvents(self)
+                UpdateHeroCardData()
+            end)
+            card:SetScript("OnHide", function(self)
+                self:UnregisterAllEvents()
+            end)
+            -- 新建框体默认就是显示状态，首次不会触发 OnShow：这里先注册一次，首次打开人物面板也能实时刷新
+            RegisterCardEvents(card)
             heroCard = card
         end
 
@@ -5243,16 +5262,16 @@ do
             end
         end
 
-        if not styledStatFrames[frame] and frame.CreateTexture then
-            styledStatFrames[frame] = true
-            local hl = frame:CreateTexture(nil, "HIGHLIGHT")
+        local hl = styledStatFrames[frame]
+        if not hl and frame.CreateTexture then
+            hl = frame:CreateTexture(nil, "HIGHLIGHT")
             hl:SetPoint("TOPLEFT", frame, "TOPLEFT", 4, 0)
             hl:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -4, 0)
             hl:SetColorTexture(1, 1, 1, 0.055)
-            frame._kkHover = hl
+            styledStatFrames[frame] = hl
         end
-        if frame._kkHover then
-            frame._kkHover:SetAlpha(redesign and 1 or 0)
+        if hl then
+            hl:SetAlpha(redesign and 1 or 0)
         end
     end
 
@@ -5400,8 +5419,7 @@ do
         local ranged = _G.CharacterRangedSlot
         if want and IsSafe(ranged) and ranged:IsShown() and ammo:IsShown() then
             if not ammoConnector then
-                local parent = _G.PaperDollItemsFrame or ammo:GetParent() or ammo
-                local conn = CreateFrame("Frame", nil, parent)
+                local conn = CreateFrame("Frame", nil, ammo)
                 conn:SetHeight(5)
                 conn:SetPoint("LEFT", ranged, "RIGHT", 3, 0)
                 conn:SetPoint("RIGHT", ammo, "LEFT", -3, 0)
@@ -5418,10 +5436,19 @@ do
         end
     end
 
+    local restoringEUIColors = false
+
     windowPolish.ApplyCharacterSheetRedesign = function()
         SyncCleanSlotPreferences()
         SetupModelControlGuard()
         EnsureHeroCardAndSidebar()
+        local EUI = _G.EllesmereUI
+        local redesign = mod._active and mod:GetDB().cleanCharSheet ~= false
+        if not redesign and not restoringEUIColors and type(EUI) == "table" and type(EUI._refreshCharacterSheetColors) == "function" then
+            restoringEUIColors = true
+            pcall(EUI._refreshCharacterSheetColors)
+            restoringEUIColors = false
+        end
         RefreshStatBoxesNow()
         PolishAmmoAndStackSlots()
         local cf = _G.CharacterFrame
@@ -5441,10 +5468,10 @@ do
                 end)
             end)
         end
-        local EUI = _G.EllesmereUI
         if not euiColorHooked and type(EUI) == "table" and type(EUI._refreshCharacterSheetColors) == "function" then
             euiColorHooked = true
             _G.hooksecurefunc(EUI, "_refreshCharacterSheetColors", function()
+                if restoringEUIColors then return end
                 C_Timer.After(0, RefreshStatBoxesNow)
             end)
         end
@@ -5542,6 +5569,7 @@ function mod:OnDisable()
     swingGuard.Remove()
     StopWorldRefreshTicker()
     RestoreWorldTextScale()
+    ExpandFriendsIfEnabled()
     if F.ApplyDamageFont then
         F.ApplyDamageFont("default", true)
     end
@@ -5711,7 +5739,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local themeDB = F.db and F.db.theme or { accentMode = "class", combatFadeAlpha = 0.18 }
     local _, h
 
-    _, h = W:DualRow(parent, y, {
+    _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "全局主题色模式",
         tooltip = "默认以当前角色的职业颜色作为主题色，也可切换为跟随 EllesmereUI 主色。",
@@ -5722,7 +5750,10 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             themeDB.accentMode = v
             if F.NotifyModulesTheme then F.NotifyModulesTheme() end
         end,
-    }, {
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "slider",
         text = "战斗淡出透明度",
         tooltip = "开启战斗自动淡出的模块在进入战斗后的目标透明度。",
@@ -5733,7 +5764,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             -- 系统栏/任务按钮条等在 OnThemeChanged 里才把新透明度推给战斗淡出管理器
             if F.NotifyModulesTheme then F.NotifyModulesTheme() end
         end,
-    })
+    }, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
@@ -6115,13 +6146,25 @@ do
         return nil
     end
 
+    local CVAR_ALIAS_PARTNER = {
+        nameplateShowFriendlyPlayers = "nameplateShowFriends",
+        nameplateShowFriends         = "nameplateShowFriendlyPlayers",
+        nameplateShowFriendlyNPCs    = "nameplateShowFriendlyNpcs",
+        nameplateShowFriendlyNpcs    = "nameplateShowFriendlyNPCs",
+    }
+
     local function SafeSetCVar(name, value)
         local cur = SafeGetCVar(name)
         if cur == nil then return false end
         local want = tostring(value)
         if cur == want then return true end
         writingSelf = true
-        selfWrites[name] = { value = want, t = _G.GetTime and _G.GetTime() or 0 }
+        local now = _G.GetTime and _G.GetTime() or 0
+        selfWrites[name] = { value = want, t = now }
+        local partner = CVAR_ALIAS_PARTNER[name]
+        if partner then
+            selfWrites[partner] = { value = want, t = now }
+        end
         local ok = false
         local CV = _G.C_CVar
         if CV and CV.SetCVar then

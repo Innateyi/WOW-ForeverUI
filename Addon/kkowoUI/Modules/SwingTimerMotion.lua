@@ -40,6 +40,8 @@ local container = nil
 local mhBar, ohBar = nil, nil
 local flashTex = nil
 local flashAG = nil
+local isAimClass = AIM_CLASSES[F.GetPlayerClass()] == true
+local inCombat = false
 
 local state = {
     mhS = 0, mhE = 0, mhD = 0,
@@ -93,6 +95,9 @@ local function StyleThinBar(f, h)
         if f._spark and f._spark._spark then
             ST.MaskTexture(f, f._spark._spark, rad)
         end
+        if f == mhBar and flashTex then
+            ST.MaskTexture(f, flashTex, rad)
+        end
         ST.ApplyRoundedBorder(f, rad, 0.02, 0.02, 0.03, 0.94, 5)
     end
     if f._spark then f._spark:SyncAnchor() end
@@ -119,8 +124,8 @@ local function BuildStandalone()
     ohBar:SetPoint("TOPRIGHT", mhBar, "BOTTOMRIGHT", 0, -2)
     ohBar:Hide()
 
-    flashTex = mhBar:CreateTexture(nil, "OVERLAY", nil, 7)
-    flashTex:SetAllPoints(mhBar)
+    flashTex = mhBar._bar:CreateTexture(nil, "OVERLAY", nil, 7)
+    flashTex:SetAllPoints(mhBar._bar)
     flashTex:SetColorTexture(1, 1, 1, 0.85)
     flashTex:SetBlendMode("ADD")
     flashTex:SetAlpha(0)
@@ -157,18 +162,90 @@ local function TriggerSwingFlash()
     end
 end
 
+local mutedSwingBorders = _G.setmetatable({}, { __mode = "k" })
+local hookedSwingBorder = _G.setmetatable({}, { __mode = "k" })
+local hookedSwingShell = _G.setmetatable({}, { __mode = "k" })
+local seenSwingRows = _G.setmetatable({}, { __mode = "k" })
+local swingBorderBusy = false
+
 local function EnhanceEUISwingFrame()
     local erb = _G.ERB_SwingTimerFrame
     if not erb then return end
-    local want = mod._active and mod:GetDB().mode == "enhance_eui"
-    if want then
-        local rad = math_min(ST.GetCornerRadius(4), 4)
-        if rad > 0 then
-            ST.ApplyRoundedBorder(erb, rad, 0.02, 0.02, 0.03, 0.92, 6)
-        end
-    else
-        ST.ClearRoundedMask(erb)
+    -- 外壳 ERB_SwingTimerFrame 仅是多行排布容器，绝不能在外壳上套圆角框（会包住多行空隙并与行内直角框打架）
+    ST.ClearRoundedMask(erb)
+    if not hookedSwingShell[erb] and erb.HookScript then
+        hookedSwingShell[erb] = true
+        erb:HookScript("OnShow", function()
+            if mod._active and mod:GetDB().mode == "enhance_eui" then
+                EnhanceEUISwingFrame()
+            end
+        end)
     end
+    local want = mod._active and mod:GetDB().mode == "enhance_eui"
+    local rad = math_min(ST.GetCornerRadius(4), 4)
+    if not erb.GetChildren then return end
+    for _, row in _G.ipairs({ erb:GetChildren() }) do
+        if row and row._bar and row._bg then
+            seenSwingRows[row] = true
+            if row._merged == true then
+                ST.ClearRoundedMask(row)
+                if row._border then mutedSwingBorders[row._border] = nil end
+            elseif want and rad > 0 then
+                ST.MaskTexture(row, row._bg, rad)
+                local ft = row._bar.GetStatusBarTexture and row._bar:GetStatusBarTexture() or nil
+                if ft then ST.MaskTexture(row, ft, rad) end
+                if row._border and row._border.SetAlpha then
+                    local bd = row._border
+                    mutedSwingBorders[bd] = true
+                    if not hookedSwingBorder[bd] then
+                        hookedSwingBorder[bd] = true
+                        _G.hooksecurefunc(bd, "SetAlpha", function(self, a)
+                            if not swingBorderBusy and mutedSwingBorders[self] and F.PlainNumber(a, 1) ~= 0 then
+                                swingBorderBusy = true
+                                pcall(self.SetAlpha, self, 0)
+                                swingBorderBusy = false
+                            end
+                        end)
+                    end
+                    swingBorderBusy = true
+                    pcall(bd.SetAlpha, bd, 0)
+                    swingBorderBusy = false
+                end
+                ST.ApplyRoundedBorder(row, rad, 0.02, 0.02, 0.03, 0.92, 6)
+            else
+                ST.ClearRoundedMask(row)
+                if row._border and mutedSwingBorders[row._border] and row._border.SetAlpha then
+                    mutedSwingBorders[row._border] = nil
+                    if not row._merged then
+                        swingBorderBusy = true
+                        pcall(row._border.SetAlpha, row._border, 1)
+                        swingBorderBusy = false
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function CheckUnseenEUISwingRows()
+    local erb = _G.ERB_SwingTimerFrame
+    if not (erb and erb.GetChildren) then return end
+    for _, row in _G.ipairs({ erb:GetChildren() }) do
+        if row and row._bar and row._bg and not seenSwingRows[row] then
+            EnhanceEUISwingFrame()
+            return
+        end
+    end
+end
+
+local function MaybeHideIdleStandalone()
+    if not (mod._active and mod:GetDB().mode == "standalone" and container and container:IsShown()) then return end
+    local db = mod:GetDB()
+    if db.hideOOC == false or inCombat or state.autoRepeat then return end
+    if _G.InCombatLockdown and _G.InCombatLockdown() then return end
+    local now = GetTime()
+    if state.mhE > now or state.ohE > now or state.rE > now then return end
+    F.Theme.FadeTo(container, 0, 0.25, true)
 end
 
 local function UpdateStandaloneTick(self)
@@ -194,18 +271,17 @@ local function UpdateStandaloneTick(self)
         mhBar._spark:SetShown(false)
         ohBar:Hide()
         self:SetScript("OnUpdate", nil)
-        if db.hideOOC ~= false and not (_G.InCombatLockdown and _G.InCombatLockdown()) and not state.autoRepeat then
+        if db.hideOOC ~= false and not inCombat and not (_G.InCombatLockdown and _G.InCombatLockdown()) and not state.autoRepeat then
             F.Theme.FadeTo(self, 0, 0.25, true)
         end
         return
     end
 
-    self:SetAlpha(1)
     if s and d and d > 0.01 then
         local prog = math_max(0, math_min(1, (now - s) / d))
         local rem = e - now
         mhBar._bar:SetValue(prog)
-        if kind == "ranged" and AIM_CLASSES[F.GetPlayerClass()] then
+        if kind == "ranged" and isAimClass then
             local w = F.PlainNumber(mhBar:GetWidth(), 249) or 249
             mhBar._aim:SetWidth(math_max(4, w * math_min(0.65, AIM_TIME / d)))
             mhBar._aim:Show()
@@ -268,6 +344,8 @@ local function ApplyModeLayout()
 end
 
 function mod:OnEnable()
+    isAimClass = AIM_CLASSES[F.GetPlayerClass()] == true
+    inCombat = (_G.InCombatLockdown and _G.InCombatLockdown()) == true
     ApplyModeLayout()
     self:RegisterEvent("PLAYER_SWING", function(_, _, duration, swingType)
         local dur = F.PlainNumber(duration, nil)
@@ -283,23 +361,36 @@ function mod:OnEnable()
             state.mhS, state.mhE, state.mhD = now, now + dur, dur
             state.lastKind = "mh"
         end
+        if mod:GetDB().mode == "enhance_eui" then
+            CheckUnseenEUISwingRows()
+        end
         TriggerSwingFlash()
         if mod:GetDB().mode == "standalone" then
             BuildStandalone()
-            container:SetAlpha(1)
+            -- 中止脱战淡出（其结束回调会 Hide 容器），否则淡出期间来的新一刀会被藏掉
+            F.Theme.FadeTo(container, 1, 0)
             container:Show()
             container:SetScript("OnUpdate", UpdateStandaloneTick)
             UpdateStandaloneTick(container)
         end
     end)
     self:RegisterEvent("START_AUTOREPEAT_SPELL", function() state.autoRepeat = true end)
-    self:RegisterEvent("STOP_AUTOREPEAT_SPELL", function() state.autoRepeat = false end)
+    self:RegisterEvent("STOP_AUTOREPEAT_SPELL", function()
+        state.autoRepeat = false
+        MaybeHideIdleStandalone()
+    end)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function() inCombat = true end)
+    self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+        inCombat = false
+        MaybeHideIdleStandalone()
+    end)
     self:RegisterEvent("PLAYER_STARTED_MOVING", function() state.moving = true end)
     self:RegisterEvent("PLAYER_STOPPED_MOVING", function() state.moving = false end)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", ApplyModeLayout)
 end
 
 function mod:OnDisable()
+    inCombat = false
     if container then
         container:SetScript("OnUpdate", nil)
         container:Hide()

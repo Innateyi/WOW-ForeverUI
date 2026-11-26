@@ -107,17 +107,24 @@ local function ExtractWords(text)
     return words
 end
 
-local function ApplyLootSparkleCVar()
-    -- 延时回调可能在停用模块之后才触发：停用后绝不再改 CVar
-    if not (mod._active and mod:GetDB().lootSparkles) then return end
+local function ApplyLootSparkleCVar(wantOn)
+    local want = (wantOn ~= nil) and wantOn or (mod._active and mod:GetDB().lootSparkles ~= false)
     F.RunOutOfCombat("FUI_LootSparkles", function()
-        if not mod._active then return end
         local CV = _G.C_CVar
-        if CV and CV.GetCVar and CV.SetCVar then
+        if not (CV and CV.GetCVar and CV.SetCVar) then return end
+        local db = mod:GetDB()
+        local wantNow = (wantOn ~= nil) and wantOn or (mod._active and db.lootSparkles ~= false)
+        if wantNow then
             local cur = CV.GetCVar("outlineModeShowLootEffectWhenDisabled")
-            if cur ~= nil and cur ~= "1" then
-                pcall(CV.SetCVar, "outlineModeShowLootEffectWhenDisabled", "1")
+            if cur ~= nil then
+                if db.savedSparkleCVar == nil then db.savedSparkleCVar = cur end
+                if cur ~= "1" then
+                    pcall(CV.SetCVar, "outlineModeShowLootEffectWhenDisabled", "1")
+                end
             end
+        elseif db.savedSparkleCVar ~= nil then
+            pcall(CV.SetCVar, "outlineModeShowLootEffectWhenDisabled", db.savedSparkleCVar)
+            db.savedSparkleCVar = nil
         end
     end)
 end
@@ -429,11 +436,12 @@ end
 
 local function EvaluatePlate(unit)
     if not mod._active then return end
-    if type(unit) ~= "string" or not unit:find("^nameplate%d+$") then return end
+    unit = F.PlainString(unit, nil)
+    if not unit or not unit:find("^nameplate%d+$") then return end
     local getPlate = _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit
     if type(getPlate) ~= "function" then return end
     local okP, plate = pcall(getPlate, unit)
-    if not okP or not plate then return end
+    if not okP or not plate or (plate.IsForbidden and plate:IsForbidden()) then return end
     if not plate.UnitFrame then
         ReleaseMark(plate)
         return
@@ -521,11 +529,13 @@ local function UpdateAll()
         if not livePlates[plate] then ReleaseMark(plate) end
     end
     for _, plate in ipairs(list) do
-        local unit = plate.UnitFrame and plate.UnitFrame.unit
-        if unit then
-            EvaluatePlate(unit)
-        else
-            ReleaseMark(plate)
+        if plate and not (plate.IsForbidden and plate:IsForbidden()) then
+            local unit = F.PlainString(plate.namePlateUnitToken or (plate.UnitFrame and plate.UnitFrame.unit), nil)
+            if unit then
+                EvaluatePlate(unit)
+            else
+                ReleaseMark(plate)
+            end
         end
     end
 end
@@ -552,7 +562,7 @@ end
 
 local updateQueued = false
 local function QueueUpdateAll()
-    if updateQueued then return end
+    if not mod._active or updateQueued then return end
     updateQueued = true
     C_Timer.After(0, function()
         updateQueued = false
@@ -627,10 +637,11 @@ function mod:OnEnable()
         EvaluatePlate(unit)
     end)
     self:RegisterEvent("NAME_PLATE_UNIT_REMOVED", function(_, _, unit)
+        unit = F.PlainString(unit, nil)
         local getPlate = _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit
         if type(getPlate) == "function" and unit then
             local ok, p = pcall(getPlate, unit)
-            if ok and p then ReleaseMark(p) end
+            if ok and p and not (p.IsForbidden and p:IsForbidden()) then ReleaseMark(p) end
         end
     end)
     -- 采集 / 拾取无闪烁状态机（施法完毕→拾取→物体消失全程无缝衔接，消除多次明暗闪烁）
@@ -655,9 +666,47 @@ function mod:OnEnable()
         end
     end
 
-    self:RegisterUnitEvent("UNIT_SPELLCAST_START", "player", function()
+    local function IsGatherCastSpell(spellID, kind)
+        local sid = F.PlainNumber(spellID, nil)
+        local sname = nil
+        if sid then
+            if _G.C_Spell and _G.C_Spell.GetSpellInfo then
+                local okI, info = pcall(_G.C_Spell.GetSpellInfo, sid)
+                if okI and type(info) == "table" then sname = F.PlainString(info.name, nil) end
+            elseif _G.GetSpellInfo then
+                local okI, nm = pcall(_G.GetSpellInfo, sid)
+                if okI then sname = F.PlainString(nm, nil) end
+            end
+        end
+        if not sname and _G.UnitCastingInfo then
+            local okC, nm = pcall(_G.UnitCastingInfo, "player")
+            if okC then sname = F.PlainString(nm, nil) end
+        end
+        if not sname then return false end
+        local lc = sname:lower()
+        for _, kw in ipairs({ "采", "矿", "药", "掘", "剥皮", "开启", "打开", "搜寻", "摘", "收集", "解锁", "开锁", "herb", "min", "skin", "open", "gather", "pick", "interact" }) do
+            if sname:find(kw, 1, true) or lc:find(kw, 1, true) then
+                return true
+            end
+        end
+        -- 任务物件/宝箱交互读条往往不是玩家法术书技能；炉石/坐骑/战斗法术属于玩家已知法术则排除
+        if (kind == "quest" or kind == "chest") and sid then
+            local known = false
+            if _G.C_SpellBook and _G.C_SpellBook.IsSpellKnown then
+                local okK, kVal = pcall(_G.C_SpellBook.IsSpellKnown, sid)
+                known = okK and kVal == true
+            elseif _G.IsPlayerSpell then
+                local okK, kVal = pcall(_G.IsPlayerSpell, sid)
+                known = okK and kVal == true
+            end
+            if not known then return true end
+        end
+        return false
+    end
+
+    self:RegisterUnitEvent("UNIT_SPELLCAST_START", "player", function(_, _, _, _, spellID)
         local k, kind = CaptureActiveNode()
-        if k then
+        if k and IsGatherCastSpell(spellID, kind) then
             activeGatherKey = k
             activeGatherKind = kind
             isCastingGather = true
@@ -682,7 +731,7 @@ function mod:OnEnable()
             gatherStopToken = gatherStopToken + 1
             local myToken = gatherStopToken
             C_Timer.After(0.55, function()
-                if myToken ~= gatherStopToken or isLootingGather then return end
+                if not mod._active or myToken ~= gatherStopToken or isLootingGather then return end
                 activeGatherKey = nil
                 activeGatherKind = nil
                 for _, m in pairs(marks) do
@@ -704,33 +753,34 @@ function mod:OnEnable()
     end)
     self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player", UpdateAll)
     self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player", UpdateAll)
-    local function IsLootingCreatureCorpse()
-        if not (_G.GetNumLootItems and _G.GetLootSourceInfo) then return false end
+    local function ClassifyLootSource()
+        if not (_G.GetNumLootItems and _G.GetLootSourceInfo) then return "unknown" end
         local n = F.PlainNumber(_G.GetNumLootItems(), 0)
-        if n <= 0 then return false end
-        local sawCreature = false
+        if n <= 0 then return "empty" end
+        local sawNonNode = false
         for slot = 1, n do
             local okS, guid = pcall(_G.GetLootSourceInfo, slot)
             local g = okS and F.PlainString(guid, nil) or nil
             if g then
                 if g:find("^GameObject%-") then
-                    return false
-                elseif g:find("^Creature%-") then
-                    sawCreature = true
+                    return "gameobject"
+                elseif g:find("^Creature%-") or g:find("^Item%-") then
+                    sawNonNode = true
                 end
             end
         end
-        return sawCreature
+        return sawNonNode and "non_node" or "unknown"
     end
 
     self:RegisterEvent("LOOT_READY", function()
         pcall(LearnQuestLoot)
-        if IsLootingCreatureCorpse() then
-            -- 站在草药/矿点旁拾取怪物尸体时，绝不误把旁边未采集的节点当成已采集隐藏
+        local srcKind = ClassifyLootSource()
+        if srcKind == "non_node" or (srcKind == "empty" and not activeGatherKey) then
+            -- 站在草药/矿点旁拾取怪物尸体、打开背包容器（蛤蜊/保险箱）或空拾取时，绝不误隐藏旁边未采集节点
             return
         end
         gatherStopToken = gatherStopToken + 1
-        if not activeGatherKey then
+        if not activeGatherKey and srcKind == "gameobject" then
             local k, kind = CaptureActiveNode()
             if k then
                 activeGatherKey = k
@@ -740,7 +790,7 @@ function mod:OnEnable()
         if activeGatherKey then
             isLootingGather = true
             HideMarksForKey(activeGatherKey)
-        elseif self:GetDB().gatherDim then
+        elseif srcKind == "gameobject" and self:GetDB().gatherDim then
             for _, m in pairs(marks) do
                 m.gathering = true
                 m:SetAlpha(0.25)
@@ -771,6 +821,7 @@ function mod:OnEnable()
 end
 
 local function ResetGatherState()
+    gatherStopToken = gatherStopToken + 1
     suppressedNodes = {}
     activeGatherKey, activeGatherKind = nil, nil
     isCastingGather, isLootingGather = false, false
@@ -781,6 +832,7 @@ function mod:OnDisable()
     ClearAllMarks()
     ResetGatherState()
     ApplySoftTargetCVars(false)
+    ApplyLootSparkleCVar(false)
 end
 
 function mod:BuildOptions(W, parent, y, enableSlot, blank)
@@ -791,7 +843,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         text = "任务物品拾取闪光保活",
         tooltip = "自动维持 outlineModeShowLootEffectWhenDisabled = 1（替代 ForeverLootSparkles）。",
         getValue = function() return db.lootSparkles ~= false end,
-        setValue = function(v) db.lootSparkles = v == true; if v then ApplyLootSparkleCVar() end end,
+        setValue = function(v) db.lootSparkles = v == true; ApplyLootSparkleCVar(v == true and mod._active) end,
     })
     y = y - h
 

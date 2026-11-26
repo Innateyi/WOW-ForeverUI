@@ -469,7 +469,8 @@ local SUB = {
 local function hook()
     local P = _G.Polestar
     local C = P and P.Codex
-    if not (C and type(C.Npc) == "function") or C._kkowoZhSub then return C ~= nil end
+    if C and C._kkowoZhSub then return true end
+    if not (C and type(C.Npc) == "function") then return false end
     local orig = C.Npc
     C.Npc = function(id)
         local rec = orig(id)

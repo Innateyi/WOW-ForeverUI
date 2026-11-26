@@ -590,6 +590,9 @@ local EUI_ROUND_DIR = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
 
 local function ApplyNineSliceMask(obj, path, radius, wrap)
     if not obj then return end
+    if obj.SetBlockingLoadsRequested then
+        pcall(obj.SetBlockingLoadsRequested, obj, true)
+    end
     if wrap then
         pcall(obj.SetTexture, obj, path, wrap, wrap)
     else
@@ -640,15 +643,73 @@ local function ReadPrettyLiveMetrics()
     return bodyA, glowA, headTop, headBot
 end
 
+local LOWER_STRATA = {
+    TOOLTIP           = "FULLSCREEN_DIALOG",
+    FULLSCREEN_DIALOG = "FULLSCREEN",
+    FULLSCREEN        = "DIALOG",
+    DIALOG            = "HIGH",
+    HIGH              = "MEDIUM",
+    MEDIUM            = "LOW",
+    LOW               = "BACKGROUND",
+}
+
+local prettyOrderHooked = setmetatable({}, { __mode = "k" })
+
+local function SyncPrettyOverlayOrder(host, ov)
+    if not (host and ov) then return end
+    if host.IsForbidden and host:IsForbidden() then return end
+    local strata = host.GetFrameStrata and F.PlainString(host:GetFrameStrata(), nil) or nil
+    local lvl = F.PlainNumber(host.GetFrameLevel and host:GetFrameLevel(), 200) or 200
+    if ov.SetFixedFrameStrata then pcall(ov.SetFixedFrameStrata, ov, false) end
+    if ov.SetFixedFrameLevel then pcall(ov.SetFixedFrameLevel, ov, false) end
+    if lvl >= 1 then
+        if strata and ov.SetFrameStrata then pcall(ov.SetFrameStrata, ov, strata) end
+        pcall(ov.SetFrameLevel, ov, lvl - 1)
+        if ov.SetFixedFrameLevel then pcall(ov.SetFixedFrameLevel, ov, true) end
+    else
+        local lower = strata and LOWER_STRATA[strata] or nil
+        if lower and ov.SetFrameStrata then
+            pcall(ov.SetFrameStrata, ov, lower)
+            pcall(ov.SetFrameLevel, ov, 9999)
+            if ov.SetFixedFrameStrata then pcall(ov.SetFixedFrameStrata, ov, true) end
+            if ov.SetFixedFrameLevel then pcall(ov.SetFixedFrameLevel, ov, true) end
+        else
+            if strata and ov.SetFrameStrata then pcall(ov.SetFrameStrata, ov, strata) end
+            pcall(ov.SetFrameLevel, ov, 0)
+        end
+    end
+    if ov._shadowFallback then
+        local sh = ov._shadowFallback
+        if sh.SetFixedFrameStrata then pcall(sh.SetFixedFrameStrata, sh, false) end
+        if sh.SetFixedFrameLevel then pcall(sh.SetFixedFrameLevel, sh, false) end
+        local ovStrata = ov.GetFrameStrata and F.PlainString(ov:GetFrameStrata(), nil) or nil
+        local ovLvl = F.PlainNumber(ov.GetFrameLevel and ov:GetFrameLevel(), 0) or 0
+        if ovStrata and sh.SetFrameStrata then pcall(sh.SetFrameStrata, sh, ovStrata) end
+        pcall(sh.SetFrameLevel, sh, math_max(0, ovLvl - 1))
+        if sh.SetFixedFrameLevel then pcall(sh.SetFixedFrameLevel, sh, true) end
+    end
+end
+
 function Theme.EnsurePrettyCardOverlay(host, opts)
     if not host then return nil end
     local ov = prettyOverlays[host]
     if ov then return ov end
     ov = CreateFrame("Frame", nil, host)
     ov:SetAllPoints(host)
-    local lvl = F.PlainNumber(host.GetFrameLevel and host:GetFrameLevel(), 200)
-    ov:SetFrameLevel(math_max(1, lvl - 1))
+    SyncPrettyOverlayOrder(host, ov)
     ov:EnableMouse(false)
+    if not prettyOrderHooked[host] and not (host.IsForbidden and host:IsForbidden()) then
+        prettyOrderHooked[host] = true
+        local function resync(self)
+            local cur = prettyOverlays[self]
+            if cur then SyncPrettyOverlayOrder(self, cur) end
+        end
+        if type(host.SetFrameLevel) == "function" then _G.hooksecurefunc(host, "SetFrameLevel", resync) end
+        if type(host.SetFrameStrata) == "function" then _G.hooksecurefunc(host, "SetFrameStrata", resync) end
+        if host.HookScript and host.HasScript and host:HasScript("OnShow") then
+            host:HookScript("OnShow", resync)
+        end
+    end
 
     -- 1) 外发光柔光晕（与 PrettyTooltip\Panel\Layout.lua 完全同源：art\glow 9 宫格 + ADD 混合）
     local spread = (opts and opts.haloSpread) or 16
@@ -737,13 +798,16 @@ local function SyncPrettyRoundedState(ov, rounded, radius)
     local r = wantRound and math_max(3, math_min(12, radius or 8)) or 0
     if ov._roundRadius == r then return end
 
-    -- 先卸载旧遮罩（若切换半径或切回直角）
+    -- 先卸载旧遮罩（若切换半径或切回直角；含内孔反遮罩，否则切半径时圆角孔洞不刷新）
     if ov._bodyMask then
         RemoveMaskSafe(ov._bg, ov._bodyMask)
         RemoveMaskSafe(ov._header, ov._bodyMask)
         for _, sh in ipairs(ov._shades or {}) do RemoveMaskSafe(sh, ov._bodyMask) end
         if ov._roundBorder then RemoveMaskSafe(ov._roundBorder, ov._bodyMask) end
         if ov._roundTopEdge then RemoveMaskSafe(ov._roundTopEdge, ov._bodyMask) end
+    end
+    if ov._roundBorder and ov._roundHole then
+        RemoveMaskSafe(ov._roundBorder, ov._roundHole)
     end
 
     ov._roundRadius = r
@@ -803,8 +867,7 @@ function Theme.PaintPrettyCardOverlay(host, r, g, b, headerMaxH, opts)
     if not (r and g and b) then
         r, g, b = Theme.GetAccent()
     end
-    local lvl = F.PlainNumber(host.GetFrameLevel and host:GetFrameLevel(), 200)
-    ov:SetFrameLevel(math_max(1, lvl - 1))
+    SyncPrettyOverlayOrder(host, ov)
 
     local defRound = true
     local defRadius = 8
@@ -903,20 +966,24 @@ local function ApplyFade(entry, hover)
     local enabled = entry.isEnabled()
     local normal = entry.normalAlpha or 1
     local cur = F.PlainNumber(frame:GetAlpha(), normal)
+    local ag = fadeGroups[frame]
+    local playing = ag and ag:IsPlaying()
     if not enabled then
-        -- 关闭战斗淡出时若当前已为常规透明度，零开销直接跳过，不创建动画与回调
-        if math_abs(cur - normal) < 0.015 then
+        -- 关闭战斗淡出时若当前已为常规透明度且无残留动画，零开销直接跳过，不创建动画与回调
+        if not playing and math_abs(cur - normal) < 0.015 then
             return
         end
         Theme.FadeTo(frame, normal, 0)
         return
     end
-    local mouseOver = hover or (frame.IsMouseOver and frame:IsMouseOver())
+    local hf = entry.hoverFrame or frame
+    local mouseOver = hover or (hf and hf.IsMouseOver and hf:IsMouseOver())
+        or (hf ~= frame and frame.IsMouseOver and frame:IsMouseOver())
     local target = normal
     if IsFadeCombat() and not mouseOver then
         target = entry.combatAlpha or 0.18
     end
-    if math_abs(cur - target) < 0.015 then
+    if not playing and math_abs(cur - target) < 0.015 then
         return
     end
     Theme.FadeTo(frame, target, target > cur and 0.16 or 0.24)
@@ -931,7 +998,7 @@ fadeFrame:SetScript("OnEvent", function(_, event)
     end
 end)
 
-function Theme.AttachCombatFade(frame, isEnabledFn, combatAlpha, normalAlpha)
+function Theme.AttachCombatFade(frame, isEnabledFn, combatAlpha, normalAlpha, hoverFrame)
     if not frame then
         return
     end
@@ -940,11 +1007,14 @@ function Theme.AttachCombatFade(frame, isEnabledFn, combatAlpha, normalAlpha)
         if isEnabledFn then existing.isEnabled = isEnabledFn end
         if combatAlpha then existing.combatAlpha = combatAlpha end
         if normalAlpha then existing.normalAlpha = normalAlpha end
+        if hoverFrame then existing.hoverFrame = hoverFrame end
         ApplyFade(existing, existing.hovered)
         return existing.updater
     end
+    local hf = hoverFrame or frame
     local entry = {
         frame = frame,
+        hoverFrame = hf,
         isEnabled = isEnabledFn or function() return false end,
         combatAlpha = combatAlpha or 0.18,
         normalAlpha = normalAlpha or 1.0,
@@ -952,13 +1022,13 @@ function Theme.AttachCombatFade(frame, isEnabledFn, combatAlpha, normalAlpha)
     }
     fadeEntries[#fadeEntries + 1] = entry
     fadeByFrame[frame] = entry
-    frame:HookScript("OnEnter", function()
+    hf:HookScript("OnEnter", function()
         entry.hovered = true
         if entry.isEnabled() then
             ApplyFade(entry, true)
         end
     end)
-    frame:HookScript("OnLeave", function()
+    hf:HookScript("OnLeave", function()
         if not entry.isEnabled() then
             entry.hovered = false
             return
@@ -966,7 +1036,9 @@ function Theme.AttachCombatFade(frame, isEnabledFn, combatAlpha, normalAlpha)
         -- 延迟 0.06s 检查 IsMouseOver，避免鼠标移到子按钮上时闪烁淡出
         if _G.C_Timer and _G.C_Timer.After then
             _G.C_Timer.After(0.06, function()
-                if frame and frame.IsMouseOver and frame:IsMouseOver() then
+                local over = (hf and hf.IsMouseOver and hf:IsMouseOver())
+                    or (frame and frame.IsMouseOver and frame:IsMouseOver())
+                if over then
                     entry.hovered = true
                     ApplyFade(entry, true)
                 else

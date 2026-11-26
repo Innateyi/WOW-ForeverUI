@@ -31,7 +31,7 @@ local ENTRIES = {
     { key = "multishot", spell = "多重射击", sound = "喷子退壳",         file = "multishot.mp3", dur = 1.2,  bowSound = "三连散射",   bowFile = "bow_multishot.wav", bowDur = 0.96, names = { "多重射击" } },
     { key = "aimed",     spell = "瞄准射击", sound = "AWM",              file = "aimed.mp3",     dur = 1.9,  bowSound = "重战弓破甲", bowFile = "bow_aimed.wav",     bowDur = 1.32, names = { "瞄准射击" } },
     { key = "volley",    spell = "乱射",     sound = "加特林",           file = "volley.mp3",    dur = 6.0,  bowSound = "箭雨齐射",   bowFile = "bow_volley.wav",    bowDur = 6.0,  names = { "乱射" }, channel = true },
-    { key = "sniper",    spell = "狙击射击", sound = "巴雷特",           file = "sniper.mp3",    dur = 1.3,  bowSound = "猎龙长弓",   bowFile = "bow_sniper.wav",    bowDur = 1.26, names = { "狙击射击" } },
+    { key = "sniper",    spell = "狙击射击", sound = "巴雷特",           file = "sniper.mp3",    dur = 1.3,  bowSound = "猎龙长弓",   bowFile = "bow_sniper.wav",    bowDur = 1.26, names = { "狙击射击", "狙击" } },
     { key = "grenade",   spell = "工程手雷", sound = "Fire in the hole", file = "grenade.mp3",   dur = 1.4,  patterns = { "手雷", "手榴弹", "炸弹", "炸药" }, noCraft = true },
     { key = "trap",      spell = "各类陷阱", sound = "Bomb planted",     file = "trap.mp3",      dur = 1.5,  patterns = { "陷阱$" } },
     { key = "rapidfire", spell = "急速射击", sound = "战歌（15 秒）",    file = "rapidfire.mp3", dur = 15.0, names = { "急速射击" }, longBGM = true },

@@ -10,7 +10,8 @@
 local _, F = ...
 
 local _G = _G
-local ipairs, math_floor, math_max, pcall, tostring = ipairs, math.floor, math.max, pcall, tostring
+local ipairs, math_floor, math_max, pairs, pcall, tostring =
+    ipairs, math.floor, math.max, pairs, pcall, tostring
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 local GameTooltip = _G.GameTooltip
@@ -114,6 +115,18 @@ local function SyncEUIPlateRaidIcons(unit)
     end
 end
 
+local function SyncAllRaidIcons()
+    local wantModern = mod._active and (mod:GetDB().iconPack or "modern") ~= "blizzard"
+    local list = {}
+    for tex in pairs(replacedRaidTex) do
+        list[#list + 1] = tex
+    end
+    for _, tex in ipairs(list) do
+        RetextureRaidTex(tex, wantModern)
+    end
+    SyncEUIPlateRaidIcons()
+end
+
 local MARK_SPECS = {
     { index = 8, name = "骷髅", file = "Mark8.tga", color = { 0.96, 0.97, 1.00 } },
     { index = 7, name = "红叉", file = "Mark7.tga", color = { 0.96, 0.34, 0.38 } },
@@ -161,7 +174,28 @@ local markBtns = {}
 local actionBtns = {}
 local isHovered = false
 local isDraggingBar = false
+local inCombat = false
 local currentTargetMark = 0
+
+local function StartBarDrag()
+    if not barFrame then return end
+    if _G.IsShiftKeyDown and _G.IsShiftKeyDown() and not (inCombat or (_G.InCombatLockdown and _G.InCombatLockdown())) then
+        isDraggingBar = true
+        barFrame:StartMoving()
+    end
+end
+
+local function StopBarDrag()
+    if not isDraggingBar then return end
+    isDraggingBar = false
+    if not barFrame then return end
+    if _G.InCombatLockdown and _G.InCombatLockdown() then return end
+    barFrame:StopMovingOrSizing()
+    local pt, _, rpt, x, y = barFrame:GetPoint(1)
+    if pt and rpt then
+        F.DB.SavePosition("MarkBar", pt, rpt, x, y)
+    end
+end
 
 local function RefreshActionMacros()
     if _G.InCombatLockdown and _G.InCombatLockdown() then
@@ -193,7 +227,7 @@ local function SyncAlpha(instant)
     local over = isHovered or (barFrame.IsMouseOver and barFrame:IsMouseOver())
     local goal = 1.0
     if not over then
-        if db.combatFade and _G.InCombatLockdown and _G.InCombatLockdown() then
+        if db.combatFade and (inCombat or (_G.InCombatLockdown and _G.InCombatLockdown())) then
             goal = (F.db and F.db.theme and F.db.theme.combatFadeAlpha) or 0.18
         elseif db.hoverReveal ~= false then
             goal = db.idleAlpha or 0.78
@@ -394,20 +428,8 @@ local function CreateCellButton(parent, color, macroText)
     end
 
     btn:RegisterForDrag("LeftButton")
-    btn:SetScript("OnDragStart", function()
-        if _G.IsShiftKeyDown and _G.IsShiftKeyDown() and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
-            isDraggingBar = true
-            barFrame:StartMoving()
-        end
-    end)
-    btn:SetScript("OnDragStop", function()
-        if not isDraggingBar then return end
-        isDraggingBar = false
-        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
-        barFrame:StopMovingOrSizing()
-        local pt, _, rpt, x, y = barFrame:GetPoint(1)
-        F.DB.SavePosition("MarkBar", pt, rpt, x, y)
-    end)
+    btn:SetScript("OnDragStart", StartBarDrag)
+    btn:SetScript("OnDragStop", StopBarDrag)
 
     local cellBg = btn:CreateTexture(nil, "BACKGROUND", nil, -1)
     cellBg:SetAllPoints()
@@ -446,6 +468,11 @@ local function CreateBar()
         SyncAlpha(false)
     end)
     barFrame:SetScript("OnLeave", ScheduleLeaveCheck)
+    barFrame:SetMovable(true)
+    barFrame:RegisterForDrag("LeftButton")
+    barFrame:SetScript("OnDragStart", StartBarDrag)
+    barFrame:SetScript("OnDragStop", StopBarDrag)
+    barFrame:HookScript("OnHide", StopBarDrag)
 
     for i, spec in ipairs(MARK_SPECS) do
         local btn = CreateCellButton(barFrame, spec.color, "/tm " .. tostring(spec.index))
@@ -510,11 +537,14 @@ local function CreateBar()
         defaultRelPoint = "TOP",
         defaultX = 0,
         defaultY = -44,
+        allowShiftDrag = false,
+        isHidden = function() return not mod._active end,
     })
 end
 
 function mod:OnEnable()
     local db = self:GetDB()
+    inCombat = (_G.InCombatLockdown and _G.InCombatLockdown()) == true
     if not db.v3ModernRedesign then
         db.v3ModernRedesign = true
         db.iconPack = "modern"
@@ -525,10 +555,19 @@ function mod:OnEnable()
         db.v4NoCombatFadeMigrated = true
         db.combatFade = false
     end
-    CreateBar()
     InstallGlobalRaidIconHook()
-    LayoutAndStyle()
-    UpdateVisibility()
+    if not barFrame and _G.InCombatLockdown and _G.InCombatLockdown() then
+        F.RunOutOfCombat("FUI_MarkBarCreate", function()
+            if not mod._active then return end
+            CreateBar()
+            LayoutAndStyle()
+            UpdateVisibility()
+        end)
+    else
+        CreateBar()
+        LayoutAndStyle()
+        UpdateVisibility()
+    end
     self:RegisterEvent("GROUP_ROSTER_UPDATE", UpdateVisibility)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", UpdateVisibility)
     self:RegisterEvent("PLAYER_TARGET_CHANGED", RefreshTargetMarkHighlight)
@@ -538,28 +577,35 @@ function mod:OnEnable()
         C_Timer.After(0, function() if mod._active then SyncEUIPlateRaidIcons() end end)
     end)
     self:RegisterEvent("NAME_PLATE_UNIT_ADDED", function(_, _, unit)
-        if type(unit) ~= "string" then return end
-        C_Timer.After(0, function() if mod._active then SyncEUIPlateRaidIcons(unit) end end)
+        local u = F.PlainString(unit, nil)
+        if not u then return end
+        C_Timer.After(0, function() if mod._active then SyncEUIPlateRaidIcons(u) end end)
     end)
-    SyncEUIPlateRaidIcons()
+    SyncAllRaidIcons()
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        inCombat = true
         -- 条上挂着安全按钮：拖动中进战必须在本事件内（受保护调用仍合法）结束移动，否则松手时 StopMovingOrSizing 会被拦截
         if isDraggingBar and barFrame then
             isDraggingBar = false
             barFrame:StopMovingOrSizing()
             local pt, _, rpt, x, y = barFrame:GetPoint(1)
-            F.DB.SavePosition("MarkBar", pt, rpt, x, y)
+            if pt and rpt then
+                F.DB.SavePosition("MarkBar", pt, rpt, x, y)
+            end
         end
         if mod:GetDB().combatFade == true then SyncAlpha(false) end
     end)
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+        inCombat = false
         if mod:GetDB().combatFade == true then SyncAlpha(false) end
     end)
 end
 
 function mod:OnDisable()
-    -- 停用后把已换掉的 EUI 姓名板标记还原成暴雪原版
-    SyncEUIPlateRaidIcons()
+    inCombat = false
+    StopBarDrag()
+    -- 停用后把已换掉的全部团队标记（含姓名板与单位框架）还原成暴雪原版
+    SyncAllRaidIcons()
     if barFrame then
         if _G.InCombatLockdown and _G.InCombatLockdown() then
             F.RunOutOfCombat("FUI_MarkBarVis", function()
@@ -588,7 +634,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         },
         order = { "modern", "blizzard" },
         getValue = function() return db.iconPack or "modern" end,
-        setValue = function(v) db.iconPack = v; LayoutAndStyle(); SyncEUIPlateRaidIcons() end,
+        setValue = function(v) db.iconPack = v; LayoutAndStyle(); SyncAllRaidIcons() end,
     })
     y = y - h
 

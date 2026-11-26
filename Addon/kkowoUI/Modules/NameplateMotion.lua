@@ -41,6 +41,7 @@ local mod = F.RegisterModule("nameplateMotion", {
         trailMode = "target", -- "target" = 仅当前目标(推荐) | "all" = 全部可见板 | "off" = 关闭
         castContrast = true,
         suppressTeleportFlash = true,
+        redHostilePlayers = true, -- 敌对阵营玩家名字显示红色，与怪物区分
         savedEUICornerRadius = nil,
         savedEUICornerRadiusAuras = nil,
     },
@@ -78,8 +79,9 @@ local questTextCache = {}
 local borderHooked = setmetatable({}, { __mode = "k" })
 local targetHooked = setmetatable({}, { __mode = "k" })
 local glowGuarded = setmetatable({}, { __mode = "k" })
+local plateResetHooked = setmetatable({}, { __mode = "k" })
 local glowAlphaBusy = false
-local auraCornerReloaded = false
+local lastReloadedRad = nil
 
 local function WipeQuestCache()
     for k in pairs(questTextCache) do questTextCache[k] = nil end
@@ -169,6 +171,25 @@ local function GetEUIPlates()
     return ns and ns.plates or nil
 end
 
+-- 将 EUI 姓名板原生圆角半径与我们联动（直接驱动 EUI 内置 RoundedCorners 引擎，连带圆角化 _customBorder、血条、施法条；停用时原样恢复）
+local function GetEUINPProfile()
+    local npNS = GetEUINPNS()
+    if npNS then
+        local enp = npNS.ENP or (npNS._npInternals and npNS._npInternals.ENP)
+        if enp and enp.db and type(enp.db.profile) == "table" then
+            return enp.db.profile
+        end
+    end
+    local EUI = _G.EllesmereUI
+    if EUI and EUI.GetModule then
+        local ok, m = pcall(EUI.GetModule, EUI, "EllesmereUINameplates", true)
+        if ok and m and m.db and type(m.db.profile) == "table" then
+            return m.db.profile
+        end
+    end
+    return nil
+end
+
 -- 传送/过图防暴雪原生姓名板瞬闪：
 -- 过图瞬间 EUI 的友方/敌方接管走 C_Timer.After(0) 延迟，期间暴雪原生 np.UnitFrame 会以 alpha=1 闪现 1~3 帧。
 -- 我们在 OnNamePlateAdded 与过图事件同步把已由 EUI 接管的敌方板 / 友方 NPC 板原生 UnitFrame 压至 alpha=0（绝不误伤友方玩家仅名字模式）。
@@ -223,7 +244,8 @@ local function SuppressBlizzFlashForPlate(np, unit)
             if okF and rF then friendlyManaged = true end
         end
         if (not friendlyManaged) and type(npNS.FriendlyNameOnlyNow) == "function" then
-            local okN, rN = pcall(npNS.FriendlyNameOnlyNow)
+            local prof = GetEUINPProfile()
+            local okN, rN = pcall(npNS.FriendlyNameOnlyNow, prof)
             if okN and rN then friendlyManaged = true end
         end
         if friendlyManaged then
@@ -265,6 +287,52 @@ local function IsUnitTarget(unit)
     if not (unit and _G.UnitIsUnit) then return false end
     local ok, res = pcall(_G.UnitIsUnit, unit, "target")
     return ok and (not F.IsSecret(res)) and res == true
+end
+
+local function ClearPlateCastContrast(plate, fx)
+    if not fx then return end
+    if fx.castGlow then fx.castGlow:Hide() end
+    if fx.castBorderApplied and plate and IsSafe(plate.cast) then
+        fx.castBorderApplied = false
+        if fx.rounded and not plate._npRounded then
+            local cH = F.PlainNumber(plate.cast:GetHeight(), 10) or 10
+            local cRad = math_min(ST.GetCornerRadius(5), math_max(2, math_floor(cH * 0.44)))
+            ST.ApplyRoundedBorder(plate.cast, cRad, 0.03, 0.035, 0.05, 0.92, 5)
+        else
+            ST.ApplyRoundedBorder(plate.cast, 0)
+        end
+    end
+end
+
+local function ResetPlateFX(plate, fx)
+    if not fx then return end
+    if fx.leftAG and fx.leftAG:IsPlaying() then fx.leftAG:Stop() end
+    if fx.rightAG and fx.rightAG:IsPlaying() then fx.rightAG:Stop() end
+    if fx.leftGlowAG and fx.leftGlowAG:IsPlaying() then fx.leftGlowAG:Stop() end
+    if fx.rightGlowAG and fx.rightGlowAG:IsPlaying() then fx.rightGlowAG:Stop() end
+    if fx.leftBox then fx.leftBox:Hide() end
+    if fx.rightBox then fx.rightBox:Hide() end
+    if fx.arrowHost then fx.arrowHost:Hide() end
+    if fx.questFS then fx.questFS:Hide() end
+    if fx.stripeFillClip then fx.stripeFillClip:Hide() end
+    if fx.stripeBgClip then fx.stripeBgClip:Hide() end
+    if fx.trail then fx.trail:SetEnabled(false) end
+    if fx.mutedEUIArrows and plate then
+        if plate.leftArrow and plate.leftArrow.SetAlpha then pcall(plate.leftArrow.SetAlpha, plate.leftArrow, 1) end
+        if plate.rightArrow and plate.rightArrow.SetAlpha then pcall(plate.rightArrow.SetAlpha, plate.rightArrow, 1) end
+        fx.mutedEUIArrows = false
+    end
+    if fx.redName then
+        fx.redName = false
+        local fs = plate and plate.name
+        local c = fx.euiNameColor
+        if c and fs and fs.SetTextColor and IsSafe(fs) then
+            fx.nameBusy = true
+            pcall(fs.SetTextColor, fs, c[1], c[2], c[3], c[4] or 1)
+            fx.nameBusy = false
+        end
+    end
+    ClearPlateCastContrast(plate, fx)
 end
 
 local function EnsurePlateFX(plate)
@@ -450,7 +518,7 @@ local function EnsurePlateFX(plate)
             end
             if gf.SetAlpha then
                 _G.hooksecurefunc(gf, "SetAlpha", function(self, a)
-                    if a ~= 0 then ClampGlow(self) end
+                    if F.PlainNumber(a, 1) ~= 0 then ClampGlow(self) end
                 end)
             end
             if gf.Show then _G.hooksecurefunc(gf, "Show", ClampGlow) end
@@ -490,26 +558,23 @@ local function EnsurePlateFX(plate)
             end
         end)
     end
+    -- 防止 EUI 回收/隐藏姓名板时残留呼吸箭头动画、红名或施法对比光边
+    if not plateResetHooked[plate] then
+        plateResetHooked[plate] = true
+        if plate.HookScript then
+            plate:HookScript("OnHide", function(self)
+                local f = plateFX[self]
+                if f then ResetPlateFX(self, f) end
+            end)
+        end
+        if type(plate.ClearUnit) == "function" then
+            _G.hooksecurefunc(plate, "ClearUnit", function(self)
+                local f = plateFX[self]
+                if f then ResetPlateFX(self, f) end
+            end)
+        end
+    end
     return fx
-end
-
--- 将 EUI 姓名板原生圆角半径与我们联动（直接驱动 EUI 内置 RoundedCorners 引擎，连带圆角化 _customBorder、血条、施法条；停用时原样恢复）
-local function GetEUINPProfile()
-    local npNS = GetEUINPNS()
-    if npNS then
-        local enp = npNS.ENP or (npNS._npInternals and npNS._npInternals.ENP)
-        if enp and enp.db and type(enp.db.profile) == "table" then
-            return enp.db.profile
-        end
-    end
-    local EUI = _G.EllesmereUI
-    if EUI and EUI.GetModule then
-        local ok, m = pcall(EUI.GetModule, EUI, "EllesmereUINameplates", true)
-        if ok and m and m.db and type(m.db.profile) == "table" then
-            return m.db.profile
-        end
-    end
-    return nil
 end
 
 local function SyncEUINPRoundProfile(enable)
@@ -534,8 +599,8 @@ local function SyncEUINPRoundProfile(enable)
             prof.cornerRadiusAuras = true
             changed = true
         end
-        if changed and not auraCornerReloaded and npNS and type(npNS.NPC_ReloadAll) == "function" then
-            auraCornerReloaded = true
+        if (changed or lastReloadedRad ~= targetRad) and npNS and type(npNS.NPC_ReloadAll) == "function" then
+            lastReloadedRad = targetRad
             pcall(npNS.NPC_ReloadAll)
         end
     else
@@ -549,9 +614,45 @@ local function SyncEUINPRoundProfile(enable)
             db.savedEUICornerRadiusAuras = nil
             changed = true
         end
-        auraCornerReloaded = false
+        lastReloadedRad = nil
         if changed and npNS and type(npNS.NPC_ReloadAll) == "function" then
             pcall(npNS.NPC_ReloadAll)
+        end
+    end
+end
+
+-- 非目标压暗交给 EUI 自己的 Non-Target Opacity 引擎（ns.NT_Apply）：它按姓名板根框体做带缓存的
+-- 透明度合成（含距离淡隐、脱战淡隐、施法保持不透明、焦点豁免）。直接 plate:SetAlpha 会绕过它的缓存，
+-- 让远处怪变亮、取消目标后距离淡隐失效。这里只覆盖运行时缓存 _ntAlpha，绝不写入 EUI 存档；
+-- 用户若已在 EUI 里自己开了非目标透明度，则完全尊重 EUI 的设置。
+local ntOverrideActive = false
+
+local function HasEUINonTargetEngine()
+    local npNS = GetEUINPNS()
+    return npNS ~= nil and type(npNS.NT_ApplyAll) == "function", npNS
+end
+
+local function SyncEUINonTargetDim()
+    local ok, npNS = HasEUINonTargetEngine()
+    if not ok then return end
+    local db = mod:GetDB()
+    local prof = GetEUINPProfile()
+    local euiOwn = prof and F.PlainNumber(prof.nonTargetAlpha, 100) or 100
+    local want = mod._active == true and db.dimNonTarget ~= false and euiOwn >= 100
+    if want then
+        local a = math_max(0.40, math_min(0.95, F.PlainNumber(db.nonTargetAlpha, 0.78) or 0.78))
+        ntOverrideActive = true
+        if npNS._ntAlpha ~= a then
+            npNS._ntAlpha = a
+            pcall(npNS.NT_ApplyAll)
+        end
+    elseif ntOverrideActive then
+        ntOverrideActive = false
+        if type(npNS.NT_RefreshSetting) == "function" then
+            pcall(npNS.NT_RefreshSetting) -- 从 EUI 档案重新推导并重新套用全部姓名板
+        else
+            npNS._ntAlpha = math_max(0, math_min(1, euiOwn / 100))
+            pcall(npNS.NT_ApplyAll)
         end
     end
 end
@@ -642,6 +743,7 @@ local function ApplyPlateRounding(plate, fx, active, isTarget)
             pcall(npNS.NP_ApplyRounding, plate)
         end
         if IsSafe(plate.cast) then
+            fx.castBorderApplied = false
             ST.ClearRoundedMask(plate.cast)
             if PP and PP.ShowBorder then pcall(PP.ShowBorder, plate.cast) end
         end
@@ -651,26 +753,96 @@ local function ApplyPlateRounding(plate, fx, active, isTarget)
     end
 end
 
+-- 敌对阵营玩家红名：EUI 敌方姓名板的名字颜色按文字槽位统一着色，怪物与敌对玩家常是同一种颜色。
+-- 这里只给「敌对阵营玩家」改成红名；挂钩记住 EUI 自己想要的颜色，单位不再是敌对玩家时原样还给 EUI。
+local function IsHostilePlayer(unit)
+    if not unit then return false end
+    local okP, isP = pcall(_G.UnitIsPlayer, unit)
+    if not (okP and not F.IsSecret(isP) and isP == true) then return false end
+    if not _G.UnitIsFriend then return false end
+    local okF, isFriend = pcall(_G.UnitIsFriend, "player", unit)
+    return okF and not F.IsSecret(isFriend) and isFriend == false
+end
+
+local function ApplyHostileNameColor(plate, fx, unit, active)
+    local fs = plate.name
+    if not (fs and fs.SetTextColor and IsSafe(fs)) then return end
+    if not fx.nameHooked then
+        fx.nameHooked = true
+        _G.hooksecurefunc(fs, "SetTextColor", function(self, r, g, b, a)
+            if fx.nameBusy then return end
+            local pr = F.PlainNumber(r, nil)
+            local pg = F.PlainNumber(g, nil)
+            local pb = F.PlainNumber(b, nil)
+            local pa = F.PlainNumber(a, 1) or 1
+            if pr and pg and pb then
+                fx.euiNameColor = { pr, pg, pb, pa }
+            end
+            if fx.redName then
+                local h = ST.COLORS.hostile
+                fx.nameBusy = true
+                pcall(self.SetTextColor, self, h[1], h[2], h[3], 1)
+                fx.nameBusy = false
+            end
+        end)
+    end
+    local want = active and mod:GetDB().redHostilePlayers ~= false and IsHostilePlayer(unit)
+    if want then
+        if not fx.euiNameColor and fs.GetTextColor then
+            local okC, cr, cg, cb, ca = pcall(fs.GetTextColor, fs)
+            if okC then
+                local pr = F.PlainNumber(cr, nil)
+                local pg = F.PlainNumber(cg, nil)
+                local pb = F.PlainNumber(cb, nil)
+                local pa = F.PlainNumber(ca, 1) or 1
+                if pr and pg and pb then
+                    fx.euiNameColor = { pr, pg, pb, pa }
+                end
+            end
+        end
+        fx.redName = true
+        local h = ST.COLORS.hostile
+        fx.nameBusy = true
+        pcall(fs.SetTextColor, fs, h[1], h[2], h[3], 1)
+        fx.nameBusy = false
+    elseif fx.redName then
+        fx.redName = false
+        local c = fx.euiNameColor
+        if c then
+            fx.nameBusy = true
+            pcall(fs.SetTextColor, fs, c[1], c[2], c[3], c[4] or 1)
+            fx.nameBusy = false
+        end
+    end
+end
+
 local function UpdatePlateCastContrast(plate, fx, unit)
     if not (fx and fx.castGlow) then return end
     if not (mod._active and mod:GetDB().castContrast ~= false and unit and plate.cast and plate.cast:IsShown()) then
-        fx.castGlow:Hide()
+        ClearPlateCastContrast(plate, fx)
         return
     end
+    local hasCast = false
     local notInt = nil
     if _G.UnitCastingInfo then
         local name, _, _, _, _, _, _, ni = _G.UnitCastingInfo(unit)
-        if name then notInt = ni end
+        if type(name) ~= "nil" then
+            hasCast = true
+            notInt = ni
+        end
     end
-    if notInt == nil and _G.UnitChannelInfo then
+    if (not hasCast) and _G.UnitChannelInfo then
         local name, _, _, _, _, _, ni = _G.UnitChannelInfo(unit)
-        if name then notInt = ni end
+        if type(name) ~= "nil" then
+            hasCast = true
+            notInt = ni
+        end
     end
-    if notInt == nil then
-        fx.castGlow:Hide()
+    if (not hasCast) or F.IsSecret(notInt) then
+        ClearPlateCastContrast(plate, fx)
         return
     end
-    local isUnint = (not F.IsSecret(notInt)) and (notInt == true) or false
+    local isUnint = (notInt == true)
     local r, g, b, a
     if isUnint then
         r, g, b, a = 0.56, 0.58, 0.64, 0.78
@@ -682,7 +854,12 @@ local function UpdatePlateCastContrast(plate, fx, unit)
         local cH = F.PlainNumber(plate.cast:GetHeight(), 10) or 10
         local cRad = math_min(ST.GetCornerRadius(5), math_max(2, math_floor(cH * 0.44)))
         ST.ApplyRoundedBorder(plate.cast, cRad, r, g, b, a, 6)
+        fx.castBorderApplied = true
     else
+        if fx.castBorderApplied and IsSafe(plate.cast) then
+            fx.castBorderApplied = false
+            ST.ApplyRoundedBorder(plate.cast, 0)
+        end
         for i = 1, 4 do
             fx.castGlow._edges[i]:SetVertexColor(r, g, b, a)
         end
@@ -807,8 +984,8 @@ local function PaintSinglePlate(plate, instantTrail)
         fx.stripeBgClip:Hide()
     end
 
-    -- 3) 非目标柔和降暗
-    local wantDim = active and hasTarget and (not isTarget) and db.dimNonTarget ~= false
+    -- 3) 非目标柔和降暗（有 EUI 透明度引擎时由 SyncEUINonTargetDim 统一处理，这里只是兜底）
+    local wantDim = (not HasEUINonTargetEngine()) and active and hasTarget and (not isTarget) and db.dimNonTarget ~= false
     if wantDim then
         local targetA = math_max(0.40, math_min(0.95, F.PlainNumber(db.nonTargetAlpha, 0.78) or 0.78))
         plate:SetAlpha(targetA)
@@ -827,6 +1004,9 @@ local function PaintSinglePlate(plate, instantTrail)
             fx.trail:UpdateFromUnit(unit, instantTrail)
         end
     end
+
+    -- 4b) 敌对阵营玩家红名
+    ApplyHostileNameColor(plate, fx, unit, active)
 
     -- 5) 施法条打断高反差光边
     UpdatePlateCastContrast(plate, fx, unit)
@@ -851,7 +1031,7 @@ local function SyncFriendlyPlateGlows()
                 end
                 if gf.SetAlpha then
                     _G.hooksecurefunc(gf, "SetAlpha", function(self, a)
-                        if a ~= 0 then ClampGlow(self) end
+                        if F.PlainNumber(a, 1) ~= 0 then ClampGlow(self) end
                     end)
                 end
                 if gf.Show then _G.hooksecurefunc(gf, "Show", ClampGlow) end
@@ -864,8 +1044,9 @@ local function SyncFriendlyPlateGlows()
 end
 
 local function RefreshAllPlates(instantTrail)
-    SyncEUINPRoundProfile(mod._active == true and mod:GetDB().roundBars ~= false)
+    SyncEUINPRoundProfile(mod._active == true and mod:GetDB().roundBars ~= false and ST.GetCornerRadius(6) > 0)
     SyncFriendlyPlateGlows()
+    SyncEUINonTargetDim()
     local plates = GetEUIPlates()
     if type(plates) ~= "table" then return end
     for _, plate in pairs(plates) do
@@ -876,6 +1057,10 @@ end
 local function FindPlateByUnit(unit)
     local plates = GetEUIPlates()
     if type(plates) ~= "table" or not unit then return nil end
+    local direct = plates[unit]
+    if direct and direct.unit == unit then
+        return direct
+    end
     for _, plate in pairs(plates) do
         if plate and plate.unit == unit then
             return plate
@@ -893,26 +1078,30 @@ function mod:OnEnable()
         end)
     end)
     self:RegisterEvent("NAME_PLATE_UNIT_ADDED", function(_, _, unit)
-        if unit then questTextCache[unit] = nil end
+        local u = F.PlainString(unit, nil)
+        if not u then return end
+        questTextCache[u] = nil
         C_Timer.After(0.02, function()
             if not mod._active then return end
-            local p = FindPlateByUnit(unit)
-            if p then PaintSinglePlate(p, true) else RefreshAllPlates(true) end
+            local p = FindPlateByUnit(u)
+            if p then
+                PaintSinglePlate(p, true)
+            else
+                local npNS = GetEUINPNS()
+                if npNS and type(npNS.friendlyPlates) == "table" and npNS.friendlyPlates[u] then
+                    SyncFriendlyPlateGlows()
+                end
+            end
         end)
     end)
     self:RegisterEvent("NAME_PLATE_UNIT_REMOVED", function(_, _, unit)
-        if unit then questTextCache[unit] = nil end
-        local p = FindPlateByUnit(unit)
+        local u = F.PlainString(unit, nil)
+        if not u then return end
+        questTextCache[u] = nil
+        local p = FindPlateByUnit(u)
         if p then
             local fx = plateFX[p]
-            if fx then
-                if fx.trail then fx.trail:SetEnabled(false) end
-                fx.arrowHost:Hide()
-                if fx.questFS then fx.questFS:Hide() end
-                fx.stripeFillClip:Hide()
-                fx.stripeBgClip:Hide()
-                if fx.castGlow then fx.castGlow:Hide() end
-            end
+            if fx then ResetPlateFX(p, fx) end
         end
     end)
     local QueueQuestRefresh = F.Debounce(0.15, function()
@@ -922,25 +1111,27 @@ function mod:OnEnable()
     self:RegisterEvent("QUEST_LOG_UPDATE", QueueQuestRefresh)
     self:RegisterUnitEvent("UNIT_QUEST_LOG_CHANGED", "player", QueueQuestRefresh)
     self:RegisterEvent("UNIT_HEALTH", function(_, _, unit)
-        if type(unit) ~= "string" or unit:sub(1, 9) ~= "nameplate" then return end
+        local u = F.PlainString(unit, nil)
+        if not u or u:sub(1, 9) ~= "nameplate" then return end
         local tMode = mod:GetDB().trailMode or "target"
         if tMode == "off" then return end
-        if tMode == "target" and not IsUnitTarget(unit) then return end
-        local p = FindPlateByUnit(unit)
+        if tMode == "target" and not IsUnitTarget(u) then return end
+        local p = FindPlateByUnit(u)
         if p then
             local fx = plateFX[p]
-            if fx and fx.trail then fx.trail:UpdateFromUnit(unit, false) end
+            if fx and fx.trail then fx.trail:UpdateFromUnit(u, false) end
         end
     end)
     local function OnPlateCast(_, _, unit)
-        if type(unit) ~= "string" or unit:sub(1, 9) ~= "nameplate" then return end
-        local p = FindPlateByUnit(unit)
+        local u = F.PlainString(unit, nil)
+        if not u or u:sub(1, 9) ~= "nameplate" then return end
+        local p = FindPlateByUnit(u)
         if p then
             local fx = EnsurePlateFX(p)
             if fx then
                 C_Timer.After(0, function()
-                    if mod._active and p and p.unit == unit then
-                        UpdatePlateCastContrast(p, fx, unit)
+                    if mod._active and p and p.unit == u then
+                        UpdatePlateCastContrast(p, fx, u)
                     end
                 end)
             end
@@ -974,6 +1165,7 @@ end
 function mod:OnDisable()
     SyncEUINPRoundProfile(false)
     SyncFriendlyPlateGlows()
+    SyncEUINonTargetDim()
     for _, plate in ipairs(knownPlates) do
         if IsSafe(plate) then
             PaintSinglePlate(plate, true)
@@ -1107,6 +1299,15 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         text = "过图/传送瞬间拦截暴雪原生姓名板闪现",
         getValue = function() return db.suppressTeleportFlash ~= false end,
         setValue = function(v) db.suppressTeleportFlash = v == true; SweepBlizzNameplateFlash() end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "敌对阵营玩家显示红名（区分怪物）",
+        tooltip = "野外遇到敌对阵营玩家时，姓名板名字改成红色，与同色的怪物一眼区分；顶部目标条与目标的目标同样显示红名。",
+        getValue = function() return db.redHostilePlayers ~= false end,
+        setValue = function(v) db.redHostilePlayers = v == true; RefreshAllPlates(true) end,
     })
     y = y - h
 

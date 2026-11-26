@@ -27,7 +27,7 @@ local mod = F.RegisterModule("systemBar", {
     yieldIfLoaded = "QFXSystemBar",
     defaults = {
         enabled = true,
-        iconStyle = "gameicons",   -- "gameicons" | "lucide"
+        iconStyle = "lucide",      -- "lucide"（默认：极简细线）| "gameicons"（经典实心）
         iconSize = 20,
         iconSpacing = 8,
         showBackdrop = false,      -- 默认无框透明悬浮（与现代透明 HUD 一致），可开暗色玻璃托底
@@ -40,6 +40,7 @@ local mod = F.RegisterModule("systemBar", {
         combatFade = false,        -- 战斗淡出（底部居中常不遮挡，默认关，可自由开）
         v2HideRedundantSocial = false,
         v3NoCombatFadeMigrated = false,
+        v4LucideMigrated = false,
     },
 })
 
@@ -493,7 +494,7 @@ local function ShowMicroAlertOnce(dedupKey, message, btnId)
     local f = EnsureMicroAlertBanner()
     local db = mod:GetDB()
     local def = FindButtonDefById(btnId or "PlayerSpells") or FindButtonDefById("PlayerSpells")
-    local dir = ICON_DIRS[db.iconStyle or "gameicons"] or ICON_DIRS.gameicons
+    local dir = ICON_DIRS[db.iconStyle or "lucide"] or ICON_DIRS.lucide
     local ar, ag, ab = F.Theme.GetAccent()
     local isPointAlert = (btnId == "PlayerSpells" or btnId == "Legacy")
     local barR, barG, barB = isPointAlert and 0.96 or ar, isPointAlert and 0.78 or ag, isPointAlert and 0.34 or ab
@@ -919,7 +920,7 @@ local function ApplyVisuals()
     if not barFrame then return end
     local db = mod:GetDB()
     local ar, ag, ab = F.Theme.GetAccent()
-    local dir = ICON_DIRS[db.iconStyle or "gameicons"] or ICON_DIRS.gameicons
+    local dir = ICON_DIRS[db.iconStyle or "lucide"] or ICON_DIRS.lucide
 
     if db.showBackdrop then
         F.Theme.StylePanel(barFrame, 0.72, 0.55)
@@ -1288,12 +1289,199 @@ local function SyncEUIFriendsButtonSoon()
     end
 end
 
+-- 修复延迟注册的小地图按钮（例如《无限副本手册》DungeonsForever 在 PLAYER_ENTERING_WORLD 后分 24 帧才创建
+-- LibDBIcon10_DungeonsForever，晚于 EUI 首帧 ApplyAll()，导致该按钮漏出 EUI 左侧未分组栏、仍保留圆环且可围绕小地图拖动）：
+-- 1) 订阅 LibDBIcon_IconCreated 回调，任意晚注册按钮一经创建即立刻触发 _EMM_ApplyMinimap() 归位；
+-- 2) 兼顾冷启动长加载场景，增加帧步进 + 长窗口复核兜底，一旦全部目标按钮归位即立即停止，无常驻轮询。
+local lateMinimapSyncGen = 0
+local ldbCallbackOwner = {}
+local ldbCallbackRegistered = false
+local ldbSyncQueued = false
+
+local function SyncLateMinimapButtonsOnce()
+    local edb = _G._EMM_DB
+    local profile = edb and edb.profile
+    local m = type(profile) == "table" and profile.minimap or nil
+    if type(m) ~= "table" or type(_G._EMM_ApplyMinimap) ~= "function" then
+        return false, true
+    end
+    local cached = _G._EBS_CachedAddonButtons
+    local visMap = _G._EBS_AddonVisible
+    local inCache = {}
+    if type(cached) == "table" then
+        for _, b in ipairs(cached) do
+            inCache[b] = true
+        end
+    end
+    local needApply = false
+    local waitingMissing = false
+    local minimap = _G.Minimap
+    local unlockTargets = {}
+
+    if type(m.ungroupedButtons) == "table" then
+        for btnName, val in pairs(m.ungroupedButtons) do
+            if val and type(btnName) == "string" then
+                local f = _G[btnName]
+                if not f then
+                    waitingMissing = true
+                elseif not (f.IsForbidden and f:IsForbidden()) then
+                    local okS, shown = pcall(f.IsShown, f)
+                    if okS and shown == true and type(visMap) == "table" and visMap[f] == false then
+                        visMap[f] = true
+                        needApply = true
+                    end
+                    local stillCircular = false
+                    if minimap and f.GetPoint then
+                        local okP, pt, rel = pcall(f.GetPoint, f, 1)
+                        if okP and pt == "CENTER" and rel == minimap then
+                            stillCircular = true
+                        end
+                    end
+                    local hasDragScript = f.GetScript and (pcall(function() return f:GetScript("OnDragStart") ~= nil end))
+                    if hasDragScript then
+                        local okD, dragFn = pcall(f.GetScript, f, "OnDragStart")
+                        hasDragScript = okD and dragFn ~= nil
+                    end
+                    if not inCache[f] or stillCircular or hasDragScript then
+                        needApply = true
+                        unlockTargets[#unlockTargets + 1] = f
+                    end
+                end
+            end
+        end
+    end
+
+    if minimap and minimap.GetChildren then
+        local okK, kids = pcall(function() return { minimap:GetChildren() } end)
+        if okK and type(kids) == "table" then
+            for _, ch in ipairs(kids) do
+                if ch and not inCache[ch]
+                    and not (ch.IsForbidden and ch:IsForbidden())
+                    and ch.GetName and ch.IsShown then
+                    local okS, shown = pcall(ch.IsShown, ch)
+                    if okS and shown == true then
+                        local okN, rawNm = pcall(ch.GetName, ch)
+                        local nm = okN and F.PlainString(rawNm, nil) or nil
+                        if nm and nm:sub(1, 12) == "LibDBIcon10_" then
+                            needApply = true
+                            unlockTargets[#unlockTargets + 1] = ch
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if needApply then
+        F.RunOutOfCombat("FUI_EUILateMinimapBtns", function()
+            if not mod._active then return end
+            for _, btn in ipairs(unlockTargets) do
+                if btn and not (btn.IsForbidden and btn:IsForbidden()) then
+                    -- LibDBIcon 创建时会锁定 Strata/Level；直入 ungrouped 栏的按钮需先解锁，避免 EUI 布局层级受阻
+                    if btn.SetFixedFrameStrata then pcall(btn.SetFixedFrameStrata, btn, false) end
+                    if btn.SetFixedFrameLevel then pcall(btn.SetFixedFrameLevel, btn, false) end
+                    if type(_G._EBS_AddonVisible) == "table" and btn.IsShown then
+                        local okS, shown = pcall(btn.IsShown, btn)
+                        if okS and shown == true and _G._EBS_AddonVisible[btn] == false then
+                            _G._EBS_AddonVisible[btn] = true
+                        end
+                    end
+                end
+            end
+            if type(_G._EMM_ApplyMinimap) == "function" then
+                pcall(_G._EMM_ApplyMinimap)
+            end
+        end)
+        return false, waitingMissing -- 触发归位后保留下一次复核，确认已稳稳入列
+    end
+    return not waitingMissing, waitingMissing
+end
+
+local function QueueLibDBIconSync()
+    if ldbSyncQueued or not mod._active then return end
+    ldbSyncQueued = true
+    C_Timer.After(0, function()
+        ldbSyncQueued = false
+        if not mod._active then return end
+        local done = SyncLateMinimapButtonsOnce()
+        if not done then
+            C_Timer.After(0.25, function()
+                if mod._active then SyncLateMinimapButtonsOnce() end
+            end)
+        end
+    end)
+end
+
+local function EnsureLibDBIconCallback()
+    if ldbCallbackRegistered then return end
+    local ldbi = _G.LibStub and _G.LibStub("LibDBIcon-1.0", true)
+    if ldbi and type(ldbi.RegisterCallback) == "function" then
+        local ok = pcall(ldbi.RegisterCallback, ldbCallbackOwner, "LibDBIcon_IconCreated", function()
+            if mod._active then
+                QueueLibDBIconSync()
+            end
+        end)
+        if ok then
+            ldbCallbackRegistered = true
+        end
+    end
+end
+
+local function UnregisterLibDBIconCallback()
+    if not ldbCallbackRegistered then return end
+    local ldbi = _G.LibStub and _G.LibStub("LibDBIcon-1.0", true)
+    if ldbi and type(ldbi.UnregisterAllCallbacks) == "function" then
+        pcall(ldbi.UnregisterAllCallbacks, ldbCallbackOwner)
+    end
+    ldbCallbackRegistered = false
+    ldbSyncQueued = false
+end
+
+local function ScheduleLateMinimapButtonSync()
+    EnsureLibDBIconCallback()
+    lateMinimapSyncGen = lateMinimapSyncGen + 1
+    local myGen = lateMinimapSyncGen
+    local settled = false
+
+    -- 帧步进复核：冷启动长时间加载期间墙钟计时器可能在首帧全部到期，
+    -- 按渲染帧步进（最多 40 帧）可精准跟上 DungeonsForever 等分帧初始化插件。
+    local function StepFrame(remaining)
+        if settled or myGen ~= lateMinimapSyncGen or not mod._active then return end
+        EnsureLibDBIconCallback()
+        local done = SyncLateMinimapButtonsOnce()
+        if done then
+            settled = true
+            return
+        end
+        if remaining > 0 then
+            C_Timer.After(0, function() StepFrame(remaining - 1) end)
+        end
+    end
+    C_Timer.After(0, function() StepFrame(40) end)
+
+    for _, delay in ipairs({ 0.5, 1.5, 3.5, 7.0, 12.0 }) do
+        C_Timer.After(delay, function()
+            if settled or myGen ~= lateMinimapSyncGen or not mod._active then return end
+            EnsureLibDBIconCallback()
+            local done = SyncLateMinimapButtonsOnce()
+            if done then
+                settled = true
+            end
+        end)
+    end
+end
+
 function mod:OnEnable()
     local db = self:GetDB()
     if not db.v2HideRedundantSocial then
         db.v2HideRedundantSocial = true
         -- 与小地图顶部的「公会/好友」合并入口去重，默认隐藏底部栏重复的好友与公会图标
         db.showSocialGuild = false
+    end
+    -- 用户要的是细线扁平风（Lucide）：一次性把旧存档里的实心图标切回来，之后在设置里改什么就是什么
+    if not db.v4LucideMigrated then
+        db.v4LucideMigrated = true
+        db.iconStyle = "lucide"
     end
     if not db.v3NoCombatFadeMigrated then
         db.v3NoCombatFadeMigrated = true
@@ -1303,6 +1491,7 @@ function mod:OnEnable()
     BindSecureButtons()
     ApplyVisuals()
     SyncEUIFriendsButtonSoon()
+    ScheduleLateMinimapButtonSync()
     InstallMicroAlertHooks()
     SuppressBlizzardMicroHelpTips(false)
     -- 栏内含安全按钮，战斗中显示/隐藏会被拦截：顺延到脱战（同一 key 与 OnDisable 互相覆盖，以最后一次操作为准）
@@ -1340,6 +1529,7 @@ function mod:OnEnable()
         BindSecureButtons()
         ApplyVisuals()
         SuppressBlizzardMicroHelpTips(false)
+        ScheduleLateMinimapButtonSync()
         C_Timer.After(0.8, function()
             if not mod._active then return end
             SuppressBlizzardMicroHelpTips(false)
@@ -1352,6 +1542,8 @@ function mod:OnEnable()
 end
 
 function mod:OnDisable()
+    lateMinimapSyncGen = lateMinimapSyncGen + 1
+    UnregisterLibDBIconCallback()
     if ticker then ticker:Cancel(); ticker = nil end
     F.RunOutOfCombat("FUI_SystemBarVis", function()
         if barFrame and not mod._active then barFrame:Hide() end
@@ -1371,10 +1563,10 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "图标风格",
-        tooltip = "GameIcons 为你原截图同款清晰实心图标；Lucide 为更轻盈的现代细线矢量风。",
-        values = { gameicons = "GameIcons（经典实心）", lucide = "Lucide（极简细线）" },
-        order = { "gameicons", "lucide" },
-        getValue = function() return db.iconStyle or "gameicons" end,
+        tooltip = "Lucide 为轻盈的现代细线扁平风（默认）；GameIcons 为清晰实心游戏图标。",
+        values = { lucide = "Lucide（极简细线）", gameicons = "GameIcons（经典实心）" },
+        order = { "lucide", "gameicons" },
+        getValue = function() return db.iconStyle or "lucide" end,
         setValue = function(v) db.iconStyle = v; ApplyVisuals() end,
     })
     y = y - h

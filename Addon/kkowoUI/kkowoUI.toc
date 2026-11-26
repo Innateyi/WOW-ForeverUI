@@ -41,6 +41,7 @@ Modules\ClassEmote.lua
 Modules\BagUtility.lua
 Modules\LootToast.lua
 Modules\Durability.lua
+Modules\GearList.lua
 Modules\ModernChrome.lua
 Modules\AuctionSkin.lua
 Modules\ImmersiveHUD.lua

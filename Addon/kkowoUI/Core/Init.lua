@@ -39,6 +39,18 @@ function F.PlainString(v, fallback)
     return v
 end
 
+-- UnitCastingInfo/UnitChannelInfo return NO values (not nil) when the unit is
+-- idle, so type(UnitCastingInfo(u)) raises "bad argument #1 to 'type' (value
+-- expected)". Read into a local first; type() is safe on secret values, == nil is not.
+function F.UnitIsCasting(unit, channel)
+    local fn = channel and _G.UnitChannelInfo or _G.UnitCastingInfo
+    if type(fn) ~= "function" then
+        return false
+    end
+    local ok, name = pcall(fn, unit or "player")
+    return ok and type(name) ~= "nil"
+end
+
 function F.SafeCall(fn, ...)
     if type(fn) ~= "function" then
         return false
@@ -277,7 +289,8 @@ do
             probeFS:Hide()
         end
         if not probeFS then return true end
-        return (pcall(probeFS.SetFont, probeFS, path, 16, "")) == true
+        local ok, applied = pcall(probeFS.SetFont, probeFS, path, 16, "")
+        return ok and applied ~= false
     end
 
     function F.ApplyDamageFont(presetKey, syncEUI)

@@ -128,8 +128,14 @@ local function GetUnitCreatureID(unit)
 end
 
 local function ResolveTransportNPC(unit)
-    if not (unit and _G.UnitExists and _G.UnitExists(unit)) then return nil end
-    if _G.UnitIsPlayer and _G.UnitIsPlayer(unit) then return nil end
+    unit = F.PlainString(unit, nil)
+    if not (unit and _G.UnitExists) then return nil end
+    local okE, exists = pcall(_G.UnitExists, unit)
+    if not okE or F.IsSecret(exists) or not exists then return nil end
+    if _G.UnitIsPlayer then
+        local okP, isPlayer = pcall(_G.UnitIsPlayer, unit)
+        if not okP or F.IsSecret(isPlayer) or isPlayer then return nil end
+    end
     local okN, rawName = pcall(_G.UnitName, unit)
     local name = okN and F.PlainString(rawName, nil) or nil
     local cid = GetUnitCreatureID(unit)
@@ -380,11 +386,10 @@ local function RedrawTransportMapPins(mapID, cw, ch)
         pin._txt:SetText(r.short)
         local tw = F.PlainNumber(pin._txt:GetStringWidth(), 82) or 82
         pin:SetSize(math_max(86, math_floor(tw + 24)), 20)
-        ST.ApplyRoundedBorder(pin, 6, cr, cg, cb, 0.78, 4)
-
         pin:ClearAllPoints()
         pin:SetPoint("CENTER", overlayLayer, "TOPLEFT", bx, by)
         pin:Show()
+        ST.ApplyRoundedBorder(pin, 6, cr, cg, cb, 0.78, 4)
 
         pin._anchorDot:SetVertexColor(cr, cg, cb, 0.95)
         pin._anchorDot:ClearAllPoints()
@@ -399,6 +404,7 @@ local function RedrawTransportMapPins(mapID, cw, ch)
 end
 
 local function RedrawMapLabels()
+    ResetHoverCache()
     if not mod._active then
         HideAllLabels()
         HideAllRoutePins()
@@ -507,7 +513,7 @@ local function EnsurePlatformBanner()
     bg:SetAllPoints(f)
     bg:SetColorTexture(0.045, 0.052, 0.072, 0.88)
     ST.MaskTexture(f, bg, 8)
-    ST.ApplyRoundedBorder(f, 8, 0.32, 0.84, 0.42, 0.76, 5)
+    ST.ApplyRoundedBorder(f, 8, ST.COLORS.info[1], ST.COLORS.info[2], ST.COLORS.info[3], 0.76, 5)
 
     local dot = f:CreateTexture(nil, "ARTWORK")
     dot:SetSize(8, 8)
@@ -607,7 +613,6 @@ local function UpdatePlatformProximity()
         local cr, cg, cb = best.color[1], best.color[2], best.color[3]
         local hex = F.RGBToHex(cr, cg, cb)
         f._dot:SetVertexColor(cr, cg, cb, 1)
-        ST.ApplyRoundedBorder(f, 8, cr, cg, cb, 0.78, 5)
         f._title:SetText(string_format("%s · %s前往 |cff%s%s|r", best.side or "当前泊位", best.kind, hex, best.dest))
         if other then
             local oHex = F.RGBToHex(other.color[1], other.color[2], other.color[3])
@@ -629,6 +634,7 @@ local function UpdatePlatformProximity()
             f:SetSize(math_max(210, math_floor(w + 38)), 30)
         end
         f:Show()
+        ST.ApplyRoundedBorder(f, 8, cr, cg, cb, 0.78, 5)
     end
 end
 
@@ -720,10 +726,10 @@ local function UpdateTransportNameplate(unit)
     b._txt:SetText(info.short)
     local tw = F.PlainNumber(b._txt:GetStringWidth(), 96) or 96
     b:SetSize(math_max(98, math_floor(tw + 24)), 22)
-    ST.ApplyRoundedBorder(b, 6, cr, cg, cb, 0.88, 5)
     b:ClearAllPoints()
     b:SetPoint("BOTTOM", np, "TOP", 0, 22)
     b:Show()
+    ST.ApplyRoundedBorder(b, 6, cr, cg, cb, 0.88, 5)
 end
 
 local function SweepTransportNameplates()
@@ -731,23 +737,26 @@ local function SweepTransportNameplates()
     if not (mod._active and mod:GetDB().showTransportNameplates ~= false and _G.C_NamePlate and _G.C_NamePlate.GetNamePlates) then
         return
     end
-    local plates = _G.C_NamePlate.GetNamePlates()
-    if type(plates) ~= "table" then return end
+    local ok, plates = pcall(_G.C_NamePlate.GetNamePlates)
+    if not ok or type(plates) ~= "table" then return end
     for _, np in ipairs(plates) do
-        local u = np.namePlateUnitToken or (np.UnitFrame and np.UnitFrame.unit)
-        if u then UpdateTransportNameplate(u) end
+        if np and not (np.IsForbidden and np:IsForbidden()) then
+            local u = F.PlainString(np.namePlateUnitToken or (np.UnitFrame and np.UnitFrame.unit), nil)
+            if u then UpdateTransportNameplate(u) end
+        end
     end
 end
 
 local function AppendTransportTooltip(tip)
     if not (mod._active and tip and tip.GetUnit) then return end
     local ok, _, unit = pcall(tip.GetUnit, tip)
-    if not (ok and unit) then return end
+    unit = ok and F.PlainString(unit, nil) or nil
+    if not unit then return end
     local info = ResolveTransportNPC(unit)
     if not info then return end
     local cr, cg, cb = info.color[1], info.color[2], info.color[3]
     local hex = F.RGBToHex(cr, cg, cb)
-    tip:AddLine(string_format("|cff52d669kkowoUI 航线：|r本泊位%s前往 |cff%s%s|r", info.kind, hex, info.dest), 0.92, 0.95, 0.98)
+    tip:AddLine(string_format("|cff70e6ebkkowoUI 航线：|r本泊位%s前往 |cff%s%s|r", info.kind, hex, info.dest), 0.92, 0.95, 0.98)
 end
 
 local function InstallTransportTooltipHook()
@@ -789,6 +798,7 @@ function mod:OnEnable()
         end)
         wmf:HookScript("OnHide", function()
             hoverPoller:Hide()
+            ResetHoverCache()
             if bottomBar then bottomBar:Hide() end
         end)
         if type(wmf.OnMapChanged) == "function" then
@@ -813,8 +823,12 @@ function mod:OnEnable()
         if mod._active and unit then UpdateTransportNameplate(unit) end
     end)
     self:RegisterEvent("NAME_PLATE_UNIT_REMOVED", function(_, _, unit)
+        unit = F.PlainString(unit, nil)
         if unit and _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit then
-            HideNameplateBadge(_G.C_NamePlate.GetNamePlateForUnit(unit))
+            local ok, np = pcall(_G.C_NamePlate.GetNamePlateForUnit, unit)
+            if ok and np and not (np.IsForbidden and np:IsForbidden()) then
+                HideNameplateBadge(np)
+            end
         end
     end)
 

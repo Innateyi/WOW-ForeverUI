@@ -45,10 +45,10 @@ local GROUPS = {
     {
         key   = "ModernUI",
         title = "现代视觉与性能",
-        desc  = "全局视觉统一、姓名板主城减卡、场景性能自动档位、沉浸探索淡隐、一体化系统栏与极简鼠标提示。",
+        desc  = "全局视觉统一、人物面板装备一览、姓名板主城减卡、场景性能自动档位、沉浸探索淡隐、一体化系统栏与极简鼠标提示。",
         pages = { "视觉与性能", "沉浸与系统栏" },
         pageMap = {
-            ["视觉与性能"]   = { "modernChrome", "auctionSkin", "nameplateSmart", "perfAutoTier" },
+            ["视觉与性能"]   = { "modernChrome", "gearList", "auctionSkin", "nameplateSmart", "perfAutoTier" },
             ["沉浸与系统栏"] = { "immersiveHUD", "systemBar", "tooltipStyle" },
         },
     },

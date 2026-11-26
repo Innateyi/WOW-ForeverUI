@@ -47,7 +47,6 @@ local function LayoutBars()
     container:SetSize(w, math.max(h, shown * (h + gap)))
     if hasPreview then
         container:SetFrameStrata("FULLSCREEN_DIALOG")
-        container:SetFrameLevel(230)
     else
         container:SetFrameStrata("MEDIUM")
     end
@@ -140,6 +139,33 @@ local function CreateRollButton(bar, host, iconFile, color, tip, rollAction, off
     return btn
 end
 
+local function ApplyBarBorder(bar, r, g, b)
+    if not bar then return end
+    local ST = F.StyleTokens
+    local rad = ST and ST.GetCornerRadius(6) or 0
+    if ST and rad > 0 then
+        if bar._fuiBg then ST.MaskTexture(bar, bar._fuiBg, rad) end
+        if bar._fuiBorders then
+            for _, ln in ipairs(bar._fuiBorders) do ln:Hide() end
+        end
+        local ft = bar.status and bar.status:GetStatusBarTexture()
+        if ft then ST.MaskTexture(bar, ft, rad) end
+        ST.ApplyRoundedBorder(bar, rad, r * 0.68 + 0.10, g * 0.68 + 0.10, b * 0.68 + 0.10, 0.86, 6)
+        if bar._iconBtn and bar.icon then ST.MaskTexture(bar._iconBtn, bar.icon, 4) end
+    else
+        if ST then
+            ST.ClearRoundedMask(bar)
+            if bar._iconBtn then ST.ClearRoundedMask(bar._iconBtn) end
+        end
+        if bar._fuiBorders then
+            for _, ln in ipairs(bar._fuiBorders) do
+                ln:SetColorTexture(r, g, b, 0.72)
+                ln:Show()
+            end
+        end
+    end
+end
+
 local function AcquireBar()
     for _, b in ipairs(bars) do
         if not b:IsShown() then
@@ -164,22 +190,10 @@ local function AcquireBar()
     local icon = iconBtn:CreateTexture(nil, "ARTWORK")
     icon:SetAllPoints()
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    bar._iconBtn = iconBtn
     bar.icon = icon
 
-    if F.StyleTokens then
-        local ST = F.StyleTokens
-        local rad = ST.GetCornerRadius(6)
-        if rad > 0 then
-            if bar._fuiBg then ST.MaskTexture(bar, bar._fuiBg, rad) end
-            if bar._fuiBorders then
-                for _, ln in ipairs(bar._fuiBorders) do ln:Hide() end
-            end
-            local ft = sb:GetStatusBarTexture()
-            if ft then ST.MaskTexture(bar, ft, rad) end
-            ST.ApplyRoundedBorder(bar, rad, 0.04, 0.045, 0.06, 0.92, 6)
-            ST.MaskTexture(iconBtn, icon, 4)
-        end
-    end
+    ApplyBarBorder(bar, 0.04, 0.045, 0.06)
     iconBtn:SetScript("OnEnter", function(self)
         if bar.rollID then
             GameTooltip:SetOwner(self, "ANCHOR_LEFT")
@@ -258,6 +272,7 @@ local function EnsureContainer()
         defaultRelPoint = "CENTER",
         defaultX = 0,
         defaultY = -140,
+        isHidden = function() return not mod._active end,
     })
 end
 
@@ -297,11 +312,7 @@ function mod:OnStartRoll(_, rollID, rollTime)
         if r and g and b then qr, qg, qb = r, g, b end
     end
     bar.status:SetStatusBarColor(qr, qg, qb, 0.42)
-    if bar._fuiBorders then
-        for _, ln in ipairs(bar._fuiBorders) do
-            ln:SetColorTexture(qr, qg, qb, 0.72)
-        end
-    end
+    ApplyBarBorder(bar, qr, qg, qb)
     bar._lastSec = nil
     bar.icon:SetTexture(texture or 134400)
     bar.nameText:SetText(name)
@@ -340,11 +351,7 @@ function mod:ShowPreview()
     bar.nameText:SetTextColor(0.64, 0.21, 0.93, 1)
     -- 复用的条可能残留上一次真实掷骰的禁用状态 / 倒计时 / 品质边框色
     bar._lastSec = nil
-    if bar._fuiBorders then
-        for _, ln in ipairs(bar._fuiBorders) do
-            ln:SetColorTexture(0.64, 0.21, 0.93, 0.72)
-        end
-    end
+    ApplyBarBorder(bar, 0.64, 0.21, 0.93)
     bar.btnNeed:SetEnabled(true); bar.btnGreed:SetEnabled(true); bar.btnDis:SetEnabled(true)
     bar.btnNeed:SetAlpha(1); bar.btnGreed:SetAlpha(1); bar.btnDis:SetAlpha(1)
     bar:Show()

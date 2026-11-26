@@ -67,7 +67,19 @@ if (Test-Path -LiteralPath $wtfAccount) {
         $newName = $name + $suffix
         $isForever = $f.Name -like 'ForeverUI*'
         $text = [System.IO.File]::ReadAllText($f.FullName, [System.Text.Encoding]::UTF8)
-        $newText = [regex]::Replace($text, '\b(ForeverUI|KkowoUI)(Char)?DB\b', 'kkowoUI${2}DB')   # 区分大小写，不碰已是 kkowoUIDB 的
+        # 存档里已有新变量（kkowoUIDB = {...}）时绝不改名：游戏会在末尾写一行旧名 KkowoUIDB = nil（.toc 仍声明旧名），
+        # 若把它也改成 kkowoUIDB = nil，就排在真正的设置表后面，下次登录整个 kkowoUI 设置（含布局位置）被清空。
+        $hasNewVar = $text -cmatch '(?m)^kkowoUI(Char)?DB = '
+        if ($hasNewVar) {
+            $newText = $text
+        } else {
+            $newText = [regex]::Replace($text, '\b(ForeverUI|KkowoUI)(Char)?DB\b', 'kkowoUI${2}DB')   # 区分大小写
+        }
+        # 保险：迁移结果里绝不允许出现把新变量置空的行
+        if ($newText -cmatch '(?m)^kkowoUI(Char)?DB = nil') {
+            Write-Host "跳过 $($f.FullName)：迁移会生成 kkowoUIDB = nil，保持原样。" -ForegroundColor Yellow
+            continue
+        }
         if (-not $isForever -and $f.Name -ceq $newName -and $newText -ceq $text) { continue }   # 已是新名字
         $newPath = Join-Path $f.DirectoryName $newName
         if ($isForever -and (Test-Path -LiteralPath $newPath)) {

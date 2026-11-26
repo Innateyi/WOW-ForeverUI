@@ -571,8 +571,14 @@ local function HideNativeTipChrome(tip, hide)
     end
     local E = _G.EllesmereUI
     local hideCfg = E and E._hideBlizzardConfiguredBorder
+    local bsNS = E and E._ModuleNS and E._ModuleNS.EllesmereUIBlizzardSkin
+    local bsFFD = bsNS and bsNS._internals and bsNS._internals.FFD
+    local bsData = bsFFD and bsFFD[tip]
     if hide then
         if type(hideCfg) == "function" then pcall(hideCfg, tip) end
+        if bsData and bsData.round and bsData.round.SetShown then
+            pcall(bsData.round.SetShown, bsData.round, false)
+        end
         -- 隐藏 EUI 给原生提示挂载的平铺底色层（保留文字），由 PrettyCardOverlay 接管全部底板与边框
         if tip.GetRegions then
             local okR, regs = pcall(function() return { tip:GetRegions() } end)
@@ -984,6 +990,115 @@ local roundedPrettyPanels = setmetatable({}, { __mode = "k" })
 local prettyPanelList = {}
 local prettyRoundHooksInstalled = false
 local EUI_ROUND_DIR_TT = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
+local EUI_AURA_MASK_DIR_TT = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\aura-masks\\"
+local pendingPrettyIcons = {}
+local prettyIconWaitFrame = nil
+
+local function IsPrettyTexLoaded(obj)
+    if not obj then return false end
+    if not obj.IsObjectLoaded then return true end
+    local ok, loaded = pcall(obj.IsObjectLoaded, obj)
+    if not ok or F.IsSecret(loaded) then return true end
+    return loaded == true
+end
+
+local function SetWholeIconMask(obj, path)
+    if not obj then return end
+    if obj.SetBlockingLoadsRequested then
+        pcall(obj.SetBlockingLoadsRequested, obj, true)
+    end
+    pcall(obj.SetTexture, obj, path, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+end
+
+local function SyncPrettyIconMask(panel, st)
+    if not (panel and st) then return end
+    if not st.active then
+        pendingPrettyIcons[panel] = nil
+        if st.iconOnTex and panel.icon and panel.icon.RemoveMaskTexture and st.iconMask then
+            pcall(panel.icon.RemoveMaskTexture, panel.icon, st.iconMask)
+            st.iconOnTex = false
+        end
+        if st.iconOnBorder and panel.iconBorder and panel.iconBorder.RemoveMaskTexture and st.iconBorderMask then
+            pcall(panel.iconBorder.RemoveMaskTexture, panel.iconBorder, st.iconBorderMask)
+            st.iconOnBorder = false
+        end
+        return
+    end
+    local needWait = false
+    if panel.iconBorder and st.iconBorderMask then
+        if panel.iconBorder.SetBlockingLoadsRequested then
+            pcall(panel.iconBorder.SetBlockingLoadsRequested, panel.iconBorder, true)
+        end
+        if IsPrettyTexLoaded(st.iconBorderMask) then
+            if not st.iconOnBorder and panel.iconBorder.AddMaskTexture then
+                if pcall(panel.iconBorder.AddMaskTexture, panel.iconBorder, st.iconBorderMask) then
+                    st.iconOnBorder = true
+                end
+            end
+        else
+            needWait = true
+        end
+    end
+    if panel.icon and st.iconMask then
+        if panel.icon.SetBlockingLoadsRequested then
+            pcall(panel.icon.SetBlockingLoadsRequested, panel.icon, true)
+        end
+        if IsPrettyTexLoaded(panel.icon) and IsPrettyTexLoaded(st.iconMask) then
+            if not st.iconOnTex and panel.icon.AddMaskTexture then
+                if pcall(panel.icon.AddMaskTexture, panel.icon, st.iconMask) then
+                    st.iconOnTex = true
+                end
+            end
+        else
+            -- WoW 12.1 异步贴图未加载完就挂遮罩会画成纯空白/左上碎块：先暂卸遮罩，加载完当帧补回
+            if st.iconOnTex and panel.icon.RemoveMaskTexture then
+                pcall(panel.icon.RemoveMaskTexture, panel.icon, st.iconMask)
+                st.iconOnTex = false
+            end
+            needWait = true
+        end
+    end
+    if needWait then
+        pendingPrettyIcons[panel] = { st = st, tries = 0 }
+        if not prettyIconWaitFrame then
+            prettyIconWaitFrame = CreateFrame("Frame")
+            prettyIconWaitFrame:Hide()
+            prettyIconWaitFrame:SetScript("OnUpdate", function(self)
+                local anyLeft = false
+                for p, entry in _G.pairs(pendingPrettyIcons) do
+                    local curSt = entry.st
+                    if not (p and curSt and curSt.active) or not IsSafeFrame(p) then
+                        pendingPrettyIcons[p] = nil
+                    else
+                        entry.tries = entry.tries + 1
+                        local borderOk = (not p.iconBorder) or (not curSt.iconBorderMask) or IsPrettyTexLoaded(curSt.iconBorderMask)
+                        local iconOk = (not p.icon) or (not curSt.iconMask)
+                            or (IsPrettyTexLoaded(p.icon) and IsPrettyTexLoaded(curSt.iconMask))
+                        if (borderOk and iconOk) or entry.tries >= 60 then
+                            pendingPrettyIcons[p] = nil
+                            if p.iconBorder and curSt.iconBorderMask and not curSt.iconOnBorder and p.iconBorder.AddMaskTexture then
+                                if pcall(p.iconBorder.AddMaskTexture, p.iconBorder, curSt.iconBorderMask) then
+                                    curSt.iconOnBorder = true
+                                end
+                            end
+                            if p.icon and curSt.iconMask and not curSt.iconOnTex and p.icon.AddMaskTexture then
+                                if pcall(p.icon.AddMaskTexture, p.icon, curSt.iconMask) then
+                                    curSt.iconOnTex = true
+                                end
+                            end
+                        else
+                            anyLeft = true
+                        end
+                    end
+                end
+                if not anyLeft then self:Hide() end
+            end)
+        end
+        prettyIconWaitFrame:Show()
+    else
+        pendingPrettyIcons[panel] = nil
+    end
+end
 
 local function WantRoundedPrettyTips()
     if not mod._active then return false end
@@ -998,6 +1113,9 @@ end
 
 local function SetSliceMask(obj, path, r, wrap)
     if not obj then return end
+    if obj.SetBlockingLoadsRequested then
+        pcall(obj.SetBlockingLoadsRequested, obj, true)
+    end
     if wrap then
         pcall(obj.SetTexture, obj, path, wrap, wrap)
     else
@@ -1034,6 +1152,21 @@ local function MirrorPrettyEdgeColor(panel, st)
     end
 end
 
+local function AttachPrettyBodyMask(st, tex)
+    if not (st and tex and tex.AddMaskTexture) or st.bodyUsers[tex] then return end
+    if pcall(tex.AddMaskTexture, tex, st.bodyMask) then st.bodyUsers[tex] = true end
+end
+
+local function DetachPrettyBodyMask(st)
+    if not (st and st.bodyMask and st.bodyUsers) then return end
+    local list = {}
+    for tex in _G.pairs(st.bodyUsers) do list[#list + 1] = tex end
+    for _, tex in ipairs(list) do
+        if tex.RemoveMaskTexture then pcall(tex.RemoveMaskTexture, tex, st.bodyMask) end
+        st.bodyUsers[tex] = nil
+    end
+end
+
 local function ApplyRoundToPrettyPanel(panel)
     if not (IsSafeFrame(panel) and panel.CreateMaskTexture and panel.background and type(panel.edges) == "table") then
         return
@@ -1044,21 +1177,12 @@ local function ApplyRoundToPrettyPanel(panel)
 
     if not want or not hasEUI then
         if st then
-            if st.bodyMask then
-                if panel.background.RemoveMaskTexture then pcall(panel.background.RemoveMaskTexture, panel.background, st.bodyMask) end
-                if panel.header and panel.header.RemoveMaskTexture then pcall(panel.header.RemoveMaskTexture, panel.header, st.bodyMask) end
-                for _, sh in ipairs(panel.shades or {}) do
-                    if sh.RemoveMaskTexture then pcall(sh.RemoveMaskTexture, sh, st.bodyMask) end
-                end
-            end
-            if st.iconMask then
-                if panel.icon and panel.icon.RemoveMaskTexture then pcall(panel.icon.RemoveMaskTexture, panel.icon, st.iconMask) end
-                if panel.iconBorder and panel.iconBorder.RemoveMaskTexture then pcall(panel.iconBorder.RemoveMaskTexture, panel.iconBorder, st.iconMask) end
-            end
-            if st.borderTex then st.borderTex:Hide() end
-            if st.topTex then st.topTex:Hide() end
+            DetachPrettyBodyMask(st)
             st.active = false
             st.radius = 0
+            SyncPrettyIconMask(panel, st)
+            if st.borderTex then st.borderTex:Hide() end
+            if st.topTex then st.topTex:Hide() end
             for _, edge in ipairs(panel.edges) do
                 if edge and edge.SetAlpha then pcall(edge.SetAlpha, edge, 1) end
             end
@@ -1072,27 +1196,34 @@ local function ApplyRoundToPrettyPanel(panel)
             bodyMask = panel:CreateMaskTexture(),
             holeMask = panel:CreateMaskTexture(),
             iconMask = panel:CreateMaskTexture(),
+            iconBorderMask = panel:CreateMaskTexture(),
             borderTex = panel:CreateTexture(nil, "OVERLAY", nil, 4),
             topTex = panel:CreateTexture(nil, "OVERLAY", nil, 5),
             radius = 0,
             active = false,
             hooked = false,
+            bodyUsers = setmetatable({}, { __mode = "k" }), -- 已绑定 bodyMask 的贴图
+            holeOnBorder = false,
+            iconOnTex = false,
+            iconOnBorder = false,
         }
         st.bodyMask:SetAllPoints(panel)
         st.borderTex:SetAllPoints(panel)
         st.borderTex:SetTexture(F.Theme.FLAT_TEX)
-        pcall(st.borderTex.AddMaskTexture, st.borderTex, st.bodyMask)
-        pcall(st.borderTex.AddMaskTexture, st.borderTex, st.holeMask)
 
         st.topTex:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
         st.topTex:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
         st.topTex:SetHeight(2)
         st.topTex:SetTexture(F.Theme.FLAT_TEX)
-        pcall(st.topTex.AddMaskTexture, st.topTex, st.bodyMask)
 
+        -- 图标与 1px 品质外框分别使用独立的 64x64 整图圆角遮罩（避免 43px 图标遮罩把 45px 品质边框裁没）
         if panel.icon then
             st.iconMask:SetAllPoints(panel.icon)
-            SetSliceMask(st.iconMask, EUI_ROUND_DIR_TT .. "rounded-4.tga", 4, "CLAMPTOBLACKADDITIVE")
+            SetWholeIconMask(st.iconMask, EUI_AURA_MASK_DIR_TT .. "round-4.tga")
+        end
+        if panel.iconBorder then
+            st.iconBorderMask:SetAllPoints(panel.iconBorder)
+            SetWholeIconMask(st.iconBorderMask, EUI_AURA_MASK_DIR_TT .. "round-4.tga")
         end
 
         roundedPrettyPanels[panel] = st
@@ -1100,6 +1231,12 @@ local function ApplyRoundToPrettyPanel(panel)
     end
 
     if st.radius ~= r or not st.active then
+        -- 引擎要求：先把遮罩从全部贴图上分离 -> 再改遮罩贴图 -> 最后重新绑定（直接改已绑定的遮罩不会刷新半径）
+        DetachPrettyBodyMask(st)
+        if st.holeOnBorder then
+            pcall(st.borderTex.RemoveMaskTexture, st.borderTex, st.holeMask)
+            st.holeOnBorder = false
+        end
         st.radius = r
         st.active = true
         local maskPath = EUI_ROUND_DIR_TT .. "rounded-" .. r .. ".tga"
@@ -1109,18 +1246,16 @@ local function ApplyRoundToPrettyPanel(panel)
         st.holeMask:ClearAllPoints()
         st.holeMask:SetPoint("TOPLEFT", panel, "TOPLEFT", 1, -1)
         st.holeMask:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -1, 1)
-
-        if panel.background.AddMaskTexture then pcall(panel.background.AddMaskTexture, panel.background, st.bodyMask) end
-        if panel.header and panel.header.AddMaskTexture then pcall(panel.header.AddMaskTexture, panel.header, st.bodyMask) end
-        for _, sh in ipairs(panel.shades or {}) do
-            if sh.AddMaskTexture then pcall(sh.AddMaskTexture, sh, st.bodyMask) end
-        end
-        if panel.icon and panel.icon.AddMaskTexture then
-            pcall(panel.icon.AddMaskTexture, panel.icon, st.iconMask)
-        end
-        if panel.iconBorder and panel.iconBorder.AddMaskTexture then
-            pcall(panel.iconBorder.AddMaskTexture, panel.iconBorder, st.iconMask)
-        end
+        if pcall(st.borderTex.AddMaskTexture, st.borderTex, st.holeMask) then st.holeOnBorder = true end
+    end
+    SyncPrettyIconMask(panel, st)
+    -- 每次都补绑：PrettyTooltip 之后才懒创建的分段底色（shades）也要圆角，已绑定的会跳过
+    AttachPrettyBodyMask(st, st.borderTex)
+    AttachPrettyBodyMask(st, st.topTex)
+    AttachPrettyBodyMask(st, panel.background)
+    AttachPrettyBodyMask(st, panel.header)
+    for _, sh in ipairs(panel.shades or {}) do
+        AttachPrettyBodyMask(st, sh)
     end
 
     for _, edge in ipairs(panel.edges) do
@@ -1135,6 +1270,16 @@ local function ApplyRoundToPrettyPanel(panel)
         if panel.HookScript then
             panel:HookScript("OnShow", function(self)
                 ApplyRoundToPrettyPanel(self)
+            end)
+        end
+        if panel.icon and panel.icon.SetTexture then
+            _G.hooksecurefunc(panel.icon, "SetTexture", function()
+                if st.active then SyncPrettyIconMask(panel, st) end
+            end)
+        end
+        if panel.icon and panel.icon.SetAtlas then
+            _G.hooksecurefunc(panel.icon, "SetAtlas", function()
+                if st.active then SyncPrettyIconMask(panel, st) end
             end)
         end
         for idx, edge in ipairs(panel.edges) do

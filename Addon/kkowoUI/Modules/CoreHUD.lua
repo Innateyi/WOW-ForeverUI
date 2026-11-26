@@ -18,6 +18,7 @@ local _G = _G
 local ipairs, math_floor, math_max, math_min, pairs, pcall, select, setmetatable, tostring, type =
     ipairs, math.floor, math.max, math.min, pairs, pcall, select, setmetatable, tostring, type
 local string_format = string.format
+local table_concat, table_sort = table.concat, table.sort
 local CreateFrame = CreateFrame
 local GetTime = GetTime
 local C_Timer = C_Timer
@@ -47,6 +48,8 @@ local mod = F.RegisterModule("coreHUD", {
         textInsideBars = true,
         -- 默认启用新版即自动隐藏对应 EUI 原生框体（仅在需要同屏对比时可开启保留）
         keepOriginalEUI = false,
+        -- 双翼 / 宠物 / 目标条可点击：左键选中、右键单位菜单（安全按钮，战斗中同样可用）
+        clickableHUD = true,
         -- 方案 A：圆球正上方常驻 BUFF（守护/姿态/光环）+ 下方两行增益与减益（含 +N 溢出折叠）+ 右上角彻底收起
         showPermanentBuffs = true,
         showCombatBuffs = true,
@@ -78,15 +81,16 @@ local SWING_ENUM = _G.Enum and _G.Enum.PlayerSwingType or nil
 local AIM_CLASSES = { HUNTER = true, PRIEST = true, MAGE = true, WARLOCK = true }
 local AIM_TIME = 0.50
 
--- 猎人守护 / 姿态 / 光环等常驻法术 ID（保留在右上角，不进核心圆球与双翼下方增益带）
+-- 猎人守护 / 姿态 / 光环等常驻法术 ID（保留在圆球正上方常驻排，不进核心圆球与双翼下方限时增益带）
 local ASPECT_SPELLS = {
     [13165] = true, [14318] = true, [14319] = true, [14320] = true, [14321] = true, [14322] = true, [25296] = true, -- 雄鹰
     [13163] = true, -- 灵猴
     [5118]  = true, -- 猎豹
     [13159] = true, -- 豹群
-    [13161] = true, -- 野兽
+    [13161] = true, [1299445] = true, [1299446] = true, [1299447] = true, -- 野兽（含无限服高阶）
     [20043] = true, [20190] = true, -- 自然
-    [34074] = true, -- 蝰蛇
+    [34074] = true, [415423] = true, -- 蝰蛇
+    [469145] = true, -- 无限服守护
     [61846] = true, -- 龙鹰
 }
 
@@ -275,53 +279,19 @@ local function SetPowerText(fs, unit, powerType)
     end
 end
 
--- 查询当前激活的「守护 / 姿态 / 形态」图标与名字
-local function ResolveActiveStance()
-    -- 1) 优先查暴雪姿态/形态栏（战士姿态、德鲁伊形态、圣骑光环、盗贼潜行、牧师暗影、部分无限服守护）
+-- 查询暴雪姿态/形态栏当前激活项（战斗中始终非保密可读：战士姿态、德鲁伊形态、圣骑光环、盗贼潜行、牧师暗影、进姿态栏的守护）
+local function GetActiveShapeshiftInfo()
     if _G.GetNumShapeshiftForms and _G.GetShapeshiftFormInfo then
         local n = F.PlainNumber(_G.GetNumShapeshiftForms(), 0) or 0
         for i = 1, n do
             local ok, icon, active, _, spellID = pcall(_G.GetShapeshiftFormInfo, i)
-            if ok and active and not F.IsSecret(icon) and icon then
-                local name = nil
-                if spellID and not F.IsSecret(spellID) then
-                    if _G.C_Spell and _G.C_Spell.GetSpellName then
-                        local okN, nm = pcall(_G.C_Spell.GetSpellName, spellID)
-                        if okN then name = F.PlainString(nm, nil) end
-                    elseif _G.GetSpellInfo then
-                        local okN, nm = pcall(_G.GetSpellInfo, spellID)
-                        if okN then name = F.PlainString(nm, nil) end
-                    end
-                end
-                return icon, name, spellID, i
+            if ok and active == true and icon ~= nil and not F.IsSecret(icon) then
+                local sid = F.PlainNumber(spellID, nil)
+                local name = sid and GetSpellNameSafe(sid) or nil
+                return icon, name, sid, i
             end
         end
     end
-
-    -- 2) 扫描玩家 Buff 中的猎人守护（兼容不进姿态栏的守护法术）
-    if _G.C_UnitAuras and _G.C_UnitAuras.GetBuffDataByIndex then
-        for i = 1, 40 do
-            local ok, aura = pcall(_G.C_UnitAuras.GetBuffDataByIndex, "player", i)
-            if not ok or not aura then break end
-            local sid = F.PlainNumber(aura.spellId, nil)
-            local nm = F.PlainString(aura.name, nil)
-            local ic = (not F.IsSecret(aura.icon)) and aura.icon or nil
-            if ic and ((sid and ASPECT_SPELLS[sid]) or (nm and (nm:find("守护", 1, true) or nm:find("Aspect of", 1, true)))) then
-                return ic, nm, sid, nil
-            end
-        end
-    elseif _G.UnitBuff then
-        for i = 1, 40 do
-            local ok, nm, ic, _, _, _, _, _, _, _, sid = pcall(_G.UnitBuff, "player", i)
-            if not ok or not nm then break end
-            nm = F.PlainString(nm, nil)
-            sid = F.PlainNumber(sid, nil)
-            if ic and not F.IsSecret(ic) and ((sid and ASPECT_SPELLS[sid]) or (nm and (nm:find("守护", 1, true) or nm:find("Aspect of", 1, true)))) then
-                return ic, nm, sid, nil
-            end
-        end
-    end
-
     return nil, nil, nil, nil
 end
 
@@ -350,6 +320,7 @@ local petFrame = nil
 local topTargetFrame = nil
 local petEventFrame = nil
 
+local UnitNameColor -- 敌对玩家红名（定义在数据刷新段）
 local playerCache = {}
 local petCache = {}
 local targetCache = {}
@@ -389,6 +360,8 @@ local hiddenEUI = {
 }
 local alphaGuardedEUI = setmetatable({}, { __mode = "k" })
 local alphaGuardBusy = false
+local euiHiddenByUs = {}    -- key -> true：本模块确实隐藏过该 EUI 框体（停用时只还原这些）
+local euiWatchRemoved = {}  -- key -> true：本模块注销过该框体的 RegisterUnitWatch
 
 -- 右上角 BuffFrame / DebuffFrame 方案 A 收起与单图标去重状态（全程弱表零污染，停用即还原）
 local wingShownInstanceIDs = {}
@@ -397,14 +370,22 @@ local wingShownIcons = {}
 local dedupedAuraBtns = setmetatable({}, { __mode = "k" })
 local dedupedAuraBtnList = {}
 local auraAlphaGuarded = setmetatable({}, { __mode = "k" })
-local auraAlphaBusy = false
-local buffFrameDedupeHooked = false
-local buffFrameFullMuted = false
-local buffFrameFullGuarded = false
-local debuffFrameMuted = false
-local debuffFrameGuarded = false
-local topRightTempExpanded = false
-local topRightMicroBtn = nil
+local trState = {
+    alphaBusy = false,
+    showBusy = false,
+    buffDedupeHooked = false,
+    buffFullMuted = false,
+    buffFullGuarded = false,
+    buffShowGuarded = false,
+    buffHiddenByUs = false,
+    debuffMuted = false,
+    debuffGuarded = false,
+    debuffShowGuarded = false,
+    debuffHiddenByUs = false,
+    tempExpanded = false,
+    microBtn = nil,
+    minimapHooked = false,
+}
 
 local euiTrailPlayer = nil
 local euiTrailTarget = nil
@@ -444,7 +425,7 @@ local function CreateWingBar(parent, w, h, reverse)
     holder._bar = sb
 
     local sheen = sb:CreateTexture(nil, "OVERLAY", nil, 2)
-    sheen:SetHeight(1)
+    ST.Hairline(sheen)
     sheen:SetPoint("TOPLEFT", sb, "TOPLEFT", 2, -1)
     sheen:SetPoint("TOPRIGHT", sb, "TOPRIGHT", -2, -1)
     sheen:SetColorTexture(1, 1, 1, 0.14)
@@ -464,6 +445,10 @@ local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius)
     end
     ST.ClearRoundedMask(holder)
     if rad > 0 then
+        if holder._fuiBg then holder._fuiBg:Hide() end
+        if holder._fuiBorders then
+            for _, ln in ipairs(holder._fuiBorders) do ln:Hide() end
+        end
         ST.MaskTexture(holder, holder._bg, rad)
         local fillTex = holder._bar:GetStatusBarTexture()
         if fillTex then ST.MaskTexture(holder, fillTex, rad) end
@@ -479,10 +464,14 @@ local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius)
         ST.ApplyRoundedBorder(holder, rad, 0.05, 0.06, 0.09, 0.86, 6)
     else
         F.Theme.StylePanel(holder, 0, 0.80)
+        if holder._fuiBorders then
+            for _, ln in ipairs(holder._fuiBorders) do ln:Show() end
+        end
     end
     ST.ApplyBarGradient(holder._bar, r1, g1, b1, r2, g2, b2, 0.98, holder._reverse)
 end
 
+local SetCombatBadge -- 战斗徽章显隐（定义在技能球段）
 local hasActiveDebuffs = false
 local lastIdleAlpha = nil
 
@@ -503,24 +492,51 @@ local function UpdateOrbAmbientGlow()
         end
         orb._halo:Show()
     end
+    -- 非战斗待机：两层流光环停转收起，只留柔和呼吸光晕（画面更沉稳，也省 GPU）
     if orb._spinArc then
-        orb._spinArc:SetVertexColor(r2, g2, b2, energized and 0.92 or 0.42)
-        orb._spinArc:Show()
+        orb._spinArc:SetVertexColor(r2, g2, b2, 0.92)
+        orb._spinArc:SetShown(energized)
         if orb._spinAG then
-            orb._spinAG._rot:SetDuration(energized and 2.0 or 3.8)
-            if not orb._spinAG:IsPlaying() then orb._spinAG:Play() end
+            orb._spinAG._rot:SetDuration(2.0)
+            if energized then
+                if not orb._spinAG:IsPlaying() then orb._spinAG:Play() end
+            elseif orb._spinAG:IsPlaying() then
+                orb._spinAG:Stop()
+            end
         end
     end
     if orb._spinArc2 then
-        orb._spinArc2:SetVertexColor(r1 * 0.5 + 0.5, g1 * 0.5 + 0.5, b1 * 0.5 + 0.5, energized and 0.54 or 0.22)
-        orb._spinArc2:Show()
+        orb._spinArc2:SetVertexColor(r1 * 0.5 + 0.5, g1 * 0.5 + 0.5, b1 * 0.5 + 0.5, 0.54)
+        orb._spinArc2:SetShown(energized)
         if orb._spinAG2 then
-            orb._spinAG2._rot:SetDuration(energized and 3.6 or 6.2)
-            if not orb._spinAG2:IsPlaying() then orb._spinAG2:Play() end
+            orb._spinAG2._rot:SetDuration(3.6)
+            if energized then
+                if not orb._spinAG2:IsPlaying() then orb._spinAG2:Play() end
+            elseif orb._spinAG2:IsPlaying() then
+                orb._spinAG2:Stop()
+            end
         end
     end
     if orb._burstRing then
         orb._burstRing:SetVertexColor(r2, g2, b2, 1)
+    end
+end
+
+SetCombatBadge = function(on, animate)
+    local badge = coreFrame and coreFrame._orb and coreFrame._orb._combatIcon
+    if not badge then return end
+    if on then
+        F.Theme.FadeTo(badge, 1, 0) -- 中止可能仍在进行的淡出
+        badge:Show()
+        if badge._glowAG and not badge._glowAG:IsPlaying() then badge._glowAG:Play() end
+        if animate then M.PlayScalePop(badge, 1.28, 0.22) end
+    elseif badge:IsShown() then
+        if badge._glowAG then badge._glowAG:Stop() end
+        if animate then
+            F.Theme.FadeTo(badge, 0, 0.28, true)
+        else
+            badge:Hide()
+        end
     end
 end
 
@@ -634,24 +650,267 @@ end
 local MAX_PERM_SLOTS = 6
 local MAX_AURA_SLOTS = 8
 
+-- 战斗中 12.x 光环可能受限（GetAuraDataByIndex 直接报错）或字段变成保密值（spellId / name / duration / auraInstanceID 不可读）：
+-- 1) 未受限时记住每个 auraInstanceID 的常驻分类，并保存当前常驻 BUFF 快照与图标集；
+-- 2) 战斗中扫表受限或字段保密导致顶部常驻排为空时，沿用快照 + 姿态栏（GetShapeshiftFormInfo，战斗始终可读）
+--    + 施法事件（UNIT_SPELLCAST_SUCCEEDED，战斗中切守护/光环即时同步图标），避免顶部常驻 BUFF 消失。
+local permState = {
+    byInstance = {},
+    byInstanceCount = 0,
+    cached = {},
+    cachedIcons = {},
+    hasCleanScan = false,
+}
+
+function permState.AreAurasRestricted()
+    local S = _G.C_Secrets
+    if S and S.ShouldAurasBeSecret then
+        local ok, sec = pcall(S.ShouldAurasBeSecret)
+        if not ok or F.IsSecret(sec) or sec == true then
+            return true
+        end
+    end
+    return false
+end
+
+function permState.GetFamily(sid, nm)
+    if sid and ASPECT_SPELLS[sid] then return "aspect" end
+    if type(nm) == "string" and nm ~= "" then
+        if nm:find("守护", 1, true) or nm:find("Aspect of", 1, true) then
+            return "aspect"
+        elseif nm:find("姿态", 1, true) or nm:find("形态", 1, true)
+            or nm:find("Stance", 1, true) or nm:find("Form", 1, true) then
+            return "stance"
+        elseif (nm:find("光环", 1, true) or nm:find("Aura", 1, true)) and F.GetPlayerClass() == "PALADIN" then
+            return "paladinaura"
+        elseif nm:find("追踪", 1, true) or nm:find("寻找", 1, true)
+            or nm:find("Track ", 1, true) or nm:find("Find ", 1, true) then
+            return "tracking"
+        end
+    end
+    return nil
+end
+
+function permState.RebuildIcons()
+    for k in pairs(permState.cachedIcons) do permState.cachedIcons[k] = nil end
+    for _, e in ipairs(permState.cached) do
+        if e.icon ~= nil and not F.IsSecret(e.icon) then
+            permState.cachedIcons[e.icon] = true
+        end
+    end
+end
+
+function permState.SaveCleanSnapshot(permList)
+    permState.hasCleanScan = true
+    local snap = {}
+    for _, it in ipairs(permList) do
+        local ic = (it.icon ~= nil and not F.IsSecret(it.icon)) and it.icon or nil
+        if ic then
+            local iid = (it.auraInstanceID ~= nil and not F.IsSecret(it.auraInstanceID)) and it.auraInstanceID or nil
+            snap[#snap + 1] = {
+                index = it.index,
+                spellID = it.spellID,
+                name = it.name,
+                auraInstanceID = iid,
+                icon = ic,
+                applications = F.PlainNumber(it.applications, nil),
+                family = permState.GetFamily(it.spellID, it.name),
+                isPerm = true,
+            }
+        end
+    end
+    permState.cached = snap
+    permState.RebuildIcons()
+end
+
+function permState.RecordSpellCast(sid, sName)
+    if not sid or sid == 8690 then return end
+    if type(sName) == "string" and (sName:find("炉石", 1, true) or sName:find("Hearthstone", 1, true)) then
+        return
+    end
+    local ic = GetSpellIconSafe(sid)
+    if not ic then return end
+    local fam = permState.GetFamily(sid, sName)
+    local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
+        or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
+    local entry = {
+        spellID = sid,
+        name = sName,
+        icon = ic,
+        family = fam,
+        isPerm = true,
+        fromCache = true,
+        castInCombat = inCombat == true,
+    }
+    local replaced = false
+    if fam == "aspect" or fam == "paladinaura" or fam == "tracking" or fam == "stance" then
+        for i, e in ipairs(permState.cached) do
+            if e.family == fam or permState.GetFamily(e.spellID, e.name) == fam then
+                permState.cached[i] = entry
+                replaced = true
+                break
+            end
+        end
+    else
+        for i, e in ipairs(permState.cached) do
+            if (e.spellID and e.spellID == sid) or (e.icon == ic) then
+                permState.cached[i] = entry
+                replaced = true
+                break
+            end
+        end
+    end
+    if not replaced then
+        permState.cached[#permState.cached + 1] = entry
+    end
+    permState.RebuildIcons()
+    if mod._queueAuraUpdate then mod._queueAuraUpdate() end
+end
+
+function permState.BuildFallback()
+    local out = {}
+    for _, e in ipairs(permState.cached) do
+        out[#out + 1] = {
+            index = e.index,
+            spellID = e.spellID,
+            name = e.name,
+            auraInstanceID = e.auraInstanceID,
+            icon = e.icon,
+            applications = e.applications,
+            family = e.family,
+            isPerm = true,
+            fromCache = true,
+        }
+    end
+
+    -- 姿态/形态栏在战斗中始终实时可读：同步切换后的姿态/德鲁伊形态/圣骑光环/进姿态栏的守护
+    local sIcon, sName, sSpellID = GetActiveShapeshiftInfo()
+    if sIcon then
+        local sFam = permState.GetFamily(sSpellID, sName) or "stance"
+        local matchedIdx = nil
+        for i, e in ipairs(out) do
+            if (sSpellID and e.spellID == sSpellID) or (e.icon == sIcon) or (e.family == sFam) then
+                matchedIdx = i
+                break
+            end
+        end
+        if matchedIdx then
+            local e = out[matchedIdx]
+            e.icon = sIcon
+            e.name = sName or e.name
+            e.spellID = sSpellID or e.spellID
+            e.family = sFam
+        elseif not permState.hasCleanScan then
+            out[#out + 1] = {
+                spellID = sSpellID,
+                name = sName,
+                icon = sIcon,
+                family = sFam,
+                isPerm = true,
+                fromCache = true,
+            }
+        end
+    elseif _G.GetNumShapeshiftForms and (F.PlainNumber(_G.GetNumShapeshiftForms(), 0) or 0) > 0 then
+        -- 战斗中从熊/猫形态切回人形时清掉过期的形态缓存
+        for i = #out, 1, -1 do
+            if out[i].family == "stance" then
+                table.remove(out, i)
+            end
+        end
+    end
+
+    -- 战中 /reload 尚未完成脱战扫描时，尝试用非保密白名单法术直查猎人守护
+    if #out == 0 and not permState.hasCleanScan and F.GetPlayerClass() == "HUNTER"
+        and _G.C_UnitAuras and _G.C_UnitAuras.GetPlayerAuraBySpellID then
+        local S = _G.C_Secrets
+        for sid in pairs(ASPECT_SPELLS) do
+            local isSec = false
+            if S and S.ShouldSpellAuraBeSecret then
+                local okS, sec = pcall(S.ShouldSpellAuraBeSecret, sid)
+                if not okS or F.IsSecret(sec) or sec == true then isSec = true end
+            end
+            if not isSec then
+                local okA, a = pcall(_G.C_UnitAuras.GetPlayerAuraBySpellID, sid)
+                if okA and type(a) == "table" and not F.IsSecret(a) then
+                    local ic = (a.icon ~= nil and not F.IsSecret(a.icon)) and a.icon or GetSpellIconSafe(sid)
+                    if ic then
+                        out[#out + 1] = {
+                            spellID = sid,
+                            name = F.PlainString(a.name, nil) or GetSpellNameSafe(sid),
+                            icon = ic,
+                            family = "aspect",
+                            isPerm = true,
+                            fromCache = true,
+                        }
+                        break
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
+local function ClassifyPerm(iidKey, sid, nm, dur, durSecret, iconKey)
+    local matched = IsPermanentOrAspectSpell(sid, nm)
+    if matched or not durSecret then
+        local isPerm = matched or (not dur or dur <= 0)
+        if iidKey and permState.byInstance[iidKey] ~= isPerm then
+            if permState.byInstance[iidKey] == nil then
+                permState.byInstanceCount = permState.byInstanceCount + 1
+                if permState.byInstanceCount > 300 then
+                    for k in pairs(permState.byInstance) do permState.byInstance[k] = nil end
+                    permState.byInstanceCount = 1
+                end
+            end
+            permState.byInstance[iidKey] = isPerm
+        end
+        return isPerm
+    end
+    if iidKey and permState.byInstance[iidKey] ~= nil then
+        return permState.byInstance[iidKey]
+    end
+    if iconKey and permState.cachedIcons[iconKey] then
+        if iidKey then permState.byInstance[iidKey] = true end
+        return true
+    end
+    return false
+end
+
 local function CollectSplitBuffs(buffMode)
     local permOut = {}
     local timedOut = {}
+    local scanBlocked = false
+    local sawSecretAura = false
     local getByIdx = _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDataByIndex
     if getByIdx then
-        for i = 1, 40 do
+        for i = 1, 60 do
             local ok, aura = pcall(getByIdx, "player", i, "HELPFUL")
-            if not ok or not aura then break end
-            if aura.icon ~= nil then
+            if not ok then
+                scanBlocked = true
+                break
+            end
+            if not aura then break end
+            if F.IsSecret(aura) or type(aura) ~= "table" then
+                sawSecretAura = true
+            elseif aura.icon ~= nil then
                 local sid = F.PlainNumber(aura.spellId, nil)
                 local nm = F.PlainString(aura.name, nil)
                 local dur = F.PlainNumber(aura.duration, nil)
                 local durSecret = F.IsSecret(aura.duration)
-                local isPerm = IsPermanentOrAspectSpell(sid, nm) or ((not durSecret) and (not dur or dur <= 0))
+                local iid = aura.auraInstanceID
+                local iidKey = (iid ~= nil and not F.IsSecret(iid)) and iid or nil
+                local iconKey = (not F.IsSecret(aura.icon)) and aura.icon or nil
+                if durSecret or F.IsSecret(aura.spellId) or F.IsSecret(aura.name)
+                    or F.IsSecret(iid) or F.IsSecret(aura.icon) then
+                    sawSecretAura = true
+                end
+                local isPerm = ClassifyPerm(iidKey, sid, nm, dur, durSecret, iconKey)
                 local item = {
                     index = i,
+                    spellID = sid,
                     name = nm,
-                    auraInstanceID = aura.auraInstanceID,
+                    auraInstanceID = iid,
                     icon = aura.icon,
                     applications = aura.applications,
                     duration = aura.duration,
@@ -677,17 +936,26 @@ local function CollectSplitBuffs(buffMode)
             end
         end
     elseif _G.UnitBuff then
-        for i = 1, 40 do
+        for i = 1, 60 do
             local ok, nm, ic, count, dispelType, dur, expTime, _, _, _, sid = pcall(_G.UnitBuff, "player", i)
-            if not ok or not nm then break end
+            if not ok then
+                scanBlocked = true
+                break
+            end
+            if not nm then break end
             if ic ~= nil then
                 local pSid = F.PlainNumber(sid, nil)
                 local pNm = F.PlainString(nm, nil)
                 local pDur = F.PlainNumber(dur, nil)
                 local durSecret = F.IsSecret(dur)
-                local isPerm = IsPermanentOrAspectSpell(pSid, pNm) or ((not durSecret) and (not pDur or pDur <= 0))
+                local iconKey = (not F.IsSecret(ic)) and ic or nil
+                if durSecret or F.IsSecret(sid) or F.IsSecret(nm) or F.IsSecret(ic) then
+                    sawSecretAura = true
+                end
+                local isPerm = ClassifyPerm(nil, pSid, pNm, pDur, durSecret, iconKey)
                 local item = {
                     index = i,
+                    spellID = pSid,
                     name = pNm,
                     icon = ic,
                     applications = count,
@@ -714,6 +982,38 @@ local function CollectSplitBuffs(buffMode)
             end
         end
     end
+
+    local auraRestricted = scanBlocked or permState.AreAurasRestricted()
+    if not auraRestricted and not sawSecretAura then
+        permState.SaveCleanSnapshot(permOut)
+    elseif scanBlocked or (#permOut == 0 and (sawSecretAura or auraRestricted)) then
+        permOut = permState.BuildFallback()
+    elseif sawSecretAura then
+        -- 战斗中已有其他常驻 BUFF 命中缓存，但新切出的守护/光环因新 instanceID + 保密图标漏掉时，补回本场战斗刚施放的常驻项
+        for _, ce in ipairs(permState.cached) do
+            if ce.castInCombat and ce.icon then
+                local found = false
+                for _, pe in ipairs(permOut) do
+                    local pIc = (pe.icon ~= nil and not F.IsSecret(pe.icon)) and pe.icon or nil
+                    if (ce.spellID and pe.spellID == ce.spellID) or (pIc and pIc == ce.icon) then
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    permOut[#permOut + 1] = {
+                        spellID = ce.spellID,
+                        name = ce.name,
+                        icon = ce.icon,
+                        family = ce.family,
+                        isPerm = true,
+                        fromCache = true,
+                    }
+                end
+            end
+        end
+    end
+
     return permOut, timedOut
 end
 
@@ -724,7 +1024,7 @@ local function CollectUnitDebuffs()
         for i = 1, 40 do
             local ok, aura = pcall(getByIdx, "player", i, "HARMFUL")
             if not ok or not aura then break end
-            if aura.icon ~= nil then
+            if type(aura) == "table" and not F.IsSecret(aura) and aura.icon ~= nil then
                 out[#out + 1] = {
                     index = i,
                     name = F.PlainString(aura.name, nil),
@@ -762,7 +1062,7 @@ local function StyleCooldownTimerFont(cd, slot)
     if not (cd and cd.GetRegions) then return end
     for _, reg in ipairs({ cd:GetRegions() }) do
         if reg and reg.GetObjectType and reg:GetObjectType() == "FontString" then
-            F.Theme.ApplyFont(reg, 9, "OUTLINE", 0.96, 0.98, 1.00, 1)
+            ST.ApplyText(reg, 9, 0.96, 0.98, 1.00, 1)
             reg:ClearAllPoints()
             reg:SetPoint("BOTTOM", slot, "BOTTOM", 0, -2)
             reg:SetJustifyH("CENTER")
@@ -775,6 +1075,9 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
     slot:SetSize(size, size)
     slot._auraIndex = data.index
     slot._auraInstanceID = data.auraInstanceID
+    slot._spellID = data.spellID
+    slot._auraName = data.name
+    slot._fromCache = data.fromCache == true
     slot._isDebuff = isDebuff
     slot._isPerm = isPerm == true
     pcall(slot._icon.SetTexture, slot._icon, data.icon)
@@ -782,9 +1085,9 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
     local cd = slot._cd
     local appliedCD = false
     if not isPerm then
-        if data.auraInstanceID and _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDuration and cd.SetCooldownFromDurationObject then
+        if data.auraInstanceID ~= nil and _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDuration and cd.SetCooldownFromDurationObject then
             local okD, durObj = pcall(_G.C_UnitAuras.GetAuraDuration, "player", data.auraInstanceID)
-            if okD and durObj then
+            if okD and durObj ~= nil then
                 appliedCD = pcall(cd.SetCooldownFromDurationObject, cd, durObj) == true
             end
         end
@@ -812,21 +1115,41 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
     end
 
     local rad = math_min(ST.GetCornerRadius(5), isPerm and 5 or 6)
-    ST.ClearRoundedMask(slot)
-    if rad > 0 then
-        ST.MaskTexture(slot, slot._bg, rad)
-        ST.MaskTexture(slot, slot._icon, rad)
-        if slot._timerShade then ST.MaskTexture(slot, slot._timerShade, rad) end
+    if slot._lastRad ~= rad then
+        slot._lastRad = rad
+        ST.ClearRoundedMask(slot)
+        if rad > 0 then
+            ST.MaskTexture(slot, slot._bg, rad)
+            ST.MaskTexture(slot, slot._icon, rad)
+            if slot._timerShade then ST.MaskTexture(slot, slot._timerShade, rad) end
+        end
     end
+    local br, bg, bb, ba
     if isDebuff then
         local dc = (data.dispelName and DEBUFF_TYPE_COLORS[data.dispelName]) or { 0.94, 0.28, 0.32 }
-        ST.ApplyRoundedBorder(slot, math_max(rad, 4), dc[1], dc[2], dc[3], 0.96, 5)
+        br, bg, bb, ba = dc[1], dc[2], dc[3], 0.96
     elseif isPerm then
         local r1, g1, b1 = ST.GetClassGradient()
-        ST.ApplyRoundedBorder(slot, math_max(rad, 4), r1 * 0.45 + 0.24, g1 * 0.45 + 0.26, b1 * 0.45 + 0.30, 0.86, 5)
+        br, bg, bb, ba = r1 * 0.45 + 0.24, g1 * 0.45 + 0.26, b1 * 0.45 + 0.30, 0.86
     else
         local _, _, _, r2, g2, b2 = ST.GetClassGradient()
-        ST.ApplyRoundedBorder(slot, math_max(rad, 4), r2 * 0.72 + 0.10, g2 * 0.72 + 0.10, b2 * 0.72 + 0.10, 0.92, 5)
+        br, bg, bb, ba = r2 * 0.72 + 0.10, g2 * 0.72 + 0.10, b2 * 0.72 + 0.10, 0.92
+    end
+    if rad > 0 then
+        if slot._fuiBg then slot._fuiBg:Hide() end
+        if slot._fuiBorders then
+            for _, ln in ipairs(slot._fuiBorders) do ln:Hide() end
+        end
+        ST.ApplyRoundedBorder(slot, rad, br, bg, bb, ba, 5)
+    else
+        ST.ApplyRoundedBorder(slot, 0)
+        F.Theme.StylePanel(slot, 0, ba)
+        if slot._fuiBorders then
+            for _, ln in ipairs(slot._fuiBorders) do
+                ln:SetColorTexture(br, bg, bb, ba)
+                ln:Show()
+            end
+        end
     end
     slot:Show()
 end
@@ -846,10 +1169,10 @@ local function SetAuraBtnMuted(btn, mute)
         auraAlphaGuarded[btn] = true
         if btn.SetAlpha then
             _G.hooksecurefunc(btn, "SetAlpha", function(self, a)
-                if not auraAlphaBusy and dedupedAuraBtns[self] and a ~= 0 then
-                    auraAlphaBusy = true
+                if not trState.alphaBusy and dedupedAuraBtns[self] and F.PlainNumber(a, 1) ~= 0 then
+                    trState.alphaBusy = true
                     pcall(self.SetAlpha, self, 0)
-                    auraAlphaBusy = false
+                    trState.alphaBusy = false
                 end
             end)
         end
@@ -859,14 +1182,14 @@ local function SetAuraBtnMuted(btn, mute)
             dedupedAuraBtns[btn] = true
             dedupedAuraBtnList[#dedupedAuraBtnList + 1] = btn
         end
-        auraAlphaBusy = true
+        trState.alphaBusy = true
         pcall(btn.SetAlpha, btn, 0)
-        auraAlphaBusy = false
+        trState.alphaBusy = false
     elseif dedupedAuraBtns[btn] then
         dedupedAuraBtns[btn] = nil
-        auraAlphaBusy = true
+        trState.alphaBusy = true
         pcall(btn.SetAlpha, btn, 1)
-        auraAlphaBusy = false
+        trState.alphaBusy = false
     end
 end
 
@@ -890,9 +1213,19 @@ local function IsBuffBtnShownOnWing(btn)
     -- 回退：仅对带有倒计时文本的限时增益做图标匹配，绝不误伤常驻守护/光环
     local durFS = btn.Duration or btn.duration
     local hasDurText = false
-    if durFS and durFS.IsShown and durFS:IsShown() and durFS.GetText then
-        local dt = F.PlainString(durFS:GetText(), "") or ""
-        if dt ~= "" then hasDurText = true end
+    if durFS and durFS.IsShown and durFS.GetText then
+        local okS, sh = pcall(durFS.IsShown, durFS)
+        if okS and not F.IsSecret(sh) and sh then
+            local okT, rawT = pcall(durFS.GetText, durFS)
+            if okT and type(rawT) ~= "nil" then
+                if F.IsSecret(rawT) then
+                    hasDurText = true
+                else
+                    local dt = F.PlainString(rawT, "") or ""
+                    if dt ~= "" then hasDurText = true end
+                end
+            end
+        end
     end
     if hasDurText then
         local icObj = btn.Icon or btn.icon
@@ -908,17 +1241,83 @@ end
 
 local SyncTopRightAuraDedupe -- 前向声明
 
+-- 动态测量小地图左上外侧已占用的指示器列宽度（EUI「追踪 / 日历 / 邮件」等贴在小地图左缘，宽约 25px），
+-- 把「B」快捷开关摆在指示器列左侧 8px 之外，绝不遮挡「追踪」按钮
+local function PositionTopRightMicroToggle(btn)
+    if not btn then return end
+    local mm = _G.Minimap
+    btn:ClearAllPoints()
+    if not mm then
+        btn:SetPoint("TOPRIGHT", _G.UIParent, "TOPRIGHT", -240, -8)
+        return
+    end
+    local minOffset = 6
+    local edb = _G._EMM_DB
+    local mp = edb and edb.profile and edb.profile.minimap
+    if type(mp) == "table" then
+        local bsz = F.PlainNumber(mp.interactableBtnSize, 25) or 25
+        local dist = F.PlainNumber(mp.elementRowDistance, 0) or 0
+        -- 仅当 EUI 指示器列可能位于小地图左侧时预留保底宽度（默认 left_top / left_bottom 等）
+        local pos = mp.elementRowPos
+        if pos == nil or (type(pos) == "string" and pos:find("left", 1, true)) then
+            minOffset = math_max(minOffset, bsz + math_max(0, dist) + 8)
+        end
+    end
+
+    local mmL = mm.GetLeft and F.PlainNumber(mm:GetLeft(), nil)
+    local mmT = mm.GetTop and F.PlainNumber(mm:GetTop(), nil)
+    local mmS = mm.GetEffectiveScale and F.PlainNumber(mm:GetEffectiveScale(), 1) or 1
+    if mmL and mmT and mmS > 0 and mm.GetChildren then
+        local leftMost = mmL
+        for _, ch in ipairs({ mm:GetChildren() }) do
+            if ch and ch ~= btn and not (ch.IsForbidden and ch:IsForbidden())
+                and ch.IsShown and ch:IsShown() and ch.GetLeft and ch.GetRight and ch.GetTop then
+                local l = F.PlainNumber(ch:GetLeft(), nil)
+                local r = F.PlainNumber(ch:GetRight(), nil)
+                local t = F.PlainNumber(ch:GetTop(), nil)
+                local cs = ch.GetEffectiveScale and F.PlainNumber(ch:GetEffectiveScale(), mmS) or mmS
+                if l and r and t and cs > 0 then
+                    local k = cs / mmS
+                    l, r, t = l * k, r * k, t * k
+                    if r <= mmL + 8 and l >= mmL - 96 and l < leftMost and t >= mmT - 48 then
+                        leftMost = l
+                    end
+                end
+            end
+        end
+        local protruded = mmL - leftMost
+        if protruded > 1 then
+            minOffset = math_max(minOffset, math_floor(protruded + 0.5) + 8)
+        end
+    end
+
+    btn:SetPoint("TOPRIGHT", mm, "TOPLEFT", -minOffset, -2)
+end
+
+local function HookMinimapApplyForMicroToggle()
+    if trState.minimapHooked then return end
+    if type(_G._EMM_ApplyMinimap) == "function" then
+        trState.minimapHooked = true
+        _G.hooksecurefunc("_EMM_ApplyMinimap", function()
+            if mod._active and trState.microBtn and trState.microBtn:IsShown() then
+                C_Timer.After(0, function()
+                    if mod._active and trState.microBtn and trState.microBtn:IsShown() then
+                        PositionTopRightMicroToggle(trState.microBtn)
+                    end
+                end)
+            end
+        end)
+    end
+end
+
 local function EnsureTopRightMicroToggle()
-    if topRightMicroBtn then return topRightMicroBtn end
+    if trState.microBtn then return trState.microBtn end
     local btn = CreateFrame("Button", "kkowoUI_TopRightAuraToggle", _G.UIParent)
     btn:SetSize(22, 20)
     btn:SetFrameStrata("LOW")
     btn:SetFrameLevel(16)
-    if _G.Minimap then
-        btn:SetPoint("TOPRIGHT", _G.Minimap, "TOPLEFT", -6, -2)
-    else
-        btn:SetPoint("TOPRIGHT", _G.UIParent, "TOPRIGHT", -210, -8)
-    end
+    PositionTopRightMicroToggle(btn)
+    HookMinimapApplyForMicroToggle()
 
     local bg = btn:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
@@ -927,83 +1326,193 @@ local function EnsureTopRightMicroToggle()
     btn._bg = bg
 
     local fs = btn:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(fs, 10, "OUTLINE", 0.88, 0.94, 0.98, 1)
+    ST.ApplyText(fs, 10, 0.88, 0.94, 0.98, 1)
     fs:SetPoint("CENTER", btn, "CENTER", 0, 0)
     fs:SetText("B")
     btn._label = fs
 
     ST.MaskTexture(btn, bg, 5)
-    ST.ApplyRoundedBorder(btn, 5, 0.32, 0.84, 0.42, 0.65, 4)
+    ST.ApplyRoundedBorder(btn, 5, ST.COLORS.info[1], ST.COLORS.info[2], ST.COLORS.info[3], 0.65, 4)
 
     btn:SetAlpha(0.24)
     btn:SetScript("OnEnter", function(self)
         self:SetAlpha(0.96)
         if _G.GameTooltip then
             _G.GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT", 0, -4)
-            _G.GameTooltip:AddLine("右上角暴雪原生增益栏（方案 A 快捷开关）", 0.32, 0.84, 0.42)
-            if topRightTempExpanded then
-                _G.GameTooltip:AddLine("当前：已临时展开原生 Buff/Debuff（可战中右键取消）", 0.94, 0.96, 0.99)
+            _G.GameTooltip:AddLine("右上角暴雪原生增益栏", ST.COLORS.info[1], ST.COLORS.info[2], ST.COLORS.info[3])
+            if trState.tempExpanded then
+                _G.GameTooltip:AddLine("当前：已临时展开原生 Buff/Debuff", 0.94, 0.96, 0.99)
                 _G.GameTooltip:AddLine("点击再次收起，保持右上角清爽", 0.72, 0.78, 0.85)
             else
                 _G.GameTooltip:AddLine("当前：已全部集成到双翼上下，右上角清爽收起", 0.94, 0.96, 0.99)
-                _G.GameTooltip:AddLine("点击临时展开原生栏（团本战中右键点掉 Buff 用）", 0.72, 0.78, 0.85)
+                _G.GameTooltip:AddLine("点击临时展开原生栏", 0.72, 0.78, 0.85)
             end
             _G.GameTooltip:Show()
         end
     end)
     btn:SetScript("OnLeave", function(self)
-        self:SetAlpha(topRightTempExpanded and 0.82 or 0.24)
+        self:SetAlpha(trState.tempExpanded and 0.82 or 0.24)
         if _G.GameTooltip then _G.GameTooltip:Hide() end
     end)
     btn:SetScript("OnClick", function()
-        topRightTempExpanded = not topRightTempExpanded
+        trState.tempExpanded = not trState.tempExpanded
         SyncTopRightAuraDedupe()
     end)
     btn:Hide()
-    topRightMicroBtn = btn
+    trState.microBtn = btn
     return btn
 end
 
-SyncTopRightAuraDedupe = function()
+-- 透明度为 0 的框体仍会接收鼠标：收起/去重后的暴雪原生光环按钮必须同时关掉鼠标，
+-- 否则右上角会残留「看不见却能悬停出提示、右键还能取消增益」的隐形按钮。
+-- 光环按钮在 12.x 可能受保护，统一放到脱战窗口里改（战斗中新出现的按钮脱战后补齐）。
+local auraMouseOff = setmetatable({}, { __mode = "k" })
+
+local function ForEachBlizzAuraButton(root, fn)
+    if not IsSafeBlizzFrame(root) then return end
+    if type(root.auraFrames) == "table" then
+        for _, btn in ipairs(root.auraFrames) do
+            if IsSafeBlizzFrame(btn) then fn(btn) end
+        end
+    end
+    local c = root.AuraContainer
+    if c and c.GetChildren then
+        for _, btn in ipairs({ c:GetChildren() }) do
+            if IsSafeBlizzFrame(btn) and (btn.Icon or btn.icon) then fn(btn) end
+        end
+    end
+end
+
+local function SetBlizzAuraBtnMouse(btn, off)
+    if not (btn.EnableMouse and btn.IsMouseEnabled) then return end
+    if off then
+        if not auraMouseOff[btn] then
+            local okM, en = pcall(btn.IsMouseEnabled, btn)
+            if okM and en == true then
+                auraMouseOff[btn] = true
+                pcall(btn.EnableMouse, btn, false)
+            end
+        end
+    elseif auraMouseOff[btn] then
+        auraMouseOff[btn] = nil
+        pcall(btn.EnableMouse, btn, true)
+    end
+end
+
+local function SyncTopRightAuraMouse()
+    ForEachBlizzAuraButton(_G.BuffFrame, function(btn)
+        SetBlizzAuraBtnMouse(btn, trState.buffFullMuted or dedupedAuraBtns[btn] == true)
+    end)
+    ForEachBlizzAuraButton(_G.DebuffFrame, function(btn)
+        SetBlizzAuraBtnMouse(btn, trState.debuffMuted)
+    end)
+end
+
+local function CanToggleBlizzFrameVisibility(f)
+    if not (f and f.Hide and f.Show) then return false end
+    if InCombatLockdown and InCombatLockdown() and f.IsProtected then
+        local okP, prot = pcall(f.IsProtected, f)
+        if okP and prot then return false end
+    end
+    return true
+end
+
+local function SyncTopRightFrameVisibility()
+    local bf = _G.BuffFrame
+    if IsSafeBlizzFrame(bf) and CanToggleBlizzFrameVisibility(bf) then
+        if trState.buffFullMuted then
+            if bf:IsShown() then trState.buffHiddenByUs = true end
+            trState.showBusy = true
+            pcall(bf.Hide, bf)
+            trState.showBusy = false
+        elseif trState.buffHiddenByUs then
+            trState.buffHiddenByUs = false
+            trState.showBusy = true
+            pcall(bf.Show, bf)
+            trState.showBusy = false
+        end
+    end
+    local df = _G.DebuffFrame
+    if IsSafeBlizzFrame(df) and CanToggleBlizzFrameVisibility(df) then
+        if trState.debuffMuted then
+            if df:IsShown() then trState.debuffHiddenByUs = true end
+            trState.showBusy = true
+            pcall(df.Hide, df)
+            trState.showBusy = false
+        elseif trState.debuffHiddenByUs then
+            trState.debuffHiddenByUs = false
+            trState.showBusy = true
+            pcall(df.Show, df)
+            trState.showBusy = false
+        end
+    end
+end
+
+SyncTopRightAuraDedupe = function(repositionMicro)
     local db = mod:GetDB()
     local hudOn = mod._active == true and db.showCoreHUD ~= false
-    local wantFullHideOptionA = hudOn and (db.hideTopRightBlizzAuras ~= false) and (not topRightTempExpanded)
-    local dedupeOn = hudOn and (not wantFullHideOptionA) and (not topRightTempExpanded) and (db.dedupeTopRightAuras ~= false)
-    local wantBuffDedupe = dedupeOn and db.showCombatBuffs ~= false
-    local wantDebuffDedupe = wantFullHideOptionA or (dedupeOn and db.showCombatDebuffs ~= false)
+    -- 只有双翼确实在显示对应的增益 / 减益时，才收起或去重右上角原生栏；
+    -- 否则关掉双翼的减益排后，玩家会在屏幕上任何地方都看不到减益。
+    local wingShowsBuffs = db.showCombatBuffs ~= false or db.showPermanentBuffs ~= false
+    local wingShowsDebuffs = db.showCombatDebuffs ~= false
+    local hideTopRight = hudOn and (db.hideTopRightBlizzAuras ~= false)
+    local wantFullHideOptionA = hideTopRight and (not trState.tempExpanded) and wingShowsBuffs
+    local wantDebuffFullHide = hideTopRight and (not trState.tempExpanded) and wingShowsDebuffs
+    local dedupeOn = hudOn and (not trState.tempExpanded) and (db.dedupeTopRightAuras ~= false)
+    local wantBuffDedupe = dedupeOn and (not wantFullHideOptionA) and wingShowsBuffs
+    local wantDebuffDedupe = wantDebuffFullHide or (dedupeOn and wingShowsDebuffs)
 
     local bf = _G.BuffFrame
     if IsSafeBlizzFrame(bf) then
-        if not buffFrameFullGuarded and bf.SetAlpha then
-            buffFrameFullGuarded = true
+        if not trState.buffFullGuarded and bf.SetAlpha then
+            trState.buffFullGuarded = true
             _G.hooksecurefunc(bf, "SetAlpha", function(self, a)
-                if not auraAlphaBusy and buffFrameFullMuted and a ~= 0 then
-                    auraAlphaBusy = true
+                if not trState.alphaBusy and trState.buffFullMuted and F.PlainNumber(a, 1) ~= 0 then
+                    trState.alphaBusy = true
                     pcall(self.SetAlpha, self, 0)
-                    auraAlphaBusy = false
+                    trState.alphaBusy = false
+                end
+            end)
+        end
+        if not trState.buffShowGuarded and bf.Show then
+            trState.buffShowGuarded = true
+            _G.hooksecurefunc(bf, "Show", function(self)
+                if not trState.showBusy and trState.buffFullMuted and CanToggleBlizzFrameVisibility(self) then
+                    trState.showBusy = true
+                    pcall(self.Hide, self)
+                    trState.showBusy = false
                 end
             end)
         end
 
         if wantFullHideOptionA then
-            -- 方案 A：彻底收起右上角暴雪原生 BuffFrame（战斗安全 0 污染，停用或点小按钮瞬间复原）
-            buffFrameFullMuted = true
-            auraAlphaBusy = true
+            -- 方案 A：彻底收起右上角暴雪原生 BuffFrame（Hide + Show 钩子 + SetAlpha(0) 双保险，
+            -- 解决 12.1 仅靠 SetAlpha(0) 时 BuffFrame/折叠箭头仍露出的问题，停用或点 B 瞬间复原）
+            trState.buffFullMuted = true
+            trState.alphaBusy = true
             pcall(bf.SetAlpha, bf, 0)
-            auraAlphaBusy = false
+            if bf.CollapseAndExpandButton and bf.CollapseAndExpandButton.SetAlpha then
+                pcall(bf.CollapseAndExpandButton.SetAlpha, bf.CollapseAndExpandButton, 0)
+            end
+            trState.alphaBusy = false
             for _, btn in ipairs(dedupedAuraBtnList) do
                 SetAuraBtnMuted(btn, false)
             end
         else
-            if buffFrameFullMuted then
-                buffFrameFullMuted = false
-                auraAlphaBusy = true
+            if trState.buffFullMuted or trState.buffHiddenByUs then
+                trState.buffFullMuted = false
+                trState.alphaBusy = true
                 pcall(bf.SetAlpha, bf, 1)
-                auraAlphaBusy = false
+                if bf.CollapseAndExpandButton and bf.CollapseAndExpandButton.SetAlpha then
+                    pcall(bf.CollapseAndExpandButton.SetAlpha, bf.CollapseAndExpandButton, 1)
+                end
+                trState.alphaBusy = false
             end
-            if wantBuffDedupe and not buffFrameDedupeHooked then
-                buffFrameDedupeHooked = true
-                local reSync = F.Debounce(0.02, SyncTopRightAuraDedupe)
+            if wantBuffDedupe and not trState.buffDedupeHooked then
+                trState.buffDedupeHooked = true
+                local reSync = F.Debounce(0.02, function()
+                    if mod._active then SyncTopRightAuraDedupe() end
+                end)
                 if type(bf.UpdateAuras) == "function" then
                     _G.hooksecurefunc(bf, "UpdateAuras", reSync)
                 end
@@ -1035,47 +1544,67 @@ SyncTopRightAuraDedupe = function()
 
     local df = _G.DebuffFrame
     if IsSafeBlizzFrame(df) then
-        if not debuffFrameGuarded and df.SetAlpha then
-            debuffFrameGuarded = true
+        if not trState.debuffGuarded and df.SetAlpha then
+            trState.debuffGuarded = true
             _G.hooksecurefunc(df, "SetAlpha", function(self, a)
-                if not auraAlphaBusy and debuffFrameMuted and a ~= 0 then
-                    auraAlphaBusy = true
+                if not trState.alphaBusy and trState.debuffMuted and F.PlainNumber(a, 1) ~= 0 then
+                    trState.alphaBusy = true
                     pcall(self.SetAlpha, self, 0)
-                    auraAlphaBusy = false
+                    trState.alphaBusy = false
+                end
+            end)
+        end
+        if not trState.debuffShowGuarded and df.Show then
+            trState.debuffShowGuarded = true
+            _G.hooksecurefunc(df, "Show", function(self)
+                if not trState.showBusy and trState.debuffMuted and CanToggleBlizzFrameVisibility(self) then
+                    trState.showBusy = true
+                    pcall(self.Hide, self)
+                    trState.showBusy = false
                 end
             end)
         end
         if wantDebuffDedupe then
-            debuffFrameMuted = true
-            auraAlphaBusy = true
+            trState.debuffMuted = true
+            trState.alphaBusy = true
             pcall(df.SetAlpha, df, 0)
-            auraAlphaBusy = false
-        elseif debuffFrameMuted then
-            debuffFrameMuted = false
-            auraAlphaBusy = true
+            trState.alphaBusy = false
+        elseif trState.debuffMuted or trState.debuffHiddenByUs then
+            trState.debuffMuted = false
+            trState.alphaBusy = true
             pcall(df.SetAlpha, df, 1)
-            auraAlphaBusy = false
+            trState.alphaBusy = false
         end
     end
 
+    -- 战斗中延迟执行受保护的 BuffFrame/DebuffFrame Show/Hide，确保停用或点 [B] 脱战后必恢复，绝不卡死隐藏
+    F.CombatDefer("kkowoUI_CoreHUD_TopRightVis", SyncTopRightFrameVisibility)
+    F.CombatDefer("kkowoUI_CoreHUD_TopRightAuraMouse", SyncTopRightAuraMouse)
+
     -- 右上角极简悬停微开关（方案 A 激活且未关闭微开关时显示；默认 24% 低调隐匿，悬停清晰）
-    local showMicro = hudOn and (db.hideTopRightBlizzAuras ~= false) and (db.showTopRightMicroToggle ~= false)
+    local showMicro = hideTopRight and (wingShowsBuffs or wingShowsDebuffs) and (db.showTopRightMicroToggle ~= false)
     if showMicro then
         local mb = EnsureTopRightMicroToggle()
-        if topRightTempExpanded then
+        HookMinimapApplyForMicroToggle()
+        local wasShown = mb:IsShown()
+        if repositionMicro or not wasShown then
+            PositionTopRightMicroToggle(mb)
+        end
+        local over = mb.IsMouseOver and mb:IsMouseOver()
+        if trState.tempExpanded then
             mb._bg:SetVertexColor(0.10, 0.24, 0.14, 0.86)
-            ST.ApplyRoundedBorder(mb, 5, 0.32, 0.84, 0.42, 0.92, 4)
+            ST.ApplyRoundedBorder(mb, 5, ST.COLORS.info[1], ST.COLORS.info[2], ST.COLORS.info[3], 0.92, 4)
             mb._label:SetTextColor(0.62, 1.00, 0.72, 1)
-            mb:SetAlpha(0.82)
+            if not over then mb:SetAlpha(0.82) end
         else
             mb._bg:SetVertexColor(0.06, 0.08, 0.11, 0.72)
             ST.ApplyRoundedBorder(mb, 5, 0.38, 0.44, 0.52, 0.55, 4)
             mb._label:SetTextColor(0.84, 0.90, 0.96, 1)
-            mb:SetAlpha(0.24)
+            if not over then mb:SetAlpha(0.24) end
         end
         mb:Show()
-    elseif topRightMicroBtn then
-        topRightMicroBtn:Hide()
+    elseif trState.microBtn then
+        trState.microBtn:Hide()
     end
 end
 
@@ -1132,13 +1661,33 @@ local function LayoutAuraRowWithOverflow(slots, overflowBadge, list, maxSlots, s
             overflowBadge:SetPoint(anchorPoint, anchorTarget, relPoint, startX + showSlots * (sz + gap), yOff)
             overflowBadge._text:SetFormattedText("+%d", #hiddenList)
             local rad = math_min(ST.GetCornerRadius(5), isPerm and 5 or 6)
-            ST.ClearRoundedMask(overflowBadge)
-            if rad > 0 then ST.MaskTexture(overflowBadge, overflowBadge._bg, rad) end
+            if overflowBadge._lastRad ~= rad then
+                overflowBadge._lastRad = rad
+                ST.ClearRoundedMask(overflowBadge)
+                if rad > 0 then ST.MaskTexture(overflowBadge, overflowBadge._bg, rad) end
+            end
+            local obr, obg, obb, oba
             if isDebuff then
-                ST.ApplyRoundedBorder(overflowBadge, math_max(rad, 4), 0.94, 0.30, 0.34, 0.92, 5)
+                obr, obg, obb, oba = 0.94, 0.30, 0.34, 0.92
             else
                 local _, _, _, r2, g2, b2 = ST.GetClassGradient()
-                ST.ApplyRoundedBorder(overflowBadge, math_max(rad, 4), r2 * 0.65 + 0.14, g2 * 0.65 + 0.14, b2 * 0.65 + 0.14, 0.88, 5)
+                obr, obg, obb, oba = r2 * 0.65 + 0.14, g2 * 0.65 + 0.14, b2 * 0.65 + 0.14, 0.88
+            end
+            if rad > 0 then
+                if overflowBadge._fuiBg then overflowBadge._fuiBg:Hide() end
+                if overflowBadge._fuiBorders then
+                    for _, ln in ipairs(overflowBadge._fuiBorders) do ln:Hide() end
+                end
+                ST.ApplyRoundedBorder(overflowBadge, rad, obr, obg, obb, oba, 5)
+            else
+                ST.ApplyRoundedBorder(overflowBadge, 0)
+                F.Theme.StylePanel(overflowBadge, 0, oba)
+                if overflowBadge._fuiBorders then
+                    for _, ln in ipairs(overflowBadge._fuiBorders) do
+                        ln:SetColorTexture(obr, obg, obb, oba)
+                        ln:Show()
+                    end
+                end
             end
             overflowBadge:Show()
         else
@@ -1306,18 +1855,20 @@ local function UpdateUpperRightClassPower()
     local db = mod:GetDB()
     local show = db.showUpperClassPower ~= false
     local cls = F.GetPlayerClass()
-    local hasCombo = (cls == "ROGUE" or cls == "DRUID")
+    local isCatDruid = (cls == "DRUID") and (_G.GetShapeshiftFormID and F.PlainNumber(_G.GetShapeshiftFormID(), 0) == 1)
+    local hasCombo = (cls == "ROGUE" or isCatDruid)
     local maxPips = 0
     local curPips = 0
 
-    if hasCombo and _G.UnitPowerMax then
+    if hasCombo then
         local pt = (_G.Enum and _G.Enum.PowerType and _G.Enum.PowerType.ComboPoints) or 4
-        maxPips = F.PlainNumber(_G.UnitPowerMax("player", pt), 5) or 5
-        if maxPips > 0 then
-            curPips = F.PlainNumber(_G.UnitPower("player", pt), 0) or 0
-        elseif _G.GetComboPoints then
-            maxPips = 5
+        maxPips = (_G.UnitPowerMax and F.PlainNumber(_G.UnitPowerMax("player", pt), 5)) or 5
+        if maxPips <= 0 then maxPips = 5 end
+        if _G.GetComboPoints then
+            -- 经典/无限服连击点绑定在当前目标上，优先走 GetComboPoints("player", "target")
             curPips = F.PlainNumber(_G.GetComboPoints("player", "target"), 0) or 0
+        elseif _G.UnitPower then
+            curPips = F.PlainNumber(_G.UnitPower("player", pt), 0) or 0
         end
     end
 
@@ -1351,8 +1902,12 @@ local function UpdateUpperRightClassPower()
     else
         pipsHolder:Hide()
         -- 非连击点职业：双持副手有挥砍速度时自动切换为副手极细挥砍条，否则展示对称暗色空槽
-        local _, ohSpeed = _G.UnitAttackSpeed and _G.UnitAttackSpeed("player")
-        ohSpeed = F.PlainNumber(ohSpeed, nil)
+        -- 注意：`A and f()` 只会保留 f 的第一个返回值，副手速度必须单独多值赋值
+        local ohSpeed = nil
+        if _G.UnitAttackSpeed then
+            local _, oh = _G.UnitAttackSpeed("player")
+            ohSpeed = F.PlainNumber(oh, nil)
+        end
         if show and ohWing and ohSpeed and ohSpeed > 0.1 then
             ohWing._isOHMode = true
             ohWing:Show()
@@ -1391,7 +1946,6 @@ local function BuildCoreHUD()
     hpWing._trail = M.AttachHealthTrail(hpWing._bar, {
         delay = db.trailDelay or 0.16,
         reverse = true,
-        radius = GetBarRadius(barH),
         color = ST.COLORS.trail,
     })
     hpWing._spark = M.AttachEdgeSpark(hpWing._bar, {
@@ -1406,7 +1960,6 @@ local function BuildCoreHUD()
     ppWing._trail = M.AttachHealthTrail(ppWing._bar, {
         delay = 0.18,
         reverse = false,
-        radius = GetBarRadius(barH),
         color = { 0.14, 0.24, 0.42, 0.75 },
     })
     ppWing._spark = M.AttachEdgeSpark(ppWing._bar, {
@@ -1474,7 +2027,7 @@ local function BuildCoreHUD()
     f._textLayer = textLayer
 
     local hpText = textLayer:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(hpText, 11, "OUTLINE", 0.98, 0.99, 1.00, 1)
+    ST.ApplyText(hpText, 11, 0.98, 0.99, 1.00, 1)
     hpText:SetShadowOffset(1, -1)
     hpText:SetPoint("LEFT", hpWing, "LEFT", 8, 0)
     hpText:SetJustifyH("LEFT")
@@ -1482,7 +2035,7 @@ local function BuildCoreHUD()
     f._hpText = hpText
 
     local ppText = textLayer:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(ppText, 11, "OUTLINE", 0.96, 0.98, 1.00, 1)
+    ST.ApplyText(ppText, 11, 0.96, 0.98, 1.00, 1)
     ppText:SetShadowOffset(1, -1)
     ppText:SetPoint("RIGHT", ppWing, "RIGHT", -8, 0)
     ppText:SetJustifyH("RIGHT")
@@ -1587,13 +2140,35 @@ local function BuildCoreHUD()
     orb._ring = orbRing
 
     -- 右上角小交叉双剑战斗标识
-    local combatIcon = orb:CreateTexture(nil, "OVERLAY", nil, 7)
-    combatIcon:SetSize(13, 13)
-    combatIcon:SetPoint("TOPRIGHT", orb, "TOPRIGHT", 5, 5)
-    combatIcon:SetTexture(F.MEDIA .. "CombatAlert\\Sword.tga")
-    combatIcon:SetVertexColor(0.96, 0.88, 0.72, 0.95)
-    combatIcon:Hide()
-    orb._combatIcon = combatIcon
+    -- 战斗徽章：与技能球同风格的小圆章（暗底 + 战斗红细环 + 柔光呼吸 + 居中小剑），进战弹入、脱战淡出
+    local badge = CreateFrame("Frame", nil, orb)
+    badge:SetSize(16, 16)
+    badge:SetPoint("CENTER", orb, "TOPRIGHT", -3, -3)
+    badge:SetFrameLevel(orb:GetFrameLevel() + 12)
+    badge:EnableMouse(false)
+    local cIn = ST.COLORS.combatIn
+    local bGlow = badge:CreateTexture(nil, "BACKGROUND", nil, -4)
+    bGlow:SetSize(34, 34)
+    bGlow:SetPoint("CENTER", badge, "CENTER", 0, 0)
+    bGlow:SetTexture(ST.TEX.SOFT_GLOW)
+    bGlow:SetBlendMode("ADD")
+    bGlow:SetVertexColor(cIn[1], cIn[2], cIn[3], 1)
+    badge._glowAG = M.EnsurePulseAlpha(bGlow, 0.18, 0.55, 1.6)
+    local bDisc = badge:CreateTexture(nil, "ARTWORK", nil, 1)
+    bDisc:SetAllPoints(badge)
+    bDisc:SetTexture(ST.TEX.CIRCLE_MASK)
+    bDisc:SetVertexColor(0.07, 0.05, 0.06, 0.96)
+    local bRing = badge:CreateTexture(nil, "ARTWORK", nil, 2)
+    bRing:SetAllPoints(badge)
+    bRing:SetTexture(ST.TEX.CIRCLE_RING)
+    bRing:SetVertexColor(cIn[1], cIn[2], cIn[3], 0.95)
+    local bIcon = badge:CreateTexture(nil, "OVERLAY", nil, 3)
+    bIcon:SetSize(9, 9)
+    bIcon:SetPoint("CENTER", badge, "CENTER", 0, 0)
+    bIcon:SetTexture(F.MEDIA .. "CombatAlert\\Sword.tga")
+    bIcon:SetVertexColor(1.00, 0.90, 0.86, 1)
+    badge:Hide()
+    orb._combatIcon = badge
     f._orb = orb
 
     -- 7) 方案 A：圆球正上方常驻 BUFF 池 + 正下方增益 / 减益双行池（均含 +N 溢出折叠与脱战右键取消 Buff）
@@ -1636,8 +2211,12 @@ local function BuildCoreHUD()
         sCD:Hide()
         slot._cd = sCD
 
-        -- 堆叠层数放在右上角，与底部计时完全分离不重叠
-        local stFS = slot:CreateFontString(nil, "OVERLAY")
+        -- 堆叠层数放在冷却层之上的独立子框体右上角，确保不被冷却扇形遮住，且与底部计时分离
+        local stHost = CreateFrame("Frame", nil, slot)
+        stHost:SetAllPoints(slot)
+        stHost:SetFrameLevel(slot:GetFrameLevel() + 7)
+        stHost:EnableMouse(false)
+        local stFS = stHost:CreateFontString(nil, "OVERLAY")
         F.Theme.ApplyFont(stFS, 9, "OUTLINE", 1, 0.92, 0.56, 1)
         stFS:SetPoint("TOPRIGHT", slot, "TOPRIGHT", -1, -1)
         stFS:Hide()
@@ -1646,16 +2225,27 @@ local function BuildCoreHUD()
         slot:SetScript("OnEnter", function(self)
             if not _G.GameTooltip then return end
             _G.GameTooltip:SetOwner(self, self._isPerm and "ANCHOR_TOP" or "ANCHOR_BOTTOM", 0, self._isPerm and 4 or -4)
-            if self._auraInstanceID then
-                if self._isDebuff and _G.GameTooltip.SetUnitDebuffByAuraInstanceID then
-                    pcall(_G.GameTooltip.SetUnitDebuffByAuraInstanceID, _G.GameTooltip, "player", self._auraInstanceID)
-                elseif (not self._isDebuff) and _G.GameTooltip.SetUnitBuffByAuraInstanceID then
-                    pcall(_G.GameTooltip.SetUnitBuffByAuraInstanceID, _G.GameTooltip, "player", self._auraInstanceID)
+            local shownTip = false
+            if not self._fromCache then
+                if self._auraInstanceID ~= nil then
+                    if self._isDebuff and _G.GameTooltip.SetUnitDebuffByAuraInstanceID then
+                        shownTip = pcall(_G.GameTooltip.SetUnitDebuffByAuraInstanceID, _G.GameTooltip, "player", self._auraInstanceID)
+                    elseif (not self._isDebuff) and _G.GameTooltip.SetUnitBuffByAuraInstanceID then
+                        shownTip = pcall(_G.GameTooltip.SetUnitBuffByAuraInstanceID, _G.GameTooltip, "player", self._auraInstanceID)
+                    elseif self._auraIndex and _G.GameTooltip.SetUnitAura then
+                        shownTip = pcall(_G.GameTooltip.SetUnitAura, _G.GameTooltip, "player", self._auraIndex, self._isDebuff and "HARMFUL" or "HELPFUL")
+                    end
                 elseif self._auraIndex and _G.GameTooltip.SetUnitAura then
-                    pcall(_G.GameTooltip.SetUnitAura, _G.GameTooltip, "player", self._auraIndex, self._isDebuff and "HARMFUL" or "HELPFUL")
+                    shownTip = pcall(_G.GameTooltip.SetUnitAura, _G.GameTooltip, "player", self._auraIndex, self._isDebuff and "HARMFUL" or "HELPFUL")
                 end
-            elseif self._auraIndex and _G.GameTooltip.SetUnitAura then
-                pcall(_G.GameTooltip.SetUnitAura, _G.GameTooltip, "player", self._auraIndex, self._isDebuff and "HARMFUL" or "HELPFUL")
+            end
+            local tipLines = _G.GameTooltip.NumLines and F.PlainNumber(_G.GameTooltip:NumLines(), 0) or 0
+            if (not shownTip or tipLines == 0) then
+                if self._spellID and _G.GameTooltip.SetSpellByID then
+                    pcall(_G.GameTooltip.SetSpellByID, _G.GameTooltip, self._spellID)
+                elseif self._auraName then
+                    _G.GameTooltip:AddLine(self._auraName, 1, 1, 1)
+                end
             end
             if not self._isDebuff and not (InCombatLockdown and InCombatLockdown()) then
                 _G.GameTooltip:AddLine("右键点击取消该增益（脱战可用）", 0.52, 0.88, 0.62)
@@ -1689,7 +2279,7 @@ local function BuildCoreHUD()
         ov._bg = oBg
 
         local oTxt = ov:CreateFontString(nil, "OVERLAY")
-        F.Theme.ApplyFont(oTxt, 10, "OUTLINE", 0.94, 0.97, 1.00, 1)
+        ST.ApplyText(oTxt, 10, 0.94, 0.97, 1.00, 1)
         oTxt:SetPoint("CENTER", ov, "CENTER", 0, 0)
         ov._text = oTxt
 
@@ -1755,8 +2345,385 @@ local function BuildCoreHUD()
 end
 
 ----------------------------------------------------------------------
---  2) 独立宠物圆角框体（PetHUD）
+--  2) 独立宠物圆角框体（PetHUD）+ 猎人快乐度悬停提示与安全喂食网格菜单
 ----------------------------------------------------------------------
+local FEED_PET_SPELL_ID = 6991
+local petFeedMenu = nil
+local petFeedButtons = {}
+local petFeedCloseFrame = nil
+local SyncClickLayers -- 前向声明
+
+local function GetPetHappinessInfoSafe()
+    local fn = (_G.C_PetInfo and _G.C_PetInfo.GetPetHappiness) or _G.GetPetHappiness
+    if not fn then return nil end
+    local ok, h, dmg, rate = pcall(fn)
+    if not ok then return nil end
+    return F.PlainNumber(h, nil), F.PlainNumber(dmg, nil), F.PlainNumber(rate, nil)
+end
+
+local function PetHappinessAccent(happy)
+    if happy == 3 then
+        return 0.36, 0.90, 0.56
+    elseif happy == 2 then
+        return 0.98, 0.80, 0.32
+    elseif happy == 1 then
+        return 0.96, 0.34, 0.38
+    end
+    return F.Theme.GetAccent()
+end
+
+local function BuildPetHappinessTooltipText()
+    local happy, dmgPct, loyaltyRate = GetPetHappinessInfoSafe()
+    if not happy then return nil end
+    local lines = {}
+    local stateText = (happy == 3 and (_G.PET_HAPPINESS3 or "开心"))
+        or (happy == 2 and (_G.PET_HAPPINESS2 or "满足"))
+        or (_G.PET_HAPPINESS1 or "不开心")
+    lines[#lines + 1] = stateText
+    if dmgPct then
+        lines[#lines + 1] = string_format("宠物造成 %d%% 伤害", dmgPct)
+    end
+    local loyaltyFn = (_G.C_PetInfo and _G.C_PetInfo.GetPetLoyalty) or _G.GetPetLoyalty
+    local loyalty = loyaltyFn and F.PlainString(loyaltyFn(), nil) or nil
+    if loyalty and loyalty ~= "" then
+        lines[#lines + 1] = loyalty
+    end
+    if loyaltyRate and loyaltyRate ~= 0 then
+        lines[#lines + 1] = loyaltyRate > 0 and (_G.GAINING_LOYALTY or "忠诚度正在上升") or (_G.LOSING_LOYALTY or "忠诚度正在下降")
+    end
+    local dietFn = (_G.C_PetInfo and _G.C_PetInfo.GetPetFoodTypes) or _G.GetPetFoodTypes
+    if dietFn then
+        local ok, r1, r2, r3, r4, r5, r6 = pcall(dietFn)
+        if ok then
+            local foods = {}
+            if type(r1) == "table" then
+                for _, v in ipairs(r1) do
+                    local s = F.PlainString(v, nil)
+                    if s and s ~= "" then foods[#foods + 1] = s end
+                end
+            else
+                for _, v in ipairs({ r1, r2, r3, r4, r5, r6 }) do
+                    local s = F.PlainString(v, nil)
+                    if s and s ~= "" then foods[#foods + 1] = s end
+                end
+            end
+            if #foods > 0 then
+                local delim = F.PlainString(_G.PET_FOOD_DELIMIT, "、") or "、"
+                lines[#lines + 1] = "食物：" .. table_concat(foods, delim)
+            end
+        end
+    end
+    lines[#lines + 1] = "左键点击喂养宠物"
+    return table_concat(lines, "\n"), happy
+end
+
+local function HidePetIconTooltip()
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI.HideWidgetTooltip) == "function" then
+        pcall(EUI.HideWidgetTooltip)
+    end
+    if _G.GameTooltip then
+        _G.GameTooltip:Hide()
+    end
+end
+
+local function ShowPetIconTooltip(anchor)
+    local txt, happy = BuildPetHappinessTooltipText()
+    if not txt then return end
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI.ShowWidgetTooltip) == "function" then
+        pcall(EUI.ShowWidgetTooltip, anchor, txt)
+        return
+    end
+    if _G.GameTooltip then
+        local r, g, b = PetHappinessAccent(happy)
+        _G.GameTooltip:SetOwner(anchor, "ANCHOR_TOP", 0, 6)
+        local first = true
+        for line in txt:gmatch("[^\n]+") do
+            if first then
+                _G.GameTooltip:AddLine(line, r, g, b)
+                first = false
+            elseif line == "左键点击喂养宠物" then
+                _G.GameTooltip:AddLine(line, 0.37, 0.88, 0.62)
+            else
+                _G.GameTooltip:AddLine(line, 0.86, 0.88, 0.92)
+            end
+        end
+        _G.GameTooltip:Show()
+    end
+end
+
+local function HidePetFeedMenu()
+    if petFeedCloseFrame then
+        petFeedCloseFrame:UnregisterAllEvents()
+    end
+    if not (petFeedMenu and petFeedMenu:IsShown()) then return end
+    if InCombatLockdown and InCombatLockdown() then
+        F.CombatDefer("kkowoUI_PetFeedHide", function()
+            if petFeedMenu then petFeedMenu:Hide() end
+        end)
+        return
+    end
+    petFeedMenu:Hide()
+end
+
+local function ScanPetEdibleFoods()
+    local foods = {}
+    local byID = {}
+    local CCont = _G.C_Container
+    local canEat = _G.C_PetInfo and _G.C_PetInfo.CanPetEatItem
+    if not (CCont and CCont.GetContainerNumSlots and CCont.GetContainerItemInfo and canEat) then
+        return foods
+    end
+    local maxBag = _G.NUM_BAG_SLOTS or 4
+    for bag = 0, maxBag do
+        local slots = F.PlainNumber(CCont.GetContainerNumSlots(bag), 0) or 0
+        for slot = 1, slots do
+            local ok, info = pcall(CCont.GetContainerItemInfo, bag, slot)
+            if ok and type(info) == "table" then
+                local itemID = F.PlainNumber(info.itemID, nil)
+                if itemID then
+                    local okEat, edible = pcall(canEat, itemID)
+                    if okEat and edible == true then
+                        local cnt = F.PlainNumber(info.stackCount, 1) or 1
+                        local existing = byID[itemID]
+                        if existing then
+                            existing.count = existing.count + cnt
+                        else
+                            local entry = {
+                                bag = bag,
+                                slot = slot,
+                                itemID = itemID,
+                                icon = info.iconFileID or 134400,
+                                quality = F.PlainNumber(info.quality, 1) or 1,
+                                count = cnt,
+                            }
+                            byID[itemID] = entry
+                            foods[#foods + 1] = entry
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table_sort(foods, function(a, b)
+        if a.quality ~= b.quality then return a.quality > b.quality end
+        return a.itemID < b.itemID
+    end)
+    return foods
+end
+
+local function EnsurePetFeedMenu()
+    if petFeedMenu then return petFeedMenu end
+    local m = CreateFrame("Frame", "kkowoUI_PetFeedMenu", _G.UIParent)
+    m:SetFrameStrata("DIALOG")
+    m:SetFrameLevel(80)
+    m:SetClampedToScreen(true)
+    m:EnableMouse(true)
+
+    local title = m:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(title, ST.FONT.body, 0.95, 0.97, 1.00, 1)
+    title:SetPoint("TOPLEFT", m, "TOPLEFT", 10, -7)
+    title:SetText("喂养宠物")
+    m._title = title
+
+    local emptyFS = m:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(emptyFS, ST.FONT.caption, 0.72, 0.76, 0.82, 1)
+    emptyFS:SetPoint("CENTER", m, "CENTER", 0, -9)
+    emptyFS:SetText("背包中没有宠物可吃的食物")
+    emptyFS:Hide()
+    m._emptyFS = emptyFS
+
+    m:SetScript("OnHide", function()
+        if petFeedCloseFrame then
+            petFeedCloseFrame:UnregisterAllEvents()
+        end
+    end)
+
+    if not petFeedCloseFrame then
+        petFeedCloseFrame = CreateFrame("Frame")
+        petFeedCloseFrame:SetScript("OnEvent", function(_, ev)
+            if ev == "GLOBAL_MOUSE_DOWN" then
+                if petFeedMenu and petFeedMenu:IsShown() then
+                    local overMenu = petFeedMenu:IsMouseOver()
+                    local overBtn = petFrame and petFrame._iconBox and petFrame._iconBox:IsMouseOver()
+                    if not overMenu and not overBtn then
+                        HidePetFeedMenu()
+                    end
+                end
+            elseif ev == "PLAYER_REGEN_DISABLED" or ev == "UNIT_PET" then
+                HidePetFeedMenu()
+            elseif ev == "BAG_UPDATE_DELAYED" then
+                if petFeedMenu and petFeedMenu:IsShown() and not (InCombatLockdown and InCombatLockdown()) then
+                    if petFeedMenu._rebuildFn then petFeedMenu._rebuildFn() end
+                end
+            end
+        end)
+    end
+
+    m:Hide()
+    petFeedMenu = m
+    return m
+end
+
+local function AcquirePetFeedButton(index)
+    local btn = petFeedButtons[index]
+    if btn then return btn end
+    local ok, b = pcall(CreateFrame, "Button", "kkowoUI_PetFeedBtn" .. index, petFeedMenu, "SecureActionButtonTemplate")
+    if not (ok and b) then return nil end
+    btn = b
+    btn:SetSize(32, 32)
+    btn:RegisterForClicks("LeftButtonUp")
+    btn:SetAttribute("useOnKeyDown", false)
+    btn:SetAttribute("type", "spell")
+    btn:SetAttribute("spell", FEED_PET_SPELL_ID)
+
+    local bg = btn:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0.05, 0.055, 0.075, 0.94)
+    ST.MaskTexture(btn, bg, 5)
+
+    local icon = btn:CreateTexture(nil, "ARTWORK")
+    icon:SetAllPoints()
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    ST.MaskTexture(btn, icon, 5)
+    btn._icon = icon
+
+    local cnt = btn:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(cnt, 10, 0.98, 0.98, 1.00, 1)
+    cnt:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -2, 2)
+    cnt:SetJustifyH("RIGHT")
+    btn._count = cnt
+
+    btn:HookScript("PostClick", function()
+        HidePetFeedMenu()
+    end)
+    btn:SetScript("OnEnter", function(self)
+        local ar, ag, ab = F.Theme.GetAccent()
+        ST.ApplyRoundedBorder(self, 5, ar, ag, ab, 0.96, 4)
+        if _G.GameTooltip and self._bag ~= nil and self._slot ~= nil then
+            _G.GameTooltip:SetOwner(self, "ANCHOR_RIGHT", 6, 0)
+            pcall(_G.GameTooltip.SetBagItem, _G.GameTooltip, self._bag, self._slot)
+            _G.GameTooltip:Show()
+        end
+    end)
+    btn:SetScript("OnLeave", function(self)
+        local r, g, bCol = self._qr or 0.28, self._qg or 0.30, self._qb or 0.36
+        ST.ApplyRoundedBorder(self, 5, r, g, bCol, 0.86, 4)
+        if _G.GameTooltip then _G.GameTooltip:Hide() end
+    end)
+
+    petFeedButtons[index] = btn
+    return btn
+end
+
+local function TogglePetFeedMenu(anchor)
+    if not (_G.UnitExists and _G.UnitExists("pet")) then return end
+    if petFeedMenu and petFeedMenu:IsShown() then
+        HidePetFeedMenu()
+        return
+    end
+    if InCombatLockdown and InCombatLockdown() then
+        if _G.UIErrorsFrame and _G.UIErrorsFrame.AddMessage then
+            _G.UIErrorsFrame:AddMessage("战斗中无法打开喂食菜单。", 1, 0.30, 0.34)
+        else
+            F.Print("战斗中无法打开喂食菜单，请脱战后重试。")
+        end
+        return
+    end
+
+    HidePetIconTooltip()
+    local menu = EnsurePetFeedMenu()
+    local function populateMenu()
+        if InCombatLockdown and InCombatLockdown() then return end
+        local foods = ScanPetEdibleFoods()
+        local pad = 8
+        local headerH = 26
+        local btnSz = 32
+        local gap = 5
+        local cols = 5
+        local happy = GetPetHappinessInfoSafe()
+        local ar, ag, ab = PetHappinessAccent(happy)
+        local getQualColor = (_G.C_Item and _G.C_Item.GetItemQualityColor) or _G.GetItemQualityColor
+
+        if #foods == 0 then
+            for _, b in ipairs(petFeedButtons) do b:Hide() end
+            menu._emptyFS:Show()
+            menu:SetSize(188, 56)
+        else
+            menu._emptyFS:Hide()
+            local usedCols = math_min(cols, #foods)
+            local rows = math_floor((#foods - 1) / cols) + 1
+            local totalW = math_max(118, pad * 2 + usedCols * btnSz + (usedCols - 1) * gap)
+            local totalH = headerH + pad + rows * btnSz + (rows - 1) * gap
+            menu:SetSize(totalW, totalH)
+            for i, food in ipairs(foods) do
+                local btn = AcquirePetFeedButton(i)
+                if btn then
+                    local col = (i - 1) % cols
+                    local row = math_floor((i - 1) / cols)
+                    btn:ClearAllPoints()
+                    btn:SetPoint("TOPLEFT", menu, "TOPLEFT", pad + col * (btnSz + gap), -(headerH + row * (btnSz + gap)))
+                    btn._bag = food.bag
+                    btn._slot = food.slot
+                    btn:SetAttribute("target-bag", food.bag)
+                    btn:SetAttribute("target-slot", food.slot)
+                    btn._icon:SetTexture(food.icon)
+                    if food.count and food.count > 1 then
+                        btn._count:SetText(tostring(food.count))
+                        btn._count:Show()
+                    else
+                        btn._count:Hide()
+                    end
+                    local qr, qg, qb = 0.32, 0.36, 0.42
+                    if getQualColor and food.quality >= 1 then
+                        local okQ, r, g, bCol = pcall(getQualColor, food.quality)
+                        if okQ and F.PlainNumber(r, nil) then
+                            qr, qg, qb = r * 0.78 + 0.12, g * 0.78 + 0.12, bCol * 0.78 + 0.12
+                        end
+                    end
+                    btn._qr, btn._qg, btn._qb = qr, qg, qb
+                    ST.ApplyRoundedBorder(btn, 5, qr, qg, qb, 0.86, 4)
+                    btn:Show()
+                end
+            end
+            for i = #foods + 1, #petFeedButtons do
+                petFeedButtons[i]:Hide()
+            end
+        end
+        F.Theme.PaintPrettyCardOverlay(menu, ar, ag, ab, headerH - 2, {
+            alpha = 0.90,
+            haloAlpha = 0.14,
+            haloSpread = 10,
+            headerTopAlpha = 0.24,
+            headerBottomAlpha = 0.00,
+        })
+    end
+
+    menu._rebuildFn = populateMenu
+    populateMenu()
+
+    -- 通过 UIParent 屏幕坐标定位（绝不直接锚定到宠物普通框体，避免内部安全喂食按钮在战斗期牵连定位保护）
+    menu:ClearAllPoints()
+    local l = anchor.GetLeft and F.PlainNumber(anchor:GetLeft(), nil)
+    local t = anchor.GetTop and F.PlainNumber(anchor:GetTop(), nil)
+    local es = anchor.GetEffectiveScale and F.PlainNumber(anchor:GetEffectiveScale(), 1) or 1
+    local uiS = _G.UIParent and F.PlainNumber(_G.UIParent:GetEffectiveScale(), 1) or 1
+    if l and t and es > 0 and uiS > 0 then
+        local k = es / uiS
+        menu:SetPoint("BOTTOMLEFT", _G.UIParent, "BOTTOMLEFT", l * k, t * k + 8)
+    else
+        menu:SetPoint("BOTTOMLEFT", anchor, "TOPLEFT", 0, 8)
+    end
+    menu:Show()
+    if petFeedCloseFrame then
+        pcall(petFeedCloseFrame.RegisterEvent, petFeedCloseFrame, "GLOBAL_MOUSE_DOWN")
+        pcall(petFeedCloseFrame.RegisterEvent, petFeedCloseFrame, "BAG_UPDATE_DELAYED")
+        pcall(petFeedCloseFrame.RegisterEvent, petFeedCloseFrame, "PLAYER_REGEN_DISABLED")
+        pcall(petFeedCloseFrame.RegisterUnitEvent, petFeedCloseFrame, "UNIT_PET", "player")
+    end
+end
+
 local function BuildPetHUD()
     if petFrame then return end
     local f = CreateFrame("Frame", "kkowoUI_PetHUD", _G.UIParent)
@@ -1765,10 +2732,13 @@ local function BuildPetHUD()
     f:SetFrameLevel(12)
     f:EnableMouse(false)
 
-    -- 左侧宠物快乐度/头像圆角徽章
+    -- 左侧宠物快乐度/头像圆角徽章（猎人可点击打开喂食网格，层高于点击选中层）
     local iconBox = CreateFrame("Frame", nil, f)
     iconBox:SetSize(22, 22)
     iconBox:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 0)
+    iconBox:SetFrameLevel(f:GetFrameLevel() + 12)
+    local isHunter = (F.GetPlayerClass() == "HUNTER")
+    iconBox:EnableMouse(isHunter)
     local ibBg = iconBox:CreateTexture(nil, "BACKGROUND")
     ibBg:SetAllPoints()
     ibBg:SetColorTexture(0.04, 0.045, 0.06, 0.92)
@@ -1779,12 +2749,29 @@ local function BuildPetHUD()
     ST.MaskTexture(iconBox, ibTex, 5)
     ST.ApplyRoundedBorder(iconBox, 5, 0.02, 0.022, 0.03, 0.95, 4)
     iconBox._tex = ibTex
+    if isHunter then
+        iconBox:SetScript("OnEnter", function(self)
+            local happy = GetPetHappinessInfoSafe()
+            local r, g, b = PetHappinessAccent(happy)
+            ST.ApplyRoundedBorder(self, 5, r, g, b, 0.96, 4)
+            ShowPetIconTooltip(self)
+        end)
+        iconBox:SetScript("OnLeave", function(self)
+            ST.ApplyRoundedBorder(self, 5, 0.02, 0.022, 0.03, 0.95, 4)
+            HidePetIconTooltip()
+        end)
+        iconBox:SetScript("OnMouseUp", function(self, button)
+            if button == "LeftButton" and (not self.IsMouseOver or self:IsMouseOver()) then
+                TogglePetFeedMenu(self)
+            end
+        end)
+    end
     f._iconBox = iconBox
 
     local hpBar = CreateWingBar(f, 130, 16, false)
     hpBar:SetPoint("TOPLEFT", iconBox, "TOPRIGHT", 4, 0)
     hpBar._trail = M.AttachHealthTrail(hpBar._bar, {
-        delay = 0.16, reverse = false, radius = 5, color = ST.COLORS.trail,
+        delay = 0.16, reverse = false, color = ST.COLORS.trail,
     })
     f._hpBar = hpBar
 
@@ -1799,7 +2786,7 @@ local function BuildPetHUD()
     f._textLayer = petTextLayer
 
     local nameFS = petTextLayer:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(nameFS, 10, "OUTLINE", 0.96, 0.98, 1.00, 1)
+    ST.ApplyText(nameFS, 10, 0.96, 0.98, 1.00, 1)
     nameFS:SetShadowOffset(1, -1)
     nameFS:SetPoint("LEFT", hpBar, "LEFT", 6, 0)
     nameFS:SetWidth(76)
@@ -1808,7 +2795,7 @@ local function BuildPetHUD()
     f._nameText = nameFS
 
     local hpFS = petTextLayer:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(hpFS, 10, "OUTLINE", 0.96, 0.98, 1.00, 1)
+    ST.ApplyText(hpFS, 10, 0.96, 0.98, 1.00, 1)
     hpFS:SetShadowOffset(1, -1)
     hpFS:SetPoint("RIGHT", hpBar, "RIGHT", -6, 0)
     hpFS:SetJustifyH("RIGHT")
@@ -1850,7 +2837,7 @@ local function BuildTopTargetHUD()
     local hpBar = CreateWingBar(f, 256, 18, false)
     hpBar:SetPoint("BOTTOMLEFT", ppBar, "TOPLEFT", 0, 2)
     hpBar._trail = M.AttachHealthTrail(hpBar._bar, {
-        delay = 0.16, reverse = false, radius = 6, color = ST.COLORS.trail,
+        delay = 0.16, reverse = false, color = ST.COLORS.trail,
     })
     hpBar._spark = M.AttachEdgeSpark(hpBar._bar, {
         reverse = false, width = 10, extraHeight = 2, a = 0.50,
@@ -1865,7 +2852,7 @@ local function BuildTopTargetHUD()
     f._textLayer = targetTextLayer
 
     local hpText = targetTextLayer:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(hpText, 11, "OUTLINE", 0.98, 0.99, 1.00, 1)
+    ST.ApplyText(hpText, 11, 0.98, 0.99, 1.00, 1)
     hpText:SetShadowOffset(1, -1)
     hpText:SetPoint("LEFT", hpBar, "LEFT", 8, 0)
     hpText:SetJustifyH("LEFT")
@@ -1873,7 +2860,7 @@ local function BuildTopTargetHUD()
     f._hpText = hpText
 
     local nameText = targetTextLayer:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(nameText, 11, "OUTLINE", 0.98, 0.99, 1.00, 1)
+    ST.ApplyText(nameText, 11, 0.98, 0.99, 1.00, 1)
     nameText:SetShadowOffset(1, -1)
     nameText:SetPoint("RIGHT", hpBar, "RIGHT", -10, 0)
     nameText:SetWidth(148)
@@ -1908,8 +2895,9 @@ local function BuildTopTargetHUD()
     -- 目标的目标微条（作为附属浮标挂在圆形头像右侧外，不撑偏目标条主居中盒）
     local totBar = CreateWingBar(f, 84, 10, false)
     totBar:SetPoint("LEFT", port, "RIGHT", 8, -4)
-    local totName = f:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(totName, 10, "OUTLINE", 0.90, 0.92, 0.96, 1)
+    -- 名字必须挂在小血条上：挂在目标条本体上时，小血条隐藏后名字仍残留上一次的内容（总显示「风蛇」）
+    local totName = totBar:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(totName, 10, 0.90, 0.92, 0.96, 1)
     totName:SetPoint("BOTTOMLEFT", totBar, "TOPLEFT", 1, 2)
     totName:SetWidth(90)
     totName:SetJustifyH("LEFT")
@@ -1990,10 +2978,16 @@ local function UpdatePetHUD(instant)
     local db = mod:GetDB()
     local exists = _G.UnitExists and _G.UnitExists("pet")
     if not (mod._active and db.showPetFrame ~= false and exists) then
+        HidePetFeedMenu()
         petFrame:Hide()
         return
     end
+    local wasShown = petFrame:IsShown()
     petFrame:Show()
+    if not wasShown then
+        if lastIdleAlpha then petFrame:SetAlpha(lastIdleAlpha) end
+        if SyncClickLayers then SyncClickLayers() end
+    end
     local hp = _G.UnitHealth and _G.UnitHealth("pet") or 0
     local mx = _G.UnitHealthMax and _G.UnitHealthMax("pet") or 1
     pcall(petFrame._hpBar._bar.SetMinMaxValues, petFrame._hpBar._bar, 0, mx)
@@ -2039,10 +3033,26 @@ local function UpdatePetHUD(instant)
     end
 end
 
+-- 敌对阵营玩家显示红名（与怪物区分）；其余单位保持传入的默认文字色
+UnitNameColor = function(unit, r, g, b)
+    local npMod = F.Modules.Get("nameplateMotion")
+    if npMod and npMod:GetDB().redHostilePlayers == false then return r, g, b, 1 end
+    local okP, isP = pcall(_G.UnitIsPlayer, unit)
+    if okP and not F.IsSecret(isP) and isP == true and _G.UnitIsFriend then
+        local okF, isFriend = pcall(_G.UnitIsFriend, "player", unit)
+        if okF and not F.IsSecret(isFriend) and isFriend == false then
+            local h = ST.COLORS.hostile
+            return h[1], h[2], h[3], 1
+        end
+    end
+    return r, g, b, 1
+end
+
 local function UpdateTargetOfTarget()
     if not (topTargetFrame and topTargetFrame._totBar) then return end
     local tot = topTargetFrame._totBar
     if not (_G.UnitExists and _G.UnitExists("targettarget")) then
+        tot._nameText:SetText("")
         tot:Hide()
         return
     end
@@ -2053,8 +3063,16 @@ local function UpdateTargetOfTarget()
     pcall(tot._bar.SetValue, tot._bar, hp)
     local r1, g1, b1, r2, g2, b2 = ST.GetUnitGradient("targettarget")
     ST.ApplyBarGradient(tot._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
-    local nm = F.PlainString(_G.UnitName and _G.UnitName("targettarget"), "") or ""
-    tot._nameText:SetText(nm)
+    local rawName = _G.UnitName and _G.UnitName("targettarget")
+    local nm = F.PlainString(rawName, nil)
+    if nm then
+        tot._nameText:SetText(nm)
+    elseif type(rawName) ~= "nil" then
+        pcall(tot._nameText.SetText, tot._nameText, rawName)
+    else
+        tot._nameText:SetText("")
+    end
+    tot._nameText:SetTextColor(UnitNameColor("targettarget", 0.90, 0.92, 0.96))
 end
 
 local function UpdateTopTargetHUD(instant)
@@ -2075,6 +3093,7 @@ local function UpdateTopTargetHUD(instant)
             local mx = _G.UnitHealthMax and _G.UnitHealthMax("target") or 1
             pcall(topTargetFrame._hpBar._bar.SetMinMaxValues, topTargetFrame._hpBar._bar, 0, mx)
             pcall(topTargetFrame._hpBar._bar.SetValue, topTargetFrame._hpBar._bar, hp)
+            UpdateBarSparkVis(topTargetFrame._hpBar, hp, mx)
             if topTargetFrame._hpBar._trail then
                 topTargetFrame._hpBar._trail:SetEnabled(db.showTrail ~= false)
                 topTargetFrame._hpBar._trail:SetValue(hp, mx, instant)
@@ -2096,10 +3115,11 @@ local function UpdateTopTargetHUD(instant)
             local tLvl = _G.UnitLevel and F.PlainNumber(_G.UnitLevel("target"), nil)
             local lvlStr = (tLvl and tLvl > 0) and tostring(tLvl) or (tLvl == -1 and "??" or "")
             if tName then
-                topTargetFrame._nameText:SetText(lvlStr ~= "" and (tName .. " | " .. lvlStr) or tName)
-            elseif rawName ~= nil then
+                topTargetFrame._nameText:SetText(lvlStr ~= "" and (tName .. " · " .. lvlStr) or tName)
+            elseif type(rawName) ~= "nil" then
                 pcall(topTargetFrame._nameText.SetText, topTargetFrame._nameText, rawName)
             end
+            topTargetFrame._nameText:SetTextColor(UnitNameColor("target", 0.98, 0.99, 1.00))
 
             if _G.SetPortraitTexture and topTargetFrame._portrait then
                 pcall(_G.SetPortraitTexture, topTargetFrame._portrait._tex, "target")
@@ -2113,7 +3133,11 @@ local function UpdateTopTargetHUD(instant)
         euiTrailTarget:UpdateFromUnit("target", instant)
         if instant and mod._active and mod:GetDB().enhanceEUIFrames ~= false then
             local tf = _G.EllesmereUIUnitFrames_Target
-            if tf and tf:IsShown() and not hiddenEUI.target then
+            -- 只在 EUI 当前让目标框完全可见时补一个微淡入：EUI 的「仅悬停 / 仅战斗显示」与距离淡隐
+            -- 都是用透明度实现的，透明度不是 1（或是保密值）时绝不把它强行拉满
+            local curA = tf and tf.GetAlpha and F.PlainNumber(tf:GetAlpha(), nil) or nil
+            if tf and tf:IsShown() and not hiddenEUI.target and not tf._euiVisDriver
+                and curA and curA >= 0.99 then
                 tf:SetAlpha(0.15)
                 F.Theme.FadeTo(tf, 1.0, 0.10, false)
             end
@@ -2187,7 +3211,7 @@ local function EnsureEUIAlphaGuard(fr, key)
     end
     if fr.SetAlpha then
         _G.hooksecurefunc(fr, "SetAlpha", function(self, a)
-            if not alphaGuardBusy and hiddenEUI[key] and a ~= 0 then
+            if not alphaGuardBusy and hiddenEUI[key] and F.PlainNumber(a, 1) ~= 0 then
                 ClampZero(self)
             end
         end)
@@ -2217,46 +3241,234 @@ SyncHiddenEUIFrames = function()
     }
 
     -- SetAlpha 战斗内也 100% 安全，立刻同步生效并挂防复原锁（同步拦截 SetAlpha / SetAlphaFromBoolean / Show）
+    -- 还原只发生在「由隐藏转为显示」的那一刻：平时绝不把 EUI 自己的淡隐 / 距离透明度反复拉回 1
     for key, hide in pairs(wantHide) do
         local fr = GetEUIUnitFrame(key)
+        local wasHidden = hiddenEUI[key] == true
         hiddenEUI[key] = hide == true
         if fr then
             local targetObj = fr._visWrap or fr
-            EnsureEUIAlphaGuard(fr, key)
-            if targetObj ~= fr then EnsureEUIAlphaGuard(targetObj, key) end
-            alphaGuardBusy = true
-            pcall(fr.SetAlpha, fr, hide and 0 or 1)
-            if targetObj ~= fr then pcall(targetObj.SetAlpha, targetObj, hide and 0 or 1) end
-            alphaGuardBusy = false
+            if hide then
+                EnsureEUIAlphaGuard(fr, key)
+                if targetObj ~= fr then EnsureEUIAlphaGuard(targetObj, key) end
+                alphaGuardBusy = true
+                pcall(fr.SetAlpha, fr, 0)
+                if targetObj ~= fr then pcall(targetObj.SetAlpha, targetObj, 0) end
+                alphaGuardBusy = false
+            elseif wasHidden or euiHiddenByUs[key] then
+                alphaGuardBusy = true
+                pcall(fr.SetAlpha, fr, 1)
+                if targetObj ~= fr then pcall(targetObj.SetAlpha, targetObj, 1) end
+                alphaGuardBusy = false
+            end
         end
     end
 
-    -- 脱战安全窗口：同步注销/恢复 RegisterUnitWatch 与 Hide/Show + 鼠标穿透，彻底杜绝「召唤宠物」或切目标把 EUI 原版框体重新唤出
+    -- 脱战安全窗口：注销单位监视 + Hide + 鼠标穿透，杜绝「召唤宠物」或切目标把 EUI 原版框体重新唤出。
+    -- 只还原本模块确实动过的框体；EUI 用属性驱动（state-visibility，如「仅战斗中显示」）管显隐的框体
+    -- 只靠透明度与鼠标穿透隐藏，绝不叠加 RegisterUnitWatch 抢 EUI 的显隐控制。
     F.CombatDefer("kkowoUI_CoreHUD_SyncEUIMouse", function()
         for key, hide in pairs(hiddenEUI) do
             local fr = GetEUIUnitFrame(key)
             if fr then
                 if hide then
-                    if _G.UnregisterUnitWatch then pcall(_G.UnregisterUnitWatch, fr) end
-                    if fr.Hide then pcall(fr.Hide, fr) end
+                    euiHiddenByUs[key] = true
+                    if not fr._euiVisDriver then
+                        if key ~= "player" and _G.UnregisterUnitWatch then
+                            local wasWatched = true
+                            if _G.UnitWatchRegistered then
+                                local okW, reg = pcall(_G.UnitWatchRegistered, fr)
+                                if okW then wasWatched = (reg == true) end
+                            end
+                            if wasWatched then
+                                pcall(_G.UnregisterUnitWatch, fr)
+                                euiWatchRemoved[key] = true
+                            end
+                        end
+                        if fr.Hide then pcall(fr.Hide, fr) end
+                    end
                     if fr.EnableMouse then pcall(fr.EnableMouse, fr, false) end
                     alphaGuardBusy = true
                     pcall(fr.SetAlpha, fr, 0)
                     alphaGuardBusy = false
-                else
+                elseif euiHiddenByUs[key] then
+                    euiHiddenByUs[key] = nil
                     if fr.EnableMouse then pcall(fr.EnableMouse, fr, true) end
                     alphaGuardBusy = true
                     pcall(fr.SetAlpha, fr, 1)
                     if fr._visWrap and fr._visWrap ~= fr then pcall(fr._visWrap.SetAlpha, fr._visWrap, 1) end
                     alphaGuardBusy = false
-                    if key == "player" then
-                        if fr.Show then pcall(fr.Show, fr) end
-                    else
-                        if _G.RegisterUnitWatch then pcall(_G.RegisterUnitWatch, fr) end
+                    if euiWatchRemoved[key] then
+                        euiWatchRemoved[key] = nil
+                        if _G.RegisterUnitWatch and not fr._euiVisDriver then pcall(_G.RegisterUnitWatch, fr) end
+                    elseif key == "player" and not fr._euiVisDriver and fr.GetAttribute then
+                        -- EUI 里停用玩家框时它没有 unit：这种情况绝不把空框体重新显示出来
+                        local okU, u = pcall(fr.GetAttribute, fr, "unit")
+                        if okU and u ~= nil and fr.Show then pcall(fr.Show, fr) end
                     end
                 end
             end
         end
+    end)
+end
+
+----------------------------------------------------------------------
+--  5b) 安全点击层：新版 HUD 本身是普通框体（战斗中可自由淡入淡出、显隐），EUI 原框体被收起并穿透鼠标后，
+--      用 SecureUnitButton 补回「左键选中 / 右键单位菜单 / 点击施法」。
+--      点击层挂在 UIParent 上、只按屏幕坐标对齐 HUD，绝不锚定到 HUD 内部框体——
+--      否则 HUD 在战斗中改布局会被判定为移动受保护框体而被拦截。显隐交给 RegisterUnitWatch。
+----------------------------------------------------------------------
+local CLICK_SPECS = {
+    { key = "player",       unit = "player",       watch = false },
+    { key = "pet",          unit = "pet",          watch = true },
+    { key = "target",       unit = "target",       watch = true },
+    { key = "targettarget", unit = "targettarget", watch = true },
+}
+local clickLayers = {}
+
+local function ClickRegionsFor(key)
+    if key == "player" then
+        if coreFrame and coreFrame:IsShown() then return coreFrame._hpWing, coreFrame._ppWing end
+    elseif key == "pet" then
+        -- 猎人左侧宠物快乐度按钮独立承担点击喂食，点击选中层只覆盖右侧血蓝条
+        if petFrame and F.GetPlayerClass() == "HUNTER" and petFrame._hpBar and petFrame._ppBar then
+            return petFrame._hpBar, petFrame._ppBar
+        end
+        return petFrame
+    elseif key == "target" then
+        return topTargetFrame
+    elseif key == "targettarget" then
+        if topTargetFrame and topTargetFrame._totBar then
+            return topTargetFrame._totBar, topTargetFrame._totBar._nameText
+        end
+    end
+    return nil
+end
+
+local function WantClickLayer(key)
+    if not mod._active then return false end
+    local db = mod:GetDB()
+    if db.clickableHUD == false then return false end
+    if key == "player" then return db.showCoreHUD ~= false end
+    if key == "pet" then return db.showPetFrame ~= false end
+    return db.enableTopTarget ~= false
+end
+
+-- 把若干区域的并集换算成 UIParent 坐标（任一边为保密值 / 未布局时返回 nil，保持上次位置）
+local function UnionRectInUIParent(...)
+    local ui = _G.UIParent
+    local uiS = ui and F.PlainNumber(ui:GetEffectiveScale(), nil)
+    if not uiS or uiS <= 0 then return nil end
+    local L, B, R, T
+    for i = 1, select("#", ...) do
+        local rg = select(i, ...)
+        if rg and rg.GetLeft and rg.GetEffectiveScale then
+            local es = F.PlainNumber(rg:GetEffectiveScale(), nil)
+            local l = F.PlainNumber(rg:GetLeft(), nil)
+            local r = F.PlainNumber(rg:GetRight(), nil)
+            local t = F.PlainNumber(rg:GetTop(), nil)
+            local b = F.PlainNumber(rg:GetBottom(), nil)
+            if es and l and r and t and b and r > l and t > b then
+                local k = es / uiS
+                l, r, t, b = l * k, r * k, t * k, b * k
+                L = L and math_min(L, l) or l
+                R = R and math_max(R, r) or r
+                T = T and math_max(T, t) or t
+                B = B and math_min(B, b) or b
+            end
+        end
+    end
+    if not (L and R and T and B) then return nil end
+    return L, B, R - L, T - B
+end
+
+local function EnsureClickLayer(spec)
+    local btn = clickLayers[spec.key]
+    if btn then return btn end
+    local ok, b = pcall(CreateFrame, "Button", "kkowoUI_HUDClick_" .. spec.key, _G.UIParent, "SecureUnitButtonTemplate")
+    if not (ok and b) then return nil end
+    btn = b
+    btn:SetFrameStrata("MEDIUM")
+    btn:SetFrameLevel(11) -- 低于 HUD 光环图标（可悬停取消），高于场景
+    btn:RegisterForClicks("AnyUp")
+    btn:SetAttribute("unit", spec.unit)
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI.SetLeftClickTarget) == "function" then
+        if not pcall(EUI.SetLeftClickTarget, btn) then
+            btn:SetAttribute("*type1", "target")
+        end
+    else
+        btn:SetAttribute("*type1", "target")
+    end
+    if EUI and type(EUI.AttachSecureUnitMenu) == "function" then
+        -- 12.0.7+ 的 togglemenu 有门控：沿用 EUI 已验证的安全菜单代理
+        if not pcall(EUI.AttachSecureUnitMenu, btn) then
+            btn:SetAttribute("*type2", "togglemenu")
+        end
+    else
+        btn:SetAttribute("*type2", "togglemenu")
+    end
+    btn.unit = spec.unit
+    btn:SetScript("OnEnter", function(self)
+        if _G.UnitFrame_OnEnter then
+            pcall(_G.UnitFrame_OnEnter, self)
+        elseif _G.GameTooltip then
+            _G.GameTooltip_SetDefaultAnchor(_G.GameTooltip, self)
+            _G.GameTooltip:SetUnit(self.unit)
+            _G.GameTooltip:Show()
+        end
+    end)
+    btn:SetScript("OnLeave", function(self)
+        if _G.UnitFrame_OnLeave then
+            pcall(_G.UnitFrame_OnLeave, self)
+        elseif _G.GameTooltip then
+            _G.GameTooltip:Hide()
+        end
+    end)
+    if type(_G.ClickCastFrames) ~= "table" then _G.ClickCastFrames = {} end
+    _G.ClickCastFrames[btn] = true
+    btn:Hide()
+    clickLayers[spec.key] = btn
+    return btn
+end
+
+local function SyncClickLayersNow()
+    for _, spec in ipairs(CLICK_SPECS) do
+        local want = WantClickLayer(spec.key)
+        local btn = clickLayers[spec.key] or (want and EnsureClickLayer(spec)) or nil
+        if btn then
+            local l, b, w, h = nil, nil, nil, nil
+            if want then l, b, w, h = UnionRectInUIParent(ClickRegionsFor(spec.key)) end
+            if want and l then
+                btn:ClearAllPoints()
+                btn:SetPoint("BOTTOMLEFT", _G.UIParent, "BOTTOMLEFT", l, b)
+                btn:SetSize(math_max(4, w), math_max(4, h))
+                if spec.watch then
+                    if not btn._kkWatched and _G.RegisterUnitWatch then
+                        _G.RegisterUnitWatch(btn)
+                        btn._kkWatched = true
+                    end
+                else
+                    btn:Show()
+                end
+            elseif not want then
+                if btn._kkWatched and _G.UnregisterUnitWatch then
+                    _G.UnregisterUnitWatch(btn)
+                    btn._kkWatched = false
+                end
+                btn:Hide()
+            end
+        end
+    end
+end
+
+SyncClickLayers = function()
+    F.CombatDefer("kkowoUI_CoreHUD_ClickLayers", function()
+        SyncClickLayersNow()
+        -- 刚改过锚点 / 尺寸的 HUD 下一帧才完成布局，再对齐一次
+        C_Timer.After(0, function()
+            F.CombatDefer("kkowoUI_CoreHUD_ClickLayers", SyncClickLayersNow)
+        end)
     end)
 end
 
@@ -2287,15 +3499,15 @@ local function ApplyLayoutAndTheme()
             coreFrame._hpText:ClearAllPoints()
             coreFrame._ppText:ClearAllPoints()
             if insideBars then
-                F.Theme.ApplyFont(coreFrame._hpText, inFontSz, "OUTLINE", 0.98, 0.99, 1.00, 1)
-                F.Theme.ApplyFont(coreFrame._ppText, inFontSz, "OUTLINE", 0.96, 0.98, 1.00, 1)
+                ST.ApplyText(coreFrame._hpText, inFontSz, 0.98, 0.99, 1.00, 1)
+                ST.ApplyText(coreFrame._ppText, inFontSz, 0.96, 0.98, 1.00, 1)
                 coreFrame._hpText:SetPoint("LEFT", coreFrame._hpWing, "LEFT", 8, 0)
                 coreFrame._ppText:SetPoint("RIGHT", coreFrame._ppWing, "RIGHT", -8, 0)
                 coreFrame._hpText:SetWidth(math_max(48, wingW - orbHalfGap - 8))
                 coreFrame._ppText:SetWidth(math_max(40, wingW - orbHalfGap - 8))
             else
-                F.Theme.ApplyFont(coreFrame._hpText, 12, "OUTLINE", 0.96, 0.97, 0.99, 1)
-                F.Theme.ApplyFont(coreFrame._ppText, 12, "OUTLINE", 0.94, 0.96, 0.99, 1)
+                ST.ApplyText(coreFrame._hpText, 12, 0.96, 0.97, 0.99, 1)
+                ST.ApplyText(coreFrame._ppText, 12, 0.94, 0.96, 0.99, 1)
                 coreFrame._hpText:SetPoint("BOTTOMLEFT", coreFrame._hpWing, "TOPLEFT", 2, 9)
                 coreFrame._ppText:SetPoint("BOTTOMRIGHT", coreFrame._ppWing, "TOPRIGHT", -2, 9)
                 coreFrame._hpText:SetWidth(0)
@@ -2342,13 +3554,23 @@ local function ApplyLayoutAndTheme()
             end
             local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
                 or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
-            coreFrame._orb._combatIcon:SetShown(inCombat == true)
+            SetCombatBadge(inCombat == true, false)
 
             UpdatePlayerHealth(true)
             UpdatePlayerPower(true)
             UpdateUpperRightClassPower()
             UpdateOrbAppearance(false)
             UpdateCombatAuras()
+        else
+            swingTicker:Hide()
+            SyncTopRightAuraDedupe(true)
+        end
+    end
+    if euiTrailPlayer then
+        euiTrailPlayer:SetDelay(db.trailDelay or 0.16)
+        euiTrailPlayer:SetEnabled(mod._active and db.enhanceEUIFrames ~= false and db.showTrail ~= false)
+        if mod._active and db.enhanceEUIFrames ~= false and db.showTrail ~= false then
+            euiTrailPlayer:UpdateFromUnit("player", true)
         end
     end
 
@@ -2362,14 +3584,14 @@ local function ApplyLayoutAndTheme()
         petFrame._nameText:ClearAllPoints()
         petFrame._hpText:ClearAllPoints()
         if insideBars then
-            F.Theme.ApplyFont(petFrame._nameText, 10, "OUTLINE", 0.96, 0.98, 1.00, 1)
-            F.Theme.ApplyFont(petFrame._hpText, 10, "OUTLINE", 0.96, 0.98, 1.00, 1)
+            ST.ApplyText(petFrame._nameText, 10, 0.96, 0.98, 1.00, 1)
+            ST.ApplyText(petFrame._hpText, 10, 0.96, 0.98, 1.00, 1)
             petFrame._nameText:SetPoint("LEFT", petFrame._hpBar, "LEFT", 6, 0)
             petFrame._nameText:SetWidth(76)
             petFrame._hpText:SetPoint("RIGHT", petFrame._hpBar, "RIGHT", -6, 0)
         else
-            F.Theme.ApplyFont(petFrame._nameText, 11, "OUTLINE", 0.92, 0.95, 0.98, 1)
-            F.Theme.ApplyFont(petFrame._hpText, 11, "OUTLINE", 0.94, 0.96, 0.99, 1)
+            ST.ApplyText(petFrame._nameText, 11, 0.92, 0.95, 0.98, 1)
+            ST.ApplyText(petFrame._hpText, 11, 0.94, 0.96, 0.99, 1)
             petFrame._nameText:SetPoint("BOTTOMLEFT", petFrame._hpBar, "TOPLEFT", 2, 2)
             petFrame._nameText:SetWidth(90)
             petFrame._hpText:SetPoint("BOTTOMRIGHT", petFrame._hpBar, "TOPRIGHT", -2, 2)
@@ -2390,14 +3612,14 @@ local function ApplyLayoutAndTheme()
         topTargetFrame._hpText:ClearAllPoints()
         topTargetFrame._nameText:ClearAllPoints()
         if insideBars then
-            F.Theme.ApplyFont(topTargetFrame._hpText, 11, "OUTLINE", 0.98, 0.99, 1.00, 1)
-            F.Theme.ApplyFont(topTargetFrame._nameText, 11, "OUTLINE", 0.98, 0.99, 1.00, 1)
+            ST.ApplyText(topTargetFrame._hpText, 11, 0.98, 0.99, 1.00, 1)
+            ST.ApplyText(topTargetFrame._nameText, 11, 0.98, 0.99, 1.00, 1)
             topTargetFrame._hpText:SetPoint("LEFT", topTargetFrame._hpBar, "LEFT", 8, 0)
             topTargetFrame._nameText:SetPoint("RIGHT", topTargetFrame._hpBar, "RIGHT", -10, 0)
             topTargetFrame._nameText:SetWidth(148)
         else
-            F.Theme.ApplyFont(topTargetFrame._hpText, 12, "OUTLINE", 0.97, 0.97, 0.99, 1)
-            F.Theme.ApplyFont(topTargetFrame._nameText, 12, "OUTLINE", 0.97, 0.97, 0.99, 1)
+            ST.ApplyText(topTargetFrame._hpText, 12, 0.97, 0.97, 0.99, 1)
+            ST.ApplyText(topTargetFrame._nameText, 12, 0.97, 0.97, 0.99, 1)
             topTargetFrame._hpText:SetPoint("BOTTOMLEFT", topTargetFrame._hpBar, "TOPLEFT", 2, 2)
             topTargetFrame._nameText:SetPoint("BOTTOMRIGHT", topTargetFrame._hpBar, "TOPRIGHT", -2, 2)
             topTargetFrame._nameText:SetWidth(168)
@@ -2413,9 +3635,10 @@ local function ApplyLayoutAndTheme()
         if topTargetFrame._hpBar._spark then topTargetFrame._hpBar._spark:SyncAnchor() end
         UpdateTopTargetHUD(true)
     end
-    if euiTrailPlayer then euiTrailPlayer:SetDelay(db.trailDelay or 0.16) end
     if euiTrailTarget then euiTrailTarget:SetDelay(db.trailDelay or 0.16) end
     SyncHiddenEUIFrames()
+    SyncTopRightAuraDedupe(true)
+    SyncClickLayers()
     UpdateIdleFade(true)
 end
 
@@ -2426,7 +3649,7 @@ local function OnCastBegin(isChannel, castGUID, spellID)
     local fn = isChannel and _G.UnitChannelInfo or _G.UnitCastingInfo
     if not fn then return end
     local ok, name, _, tex, startMS, endMS = pcall(fn, "player")
-    if not ok or not tex then return end
+    if not ok or type(tex) == "nil" then return end
     local pName = F.PlainString(name, nil)
     local pSid = F.PlainNumber(spellID, nil)
     if IsPermanentOrAspectSpell(pSid, pName) then return end
@@ -2434,7 +3657,7 @@ local function OnCastBegin(isChannel, castGUID, spellID)
     local eMS = F.PlainNumber(endMS, nil)
     orbState.castActive = true
     orbState.castSpellID = pSid
-    orbState.castGUID = (castGUID ~= nil and not F.IsSecret(castGUID)) and castGUID or nil
+    orbState.castGUID = (type(castGUID) ~= "nil" and not F.IsSecret(castGUID)) and castGUID or nil
     orbState.lastSpellIcon = nil
     orbState.lastSpellUntil = 0
     if not F.IsSecret(tex) then orbState.castIcon = tex end
@@ -2445,15 +3668,28 @@ local function OnCastBegin(isChannel, castGUID, spellID)
     end
 end
 
-local function OnCastEnd()
-    if (_G.UnitCastingInfo and _G.UnitCastingInfo("player"))
-        or (_G.UnitChannelInfo and _G.UnitChannelInfo("player")) then
-        return
+local function OnCastEnd(_, event, _, castGUID, spellID)
+    if event ~= "UNIT_SPELLCAST_CHANNEL_STOP" then
+        if type(castGUID) ~= "nil" and not F.IsSecret(castGUID) and orbState.castGUID and castGUID ~= orbState.castGUID then
+            return
+        end
+        local sid = F.PlainNumber(spellID, nil)
+        if sid and orbState.castSpellID and sid ~= orbState.castSpellID then
+            return
+        end
+        if F.UnitIsCasting("player") or F.UnitIsCasting("player", true) then
+            return
+        end
+    else
+        if F.UnitIsCasting("player") then
+            return
+        end
     end
     -- 读条/引导技能（如剥皮、采矿、瞄准射击等）结束瞬间立刻归位，绝不滞留 5 秒！
     orbState.castActive = false
     orbState.castIcon = nil
     orbState.castSpellID = nil
+    orbState.castGUID = nil
     orbState.lastSpellIcon = nil
     orbState.lastSpellUntil = 0
     orbState.lastCastEndTime = GetTime()
@@ -2521,9 +3757,14 @@ function mod:OnEnable()
     local EUI = _G.EllesmereUI
     if EUI and EUI.RegisterUnlockModeListener then
         pcall(EUI.RegisterUnlockModeListener, EUI, "kkowoUI_CoreHUD_Idle", function()
-            if mod._active then UpdateIdleFade(false) end
+            if mod._active then
+                UpdateIdleFade(false)
+                SyncClickLayers() -- 解锁模式拖动 HUD 后，点击层跟随新位置
+            end
         end)
     end
+    self:RegisterEvent("UI_SCALE_CHANGED", function() SyncClickLayers() end)
+    self:RegisterEvent("DISPLAY_SIZE_CHANGED", function() SyncClickLayers() end)
 
     self:RegisterUnitEvent("UNIT_HEALTH", "player", "target", function(_, _, unit)
         if unit == "player" then
@@ -2588,13 +3829,18 @@ function mod:OnEnable()
     self:RegisterUnitEvent("UNIT_TARGET", "target", UpdateTargetOfTarget)
 
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
-        if coreFrame and coreFrame._orb then coreFrame._orb._combatIcon:Show() end
+        SetCombatBadge(true, true)
         UpdateOrbAmbientGlow()
+        if mod._queueAuraUpdate then mod._queueAuraUpdate() end
         UpdateIdleFade(false)
     end)
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
-        if coreFrame and coreFrame._orb then coreFrame._orb._combatIcon:Hide() end
+        SetCombatBadge(false, true)
         UpdateOrbAmbientGlow()
+        if mod._queueAuraUpdate then mod._queueAuraUpdate() end
+        C_Timer.After(0.35, function()
+            if mod._active then UpdateCombatAuras() end
+        end)
         UpdateIdleFade(false)
     end)
 
@@ -2612,16 +3858,19 @@ function mod:OnEnable()
     self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", function(_, _, _, castGUID, spellID)
         local sid = F.PlainNumber(spellID, nil)
         if not sid or sid == 6603 or sid == 75 then return end
+        local sName = GetSpellNameSafe(sid)
+        if IsPermanentOrAspectSpell(sid, sName) then
+            permState.RecordSpellCast(sid, sName)
+            return
+        end
         -- 读条/引导技能（如剥皮、采矿、炉石、瞄准射击）施法完成时同步触发 SUCCEEDED：绝不滞留，交由 OnCastEnd 瞬间丝滑回默认图标
         local now = GetTime()
         if orbState.castActive
-            or (castGUID ~= nil and not F.IsSecret(castGUID) and castGUID == orbState.castGUID)
+            or (type(castGUID) ~= "nil" and not F.IsSecret(castGUID) and castGUID == orbState.castGUID)
             or ((now - (orbState.lastCastEndTime or 0)) < 0.30)
             or (GetSpellCastTimeSafe(sid) > 0) then
             return
         end
-        local sName = GetSpellNameSafe(sid)
-        if IsPermanentOrAspectSpell(sid, sName) then return end
         local ic = GetSpellIconSafe(sid)
         if ic then
             local s, d = GetSpellCooldownSafe(61304)
@@ -2643,7 +3892,17 @@ function mod:OnEnable()
             end)
         end
     end)
-    self:RegisterUnitEvent("UNIT_AURA", "player", F.Debounce(0.10, UpdateCombatAuras))
+    local QueueAuraUpdate = F.Debounce(0.10, UpdateCombatAuras)
+    self:RegisterUnitEvent("UNIT_AURA", "player", QueueAuraUpdate)
+    self:RegisterEvent("UPDATE_SHAPESHIFT_FORM", function()
+        QueueAuraUpdate()
+        UpdateUpperRightClassPower()
+    end)
+    self:RegisterEvent("UPDATE_SHAPESHIFT_FORMS", function()
+        QueueAuraUpdate()
+        UpdateUpperRightClassPower()
+    end)
+    self._queueAuraUpdate = QueueAuraUpdate
 
     -- 无限服原生挥砍事件（驱动左上极细挥砍翼与空闲外环计时）
     self:RegisterEvent("PLAYER_SWING", function(_, _, duration, swingType)
@@ -2651,20 +3910,21 @@ function mod:OnEnable()
         local stype = F.PlainNumber(swingType, nil)
         if not dur or dur <= 0.05 then return end
         local now = GetTime()
+        local isOffHand = SWING_ENUM and stype == SWING_ENUM.OffHand
         if SWING_ENUM and stype == SWING_ENUM.Ranged then
             swingState.rStart, swingState.rEnd, swingState.rDur = now, now + dur, dur
             swingState.activeKind = "ranged"
-        elseif SWING_ENUM and stype == SWING_ENUM.OffHand then
+        elseif isOffHand then
             swingState.ohStart, swingState.ohEnd, swingState.ohDur = now, now + dur, dur
         else
             swingState.mhStart, swingState.mhEnd, swingState.mhDur = now, now + dur, dur
             swingState.activeKind = "mh"
         end
-        if mod:GetDB().showUpperSwing ~= false then
+        if mod:GetDB().showUpperSwing ~= false and coreFrame and coreFrame:IsShown() then
             swingTicker:Show()
             SyncUpperSwingVisual()
         end
-        if not orbState.castActive and now >= (orbState.lastSpellUntil or 0) then
+        if (not isOffHand) and not orbState.castActive and now >= (orbState.lastSpellUntil or 0) then
             SetOrbTimerArc(now, dur)
         end
     end)
@@ -2678,8 +3938,8 @@ function mod:OnEnable()
         ApplyLayoutAndTheme()
         SyncHiddenEUIFrames()
         C_Timer.After(0.15, function() if mod._active then SyncHiddenEUIFrames() end end)
-        C_Timer.After(0.65, function() if mod._active then SyncHiddenEUIFrames() end end)
-        C_Timer.After(1.50, function() if mod._active then SyncHiddenEUIFrames() end end)
+        C_Timer.After(0.65, function() if mod._active then SyncHiddenEUIFrames(); UpdateCombatAuras() end end)
+        C_Timer.After(1.50, function() if mod._active then SyncHiddenEUIFrames(); UpdateCombatAuras() end end)
     end
     self:RegisterEvent("PLAYER_ENTERING_WORLD", OnZoneOrPetSync)
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA", OnZoneOrPetSync)
@@ -2701,8 +3961,24 @@ function mod:OnDisable()
     end
     if petEventFrame then petEventFrame:UnregisterAllEvents() end
     swingTicker:Hide()
+    self:SetLowHealthPulse(false)
     SetOrbTimerArc(nil, nil)
     lastIdleAlpha = nil
+    orbState.castActive = false
+    orbState.castIcon = nil
+    orbState.castSpellID = nil
+    orbState.castGUID = nil
+    orbState.lastSpellIcon = nil
+    orbState.lastSpellUntil = 0
+    orbState.currentIcon = nil
+    swingState.mhEnd = 0
+    swingState.ohEnd = 0
+    swingState.rEnd = 0
+    swingState.autoRepeat = false
+    trState.tempExpanded = false
+    permState.cached = {}
+    permState.hasCleanScan = false
+    permState.RebuildIcons()
     if coreFrame then
         if coreFrame._orb then
             if coreFrame._orb._haloAG then coreFrame._orb._haloAG:Stop() end
@@ -2711,12 +3987,14 @@ function mod:OnDisable()
         end
         coreFrame:Hide()
     end
+    HidePetFeedMenu()
     if petFrame then petFrame:Hide() end
     if topTargetFrame then topTargetFrame:Hide() end
     if euiTrailPlayer then euiTrailPlayer:SetEnabled(false) end
     if euiTrailTarget then euiTrailTarget:SetEnabled(false) end
     SyncHiddenEUIFrames()
     SyncTopRightAuraDedupe()
+    SyncClickLayers()
 end
 
 function mod:OnRefresh()
@@ -2763,7 +4041,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             local nextOn = not mod:IsEnabled()
             mod:SetEnabled(nextOn)
             local EUI = _G.EllesmereUI
-            if EUI and EUI.RefreshPage then pcall(EUI.RefreshPage, EUI) end
+            if EUI and EUI.RefreshPage then pcall(EUI.RefreshPage, EUI, true) end
             F.Print(nextOn and "已一键启用新版核心双翼、宠物与圆角目标整套 HUD（已自动收起原 EUI 框体）。"
                 or "已一键关闭新版 HUD，并无损恢复 EUI 原生玩家/宠物/目标框体与右上角状态栏。")
         end,
@@ -2832,12 +4110,12 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "彻底收起右上角暴雪原生增益/减益栏（方案 A）",
+        text = "彻底收起右上角暴雪原生增益/减益栏",
         tooltip = "默认开启：右上角小地图左侧彻底清空清爽，全部状态统一在双翼上下居中管理；关闭本模块即刻 100% 还原。",
         getValue = function() return db.hideTopRightBlizzAuras ~= false end,
         setValue = function(v)
             db.hideTopRightBlizzAuras = v == true
-            topRightTempExpanded = false
+            trState.tempExpanded = false
             UpdateCombatAuras()
         end,
     }, {
@@ -2941,7 +4219,13 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         tooltip = "默认关闭（开启新版即自动收起 EUI 原玩家/宠物/目标框体）；若想同时显示两套框体做对比或右键原框体菜单，可临时开启。",
         getValue = function() return db.keepOriginalEUI == true end,
         setValue = function(v) db.keepOriginalEUI = v == true; SyncHiddenEUIFrames() end,
-    }, blank)
+    }, {
+        type = "toggle",
+        text = "双翼 / 宠物 / 目标条可点击（左键选中、右键菜单）",
+        tooltip = "原 EUI 框体收起后，用安全按钮让新版血条、宠物条、目标条与目标的目标都能左键选中、右键打开单位菜单（战斗中同样可用）。关闭后这些条完全鼠标穿透。",
+        getValue = function() return db.clickableHUD ~= false end,
+        setValue = function(v) db.clickableHUD = v == true; SyncClickLayers() end,
+    })
     y = y - h
 
     return y

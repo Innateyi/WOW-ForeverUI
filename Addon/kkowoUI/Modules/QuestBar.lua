@@ -40,6 +40,11 @@ local applyFreePos = nil
 local isDockedNow = false
 local dockPollTicker = nil
 local eqtInitHooked = false
+local eqtApplyHooked = false
+local inEncounter = false
+local keepingTrackerShown = false
+local keptEmptyShown = false
+local RefreshButtons = nil
 
 local BUTTON_DEFS = {
     { kind = "accept",   label = "接",   dockW = 22, tip = "自动接任务" },
@@ -59,17 +64,136 @@ local function GetZoneFilterState()
     return false, false
 end
 
+local function IsAnyFilterEnabled(EQT)
+    if not (EQT and type(EQT.Cfg) == "function") then return false end
+    local okF, fOn = pcall(EQT.Cfg, "filterEnabled")
+    if not (okF and fOn == true) then return false end
+    for _, key in ipairs({ "filterZone", "filterCompleted", "filterTrivial", "filterRepeatable" }) do
+        local okK, v = pcall(EQT.Cfg, key)
+        if okK and v == true then return true end
+    end
+    return false
+end
+
+local function RefreshEQTWatches()
+    local EQT = _G.EllesmereUIQuestTracker
+    if EQT and EQT.ApplyQuestWatches then pcall(EQT.ApplyQuestWatches) end
+    local EUI = _G.EllesmereUI
+    if EUI and EUI.RefreshQuestTrackerRows then pcall(EUI.RefreshQuestTrackerRows) end
+end
+
+-- 「本图」等筛选开启后，如果当前地图没有可显示的任务，EUI 自定义任务追踪器（EUI_CustomQuestTracker）
+-- 在 Render 把列表清空、高度收成仅剩标题栏（24px）之后，会因为 empty==true 在 UpdateVisibility 里把整个框体 Hide 掉。
+-- 这里在「启用了筛选且 EUI 自身可见性允许显示」时拦住这次空列表隐藏，让标题栏保留在原位、下方正常显示空白，
+-- 同时完整尊重 EUI 的停用、副本/竞技场/Boss 战自动隐藏、战斗/鼠标悬停等可见性规则。
+local function IsTrackerBlocked(EQT)
+    if type(EQT.Cfg) == "function" then
+        local okE, en = pcall(EQT.Cfg, "enabled")
+        if okE and en == false then return true end
+    end
+    if type(EQT.IsSuppressed) == "function" then
+        local okS, sup = pcall(EQT.IsSuppressed)
+        if okS and sup then return true end
+    end
+    if _G.IsInInstance then
+        local okI, _, instType = pcall(_G.IsInInstance)
+        if okI then
+            if instType == "arena" then return true end
+            if instType == "raid" and type(EQT.Cfg) == "function" then
+                local okR, mode = pcall(EQT.Cfg, "hideInRaidMode")
+                if okR and mode == "always" then return true end
+                if not okR or mode ~= "never" then
+                    if inEncounter then return true end
+                    if _G.C_InstanceEncounter and _G.C_InstanceEncounter.IsEncounterInProgress then
+                        local okEnc, inEnc = pcall(_G.C_InstanceEncounter.IsEncounterInProgress)
+                        if okEnc and inEnc then return true end
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function IsCursorOverFrame(frame)
+    if not (frame and frame.GetRect and frame.GetEffectiveScale and _G.GetCursorPosition) then
+        return false
+    end
+    local okR, l, b, w, h = pcall(frame.GetRect, frame)
+    if not okR then return false end
+    l = F.PlainNumber(l, nil)
+    b = F.PlainNumber(b, nil)
+    w = F.PlainNumber(w, nil)
+    h = F.PlainNumber(h, nil)
+    if not (l and b and w and h) then return false end
+    local okS, es = pcall(frame.GetEffectiveScale, frame)
+    es = okS and F.PlainNumber(es, nil) or nil
+    if not es or es <= 0 then return false end
+    local okC, rawX, rawY = pcall(_G.GetCursorPosition)
+    if not okC then return false end
+    rawX = F.PlainNumber(rawX, nil)
+    rawY = F.PlainNumber(rawY, nil)
+    if not (rawX and rawY) then return false end
+    local cx, cy = rawX / es, rawY / es
+    return cx >= l and cx <= l + w and cy >= b and cy <= b + h
+end
+
+local function ShouldKeepEmptyTrackerShown(EQT, tracker)
+    if not (mod._active and EQT and tracker) then return false end
+    if not IsAnyFilterEnabled(EQT) then return false end
+    if IsTrackerBlocked(EQT) then return false end
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI.EvalVisibility) == "function" and type(EQT.DB) == "function" then
+        local okD, qtDB = pcall(EQT.DB)
+        if not okD then return false end
+        local okV, vis = pcall(EUI.EvalVisibility, qtDB)
+        if not okV or not vis then return false end
+        if vis == "mouseover" then
+            return IsCursorOverFrame(tracker)
+        end
+    end
+    return true
+end
+
+local function EnsureEmptyTrackerShown(tracker)
+    if keepingTrackerShown or not mod._active then return end
+    tracker = tracker or _G.EUI_CustomQuestTracker
+    if not tracker then return end
+    local EQT = _G.EllesmereUIQuestTracker
+    if not ShouldKeepEmptyTrackerShown(EQT, tracker) then return end
+    if tracker:IsShown() then return end
+    keepingTrackerShown = true
+    keptEmptyShown = true
+    pcall(tracker.Show, tracker)
+    -- 若 OnShow 触发了补绘（stale Render）并再次调用 Hide()，补绘已将 stale 清零，再补 Show 一次即可稳定显示
+    if not tracker:IsShown() and ShouldKeepEmptyTrackerShown(EQT, tracker) then
+        pcall(tracker.Show, tracker)
+    end
+    local a = tracker.GetAlpha and F.PlainNumber(tracker:GetAlpha(), 1) or 1
+    if a <= 0.01 and tracker.SetAlpha then
+        pcall(tracker.SetAlpha, tracker, 1)
+    end
+    keepingTrackerShown = false
+end
+
+local function SetEQTFilter(EQT, on)
+    if on then pcall(EQT.Set, "filterZone", true) end
+    pcall(EQT.Set, "filterEnabled", on == true)
+end
+
 local function ToggleZoneFilter()
     local EQT = _G.EllesmereUIQuestTracker
     if not (EQT and type(EQT.Set) == "function") then return end
+    local db = mod:GetDB()
+    db.zoneFilterSuspended = nil
     local curZone = GetZoneFilterState()
-    local nextVal = not curZone
-    pcall(EQT.Set, "filterZone", true)
-    pcall(EQT.Set, "filterEnabled", nextVal)
-    if EQT.ApplyQuestWatches then pcall(EQT.ApplyQuestWatches) end
-    local EUI = _G.EllesmereUI
-    if EUI and EUI.RefreshQuestTrackerRows then pcall(EUI.RefreshQuestTrackerRows) end
-    F.Print("任务追踪筛选：" .. (nextVal and "|cff5fd3a6仅显示当前地图任务|r" or "|cff888888显示全部已追踪任务|r"))
+    if curZone then
+        SetEQTFilter(EQT, false)
+        RefreshEQTWatches()
+    else
+        SetEQTFilter(EQT, true)
+        RefreshEQTWatches()
+    end
 end
 
 local function ToggleCollapseCompleted()
@@ -81,11 +205,16 @@ local function ToggleCollapseCompleted()
     if EQT.ApplyQuestWatches then pcall(EQT.ApplyQuestWatches) end
     local EUI = _G.EllesmereUI
     if EUI and EUI.RefreshQuestTrackerRows then pcall(EUI.RefreshQuestTrackerRows) end
-    F.Print("已完成任务自动折叠：" .. (nextVal and "|cff5fd3a6已开启|r" or "|cff888888已关闭|r"))
 end
 
 local function SendPartyNotice(msg)
     if _G.IsInGroup and _G.IsInGroup() then
+        local ci = _G.C_ChatInfo
+        if ci and ci.InChatMessagingLockdown and ci.InChatMessagingLockdown() then
+            return
+        end
+        local sendFn = (ci and ci.SendChatMessage) or _G.SendChatMessage
+        if type(sendFn) ~= "function" then return end
         local chan
         local instCat = _G.LE_PARTY_CATEGORY_INSTANCE
         if instCat and _G.IsInGroup(instCat) then
@@ -95,7 +224,7 @@ local function SendPartyNotice(msg)
         else
             chan = "PARTY"
         end
-        pcall(_G.SendChatMessage, msg, chan)
+        pcall(sendFn, msg, chan)
     end
 end
 
@@ -179,23 +308,35 @@ local function HookZoneLines()
     for _, sf in ipairs({ tracker:GetChildren() }) do
         local child = sf and sf.GetScrollChild and sf:GetScrollChild()
         if child then
-            SyncTrackerClip(sf, child)
             -- 修复图 8：EUI 任务追踪器的 ScrollFrame 紧贴 header 底边（-HEADER_H），鸿蒙大字号下
-            -- 「任务」与快捷钮下划线会遮挡首行区域名（如「希尔斯布莱德丘陵」）。这里为 ScrollFrame 顶部下移 7px 留出呼吸间距。
-            if sf.GetPoint and sf.SetPoint then
-                local okP, pt, rel, rpt, x, y = pcall(sf.GetPoint, sf, 1)
-                if okP and pt == "TOPLEFT" and type(y) == "number" and not F.IsSecret(y) then
-                    local origY = scrollTopOrig[sf]
-                    if origY == nil then
-                        origY = y
-                        scrollTopOrig[sf] = origY
+            -- 「任务」与快捷钮下划线会遮挡首行区域名。同步将 TOPLEFT 与 BOTTOMRIGHT 整体下移 7px，
+            -- 保持 ScrollFrame 视口高度不变（避免缩矮 7px 导致 SyncTrackerClip 误判裁切与末行任务道具按钮隐藏）。
+            if sf.GetNumPoints and sf.GetPoint and sf.SetPoint then
+                local nPts = F.PlainNumber(sf:GetNumPoints(), 0) or 0
+                local orig = scrollTopOrig[sf]
+                if not orig then
+                    orig = {}
+                    for i = 1, nPts do
+                        local okP, pt, rel, rpt, x, y = pcall(sf.GetPoint, sf, i)
+                        if okP and (pt == "TOPLEFT" or pt == "BOTTOMRIGHT") and type(y) == "number" and not F.IsSecret(y) then
+                            orig[pt] = y
+                        end
                     end
-                    local wantY = origY - 7
-                    if math.abs(y - wantY) > 0.5 then
-                        pcall(sf.SetPoint, sf, pt, rel, rpt, x, wantY)
+                    if orig.TOPLEFT ~= nil then scrollTopOrig[sf] = orig end
+                end
+                if orig and orig.TOPLEFT ~= nil then
+                    for i = 1, nPts do
+                        local okP, pt, rel, rpt, x, y = pcall(sf.GetPoint, sf, i)
+                        if okP and orig[pt] ~= nil and type(y) == "number" and not F.IsSecret(y) then
+                            local wantY = orig[pt] - 7
+                            if math.abs(y - wantY) > 0.5 then
+                                pcall(sf.SetPoint, sf, pt, rel, rpt, x, wantY)
+                            end
+                        end
                     end
                 end
             end
+            SyncTrackerClip(sf, child)
         end
         if child and child.GetChildren then
             for _, line in ipairs({ child:GetChildren() }) do
@@ -218,10 +359,14 @@ local function RestoreZoneLines()
         if F.StyleTokens then F.StyleTokens.ClearRoundedMask(tracker) end
         for _, sf in ipairs({ tracker:GetChildren() }) do
             if sf and sf.GetScrollChild and sf.SetClipsChildren then pcall(sf.SetClipsChildren, sf, true) end
-            if sf and scrollTopOrig[sf] ~= nil and sf.GetPoint and sf.SetPoint then
-                local okP, pt, rel, rpt, x = pcall(sf.GetPoint, sf, 1)
-                if okP and pt == "TOPLEFT" then
-                    pcall(sf.SetPoint, sf, pt, rel, rpt, x, scrollTopOrig[sf])
+            local orig = sf and scrollTopOrig[sf]
+            if type(orig) == "table" and sf.GetNumPoints and sf.GetPoint and sf.SetPoint then
+                local nPts = F.PlainNumber(sf:GetNumPoints(), 0) or 0
+                for i = 1, nPts do
+                    local okP, pt, rel, rpt, x = pcall(sf.GetPoint, sf, i)
+                    if okP and orig[pt] ~= nil then
+                        pcall(sf.SetPoint, sf, pt, rel, rpt, x, orig[pt])
+                    end
                 end
             end
         end
@@ -237,18 +382,23 @@ local function RestoreZoneLines()
 end
 
 local function HookZoneTracker()
-    if zoneTrackerHooked then
-        HookZoneLines()
-        return
-    end
     local tracker = _G.EUI_CustomQuestTracker
     if not (tracker and tracker.SetHeight) then return end
-    zoneTrackerHooked = true
-    -- EUI 每次重绘末尾都会 SetHeight：借它发现新建的行（已挂过的行直接跳过，开销只是遍历几十个子框）
-    _G.hooksecurefunc(tracker, "SetHeight", function()
-        if mod._active then HookZoneLines() end
-    end)
+    if not zoneTrackerHooked then
+        zoneTrackerHooked = true
+        -- EUI 每次重绘末尾都会 SetHeight：借它发现新建的行（已挂过的行直接跳过，开销只是遍历几十个子框）
+        _G.hooksecurefunc(tracker, "SetHeight", function()
+            if mod._active then HookZoneLines() end
+        end)
+        -- 拦截 EUI 在筛选后因列表为空自动隐藏整个追踪器的行为，保留标题栏、下方正常显示空白
+        if type(tracker.Hide) == "function" then
+            _G.hooksecurefunc(tracker, "Hide", function(self)
+                EnsureEmptyTrackerShown(self)
+            end)
+        end
+    end
     HookZoneLines()
+    EnsureEmptyTrackerShown(tracker)
 end
 
 local function SetPanelChromeShown(frame, shown)
@@ -260,7 +410,6 @@ local function SetPanelChromeShown(frame, shown)
     end
 end
 
-local RefreshButtons
 local refreshQueued = false
 
 local function HookFilterAnchor(filterBtn)
@@ -287,7 +436,9 @@ local function StabilizeTrackerHeader(header)
     if not hookedHeaders[header] and header.HookScript then
         hookedHeaders[header] = true
         header:HookScript("OnClick", function()
+            if not mod._active then return end
             C_Timer.After(0, function()
+                if not mod._active then return end
                 if header.toggle and header.toggle.SetWidth then
                     header.toggle:SetWidth(14)
                 end
@@ -316,12 +467,40 @@ local function EnsureDockPoll()
     end)
 end
 
+local function HookEQTApplyOnce()
+    if eqtApplyHooked then return end
+    local EQT = _G.EllesmereUIQuestTracker
+    if EQT and type(EQT.ApplyQuestWatches) == "function" then
+        eqtApplyHooked = true
+        _G.hooksecurefunc(EQT, "ApplyQuestWatches", function()
+            if not mod._active then return end
+            C_Timer.After(0, function()
+                if not mod._active then return end
+                RefreshButtons()
+                local curEQT = _G.EllesmereUIQuestTracker
+                if not curEQT then return end
+                if IsAnyFilterEnabled(curEQT) then
+                    EnsureEmptyTrackerShown(_G.EUI_CustomQuestTracker)
+                elseif keptEmptyShown then
+                    keptEmptyShown = false
+                    if type(curEQT.UpdateVisibility) == "function" then
+                        pcall(curEQT.UpdateVisibility)
+                    end
+                end
+            end)
+        end)
+    end
+end
+
 local function HookEQTInitOnce()
+    HookEQTApplyOnce()
     if eqtInitHooked then return end
     local EQT = _G.EllesmereUIQuestTracker
     if EQT and type(EQT.InitCustom) == "function" then
         eqtInitHooked = true
         _G.hooksecurefunc(EQT, "InitCustom", function()
+            if not mod._active then return end
+            HookZoneTracker()
             C_Timer.After(0, RefreshButtons)
             C_Timer.After(0.2, RefreshButtons)
         end)
@@ -528,10 +707,17 @@ local function CreateBar()
         f:SetScript("OnDragStop", function()
             if not dragging then return end
             dragging = false
+            barFrame:StopMovingOrSizing()
             if not isDockedNow then
-                barFrame:StopMovingOrSizing()
                 local pt, _, rpt, x, y = barFrame:GetPoint(1)
                 if pt then F.DB.SavePosition("QuestBar", pt, rpt, x, y) end
+            end
+        end)
+        f:HookScript("OnHide", function()
+            if not dragging then return end
+            dragging = false
+            if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+                barFrame:StopMovingOrSizing()
             end
         end)
     end
@@ -645,7 +831,7 @@ local function CreateBar()
         defaultY = -220,
         allowShiftDrag = false,
         isHidden = function()
-            return (mod:GetDB().dockMode or "header") ~= "free"
+            return not mod._active or (mod:GetDB().dockMode or "header") ~= "free"
         end,
         isAnchored = function()
             return (mod:GetDB().dockMode or "header") ~= "free"
@@ -662,8 +848,9 @@ function mod:OnQuestAccepted(_, questID)
     if not self:GetDB().announce or not questID then
         return
     end
-    local title = _G.C_QuestLog and _G.C_QuestLog.GetTitleForQuestID and _G.C_QuestLog.GetTitleForQuestID(questID)
-    if title then
+    local rawTitle = _G.C_QuestLog and _G.C_QuestLog.GetTitleForQuestID and _G.C_QuestLog.GetTitleForQuestID(questID)
+    local title = F.PlainString(rawTitle, nil)
+    if title and title ~= "" then
         SendPartyNotice("[任务] 已接取：" .. title)
     end
 end
@@ -686,7 +873,8 @@ function mod:OnQuestLogUpdate()
         if info and info.questID and not info.isHeader and not announcedQuests[info.questID] then
             if QL.IsComplete(info.questID) then
                 announcedQuests[info.questID] = true
-                SendPartyNotice("[任务] 已完成：" .. (info.title or tostring(info.questID)))
+                local t = F.PlainString(info.title, nil) or tostring(info.questID)
+                SendPartyNotice("[任务] 已完成：" .. t)
             end
         end
     end
@@ -698,6 +886,21 @@ function mod:OnEnable()
         db.v2NoCombatFadeMigrated = true
         db.combatFade = false
     end
+    if _G.C_InstanceEncounter and _G.C_InstanceEncounter.IsEncounterInProgress then
+        local okEnc, inEnc = pcall(_G.C_InstanceEncounter.IsEncounterInProgress)
+        inEncounter = okEnc and inEnc == true
+    else
+        inEncounter = false
+    end
+    -- 清理旧版「待机态」遗留状态：若玩家此前点击过「本图」被记为待机，直接恢复真正的「本图」筛选
+    if db.zoneFilterSuspended ~= nil then
+        db.zoneFilterSuspended = nil
+        local EQT = _G.EllesmereUIQuestTracker
+        if EQT and type(EQT.Set) == "function" then
+            SetEQTFilter(EQT, true)
+            RefreshEQTWatches()
+        end
+    end
     CreateBar()
     SeedCompletedQuests()
     HookEQTInitOnce()
@@ -706,11 +909,30 @@ function mod:OnEnable()
     C_Timer.After(0.5, RefreshButtons)
     C_Timer.After(1.5, RefreshButtons)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        inEncounter = false
         SeedCompletedQuests()
         HookEQTInitOnce()
         RefreshButtons()
         C_Timer.After(0.5, RefreshButtons)
         C_Timer.After(1.5, RefreshButtons)
+    end)
+    self:RegisterEvent("ENCOUNTER_START", function()
+        inEncounter = true
+        if keptEmptyShown then
+            local EQT = _G.EllesmereUIQuestTracker
+            if EQT and IsTrackerBlocked(EQT) and type(EQT.UpdateVisibility) == "function" then
+                keptEmptyShown = false
+                pcall(EQT.UpdateVisibility)
+            end
+        end
+    end)
+    self:RegisterEvent("ENCOUNTER_END", function()
+        inEncounter = false
+        C_Timer.After(0, function()
+            if mod._active then
+                EnsureEmptyTrackerShown(_G.EUI_CustomQuestTracker)
+            end
+        end)
     end)
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA", RefreshButtons)
     self:RegisterEvent("QUEST_WATCH_LIST_CHANGED", function()
@@ -736,6 +958,13 @@ function mod:OnDisable()
         barFrame:Hide()
     end
     RestoreZoneLines()
+    if keptEmptyShown then
+        keptEmptyShown = false
+        local EQT = _G.EllesmereUIQuestTracker
+        if EQT and type(EQT.UpdateVisibility) == "function" then
+            pcall(EQT.UpdateVisibility)
+        end
+    end
 end
 
 function mod:OnRefresh()

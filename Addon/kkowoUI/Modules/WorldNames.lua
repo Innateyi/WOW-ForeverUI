@@ -55,6 +55,9 @@ do
         ["Karazhan"] = "卡拉赞", ["Zul'Gurub"] = "祖尔格拉布", ["Ahn'Qiraj"] = "安其拉",
         ["Blackrock Mountain"] = "黑石山", ["Light's Hope Chapel"] = "圣光之愿礼拜堂",
         ["Cenarion Hold"] = "塞纳里奥要塞", ["Gadgetzan"] = "加基森", ["Everlook"] = "永望镇",
+        ["Southshore"] = "南海镇", ["Zephras Isle"] = "泽弗拉斯岛",
+        ["Riverglades"] = "河谷林地", ["Shen'dralas"] = "辛德拉拉斯",
+        ["Mount Hyjal"] = "海加尔山", ["Hyjal"] = "海加尔山",
     }
     for k, v in _G.pairs(raw) do PLACE[string_lower(k)] = v end
 end
@@ -89,8 +92,10 @@ local function Translate(name)
         local pos = string_match(lc, rule[1])
         if pos and pos <= #lc then
             -- 纯 ASCII，小写串与原串逐字节对齐，可以按同一位置截出原样大小写的地名
-            local zh = PlaceName(lc:sub(pos))
-            return rule[2] .. (zh or name:sub(pos))
+            local tailLc = lc:sub(pos):gsub("%s+$", "")
+            local tailOrig = name:sub(pos):gsub("%s+$", "")
+            local zh = PlaceName(tailLc)
+            return rule[2] .. (zh or tailOrig)
         end
     end
     return nil
@@ -117,9 +122,10 @@ local function OnNameSetText(fs, text)
 end
 
 local function HookAndTranslate(fs, zh)
+    if not fs or (fs.IsForbidden and fs:IsForbidden()) then return end
     if not hookedFS[fs] then
-        hookedFS[fs] = true
-        pcall(_G.hooksecurefunc, fs, "SetText", OnNameSetText)
+        local okH = pcall(_G.hooksecurefunc, fs, "SetText", OnNameSetText)
+        if okH then hookedFS[fs] = true end
     end
     writing = true
     pcall(SetTextRaw, fs, zh)
@@ -136,17 +142,19 @@ end
 
 -- 在名牌树里找文字（不分大小写）等于物件英文名的 FontString
 local function FindAndTranslate(root, lcName, zh, depth)
-    if depth > 5 or not root then return 0 end
+    if depth > 5 or not root or (root.IsForbidden and root:IsForbidden()) then return 0 end
     local hits = 0
     local okR, regs = pcall(GetRegionsRaw, root)
     if okR and type(regs) == "table" then
         for _, r in ipairs(regs) do
-            local okT, t = pcall(GetTypeRaw, r)
-            if okT and t == "FontString" then
-                local okG, txt = pcall(GetTextRaw, r)
-                if okG and type(txt) == "string" and not F.IsSecret(txt) and string_lower(txt) == lcName then
-                    HookAndTranslate(r, zh)
-                    hits = hits + 1
+            if r and not (r.IsForbidden and r:IsForbidden()) then
+                local okT, t = pcall(GetTypeRaw, r)
+                if okT and t == "FontString" then
+                    local okG, txt = pcall(GetTextRaw, r)
+                    if okG and type(txt) == "string" and not F.IsSecret(txt) and string_lower(txt) == lcName then
+                        HookAndTranslate(r, zh)
+                        hits = hits + 1
+                    end
                 end
             end
         end
@@ -154,29 +162,35 @@ local function FindAndTranslate(root, lcName, zh, depth)
     local okC, kids = pcall(GetChildrenRaw, root)
     if okC and type(kids) == "table" then
         for _, ch in ipairs(kids) do
-            hits = hits + FindAndTranslate(ch, lcName, zh, depth + 1)
+            if ch and not (ch.IsForbidden and ch:IsForbidden()) then
+                hits = hits + FindAndTranslate(ch, lcName, zh, depth + 1)
+            end
         end
     end
     return hits
 end
 
 local function TranslatePlate(unit)
-    if not mod._active or type(unit) ~= "string" then return end
-    local isObj = _G.UnitIsGameObject and _G.UnitIsGameObject(unit)
-    if F.IsSecret(isObj) or not isObj then return end
-    local name = _G.UnitName and _G.UnitName(unit)
+    unit = F.PlainString(unit, nil)
+    if not (mod._active and unit) then return end
+    if not _G.UnitIsGameObject then return end
+    local okObj, isObj = pcall(_G.UnitIsGameObject, unit)
+    if not okObj or F.IsSecret(isObj) or not isObj then return end
+    if not _G.UnitName then return end
+    local okN, name = pcall(_G.UnitName, unit)
+    if not okN then return end
     local zh = Translate(name)
     if not zh then return end
     local api = _G.C_NamePlate
     if not (api and api.GetNamePlateForUnit) then return end
     local okP, plate = pcall(api.GetNamePlateForUnit, unit)
-    if not (okP and plate) then return end
+    if not (okP and plate) or (plate.IsForbidden and plate:IsForbidden()) then return end
     local hits = FindAndTranslate(plate, string_lower(name), zh, 0)
     if hits == 0 then
         -- 12.1 名牌树里文字可能读出保密值而匹配不上：直接写暴雪名牌的名字字段
         local okF, fs = pcall(NameFieldRaw, plate)
         local okT, t = pcall(GetTypeRaw, okF and fs or nil)
-        if okF and fs and okT and t == "FontString" then HookAndTranslate(fs, zh) end
+        if okF and fs and not (fs.IsForbidden and fs:IsForbidden()) and okT and t == "FontString" then HookAndTranslate(fs, zh) end
     end
 end
 
@@ -187,11 +201,28 @@ local function OnPlateAdded(_, _, unit)
     C_Timer.After(0.15, function() TranslatePlate(unit) end)
 end
 
+local function SweepVisiblePlates()
+    local api = _G.C_NamePlate
+    if api and api.GetNamePlates then
+        local ok, list = pcall(api.GetNamePlates)
+        if ok and type(list) == "table" then
+            for _, p in ipairs(list) do
+                if p and not (p.IsForbidden and p:IsForbidden()) then
+                    local u = F.PlainString(p.namePlateUnitToken or (p.UnitFrame and p.UnitFrame.unit), nil)
+                    if u then TranslatePlate(u) end
+                end
+            end
+        end
+    end
+    TranslatePlate("softinteract")
+end
+
 function mod:OnEnable()
     self:RegisterEvent("NAME_PLATE_UNIT_ADDED", OnPlateAdded)
     self:RegisterEvent("PLAYER_SOFT_INTERACT_CHANGED", function()
         OnPlateAdded(nil, nil, "softinteract")
     end)
+    SweepVisiblePlates()
 end
 
 function mod:OnDisable()

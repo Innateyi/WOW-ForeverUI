@@ -243,7 +243,8 @@ local function GetCompletedQuestXP(force)
         local info = QL.GetInfo(i)
         if info and info.questID and not info.isHeader and QL.IsComplete(info.questID) then
             local ok, val = pcall(_G.GetQuestLogRewardXP, info.questID)
-            if ok and type(val) == "number" and val > 0 then
+            val = ok and F.PlainNumber(val, nil) or nil
+            if val and val > 0 then
                 total = total + val
             end
         end
@@ -432,6 +433,9 @@ end
 
 local function ApplyNineSlice(obj, texPath, radius, wrap)
     if not obj then return end
+    if obj.SetBlockingLoadsRequested then
+        pcall(obj.SetBlockingLoadsRequested, obj, true)
+    end
     if wrap then
         pcall(obj.SetTexture, obj, texPath, wrap, wrap)
     else
@@ -1042,13 +1046,18 @@ local function UpdateRep()
         repFrame:Hide()
         return
     end
-    local span = math_max(1, (maxV or 1) - (minV or 0))
-    local cur = math_max(0, (val or 0) - (minV or 0))
+    minV = F.PlainNumber(minV, 0) or 0
+    maxV = F.PlainNumber(maxV, 0) or 0
+    val = F.PlainNumber(val, 0) or 0
+    reaction = F.PlainNumber(reaction, 4) or 4
+    local isMaxed = (maxV <= minV) or (reaction >= 8 and val >= maxV)
+    local span = isMaxed and 1 or math_max(1, maxV - minV)
+    local cur = isMaxed and 1 or math_max(0, math_min(span, val - minV))
     repBar:SetMinMaxValues(0, span)
     repBar:SetValue(cur)
 
     local fr, fg, fb
-    local fc = _G.FACTION_BAR_COLORS and _G.FACTION_BAR_COLORS[reaction or 4]
+    local fc = _G.FACTION_BAR_COLORS and _G.FACTION_BAR_COLORS[reaction]
     if fc then
         fr, fg, fb = fc.r, fc.g, fc.b
     else
@@ -1057,7 +1066,11 @@ local function UpdateRep()
     ApplyHorizBarColor(repBar, { Clamp01(fr * 0.74), Clamp01(fg * 0.74), Clamp01(fb * 0.74) }, { fr, fg, fb }, 1)
 
     repLeft:SetText(name)
-    repRight:SetText(string_format("%s / %s |cff9aa6b8(%.1f%%)|r", FormatComma(cur), FormatComma(span), cur / span * 100))
+    if isMaxed then
+        repRight:SetText("已满级 |cff9aa6b8(100%)|r")
+    else
+        repRight:SetText(string_format("%s / %s |cff9aa6b8(%.1f%%)|r", FormatComma(cur), FormatComma(span), cur / span * 100))
+    end
     repFrame:Show()
 end
 
@@ -1225,6 +1238,13 @@ local function CreateFrames()
             F.DB.SavePosition("XPBar", pt, type(rpt) == "string" and rpt or pt, x, y)
         end
     end)
+    xpHitBox:HookScript("OnHide", function()
+        if not hitDragging then return end
+        hitDragging = false
+        if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+            xpFrame:StopMovingOrSizing()
+        end
+    end)
     xpHitBox:SetScript("OnMouseUp", function(self, btn)
         if btn == "RightButton" and not hitDragging then
             ResetXPSession(false)
@@ -1237,20 +1257,11 @@ local function CreateFrames()
     xpHitBox:SetScript("OnEnter", function(self)
         isUnitHovered = true
         SyncUnifiedHoverVisual()
-        if mod:GetDB().combatFade == true then
-            F.Theme.FadeTo(xpFrame, 1.0, 0.16)
-        end
         ShowXPTooltip(self)
     end)
     xpHitBox:SetScript("OnLeave", function()
         isUnitHovered = false
         SyncUnifiedHoverVisual()
-        if mod:GetDB().combatFade == true and _G.InCombatLockdown and _G.InCombatLockdown() then
-            local a = (F.db and F.db.theme and F.db.theme.combatFadeAlpha) or 0.18
-            F.Theme.FadeTo(xpFrame, a, 0.24)
-        elseif updateXPFade then
-            updateXPFade()
-        end
         GameTooltip:Hide()
     end)
 
@@ -1283,7 +1294,7 @@ local function CreateFrames()
 
     updateXPFade = F.Theme.AttachCombatFade(xpFrame, function()
         return mod:GetDB().combatFade == true
-    end)
+    end, nil, nil, xpHitBox)
 
     -- 同款圆角暗玻声望条
     repFrame = CreateFrame("Frame", "kkowoUI_RepBar", _G.UIParent)
@@ -1368,6 +1379,7 @@ function mod:OnEnable()
     ApplyVisuals()
     UpdateXP()
     UpdateRep()
+    if updateXPFade then updateXPFade(ThemeCombatAlpha()) end
     self:RegisterEvent("PLAYER_XP_UPDATE", UpdateXP)
     self:RegisterEvent("UPDATE_EXHAUSTION", UpdateXP)
     self:RegisterEvent("PLAYER_LEVEL_UP", function()

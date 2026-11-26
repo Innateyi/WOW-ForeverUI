@@ -331,9 +331,13 @@ local function FormatTemplate(tpl, ctx)
     if type(tpl) ~= "string" or tpl == "" then return "" end
     local manaStr = ctx and ctx.mana and (tostring(ctx.mana) .. "%") or (GetManaPct() and (tostring(GetManaPct()) .. "%") or "少量")
     local tgt = (ctx and ctx.target and ctx.target ~= "") and ctx.target or nil
-    if not tgt and _G.UnitExists and _G.UnitExists("target") then
-        local tn = F.PlainString(_G.UnitName and _G.UnitName("target"), nil)
-        if tn and tn ~= "" then tgt = tn end
+    if not tgt and _G.UnitExists then
+        local okE, exists = pcall(_G.UnitExists, "target")
+        if okE and not F.IsSecret(exists) and exists then
+            local okN, rawN = pcall(_G.UnitName, "target")
+            local tn = okN and F.PlainString(rawN, nil) or nil
+            if tn and tn ~= "" then tgt = tn end
+        end
     end
     tgt = tgt or "目标"
     local sp = (ctx and ctx.spell and ctx.spell ~= "") and ctx.spell or "技能"
@@ -400,7 +404,8 @@ end
 
 local function PreviewLocalEmote(text)
     if type(text) ~= "string" or text == "" then return end
-    local first, second = _G.UnitName and _G.UnitName("player")
+    local first, second
+    if _G.UnitName then first, second = _G.UnitName("player") end
     first = F.PlainString(first, "你")
     second = F.PlainString(second, nil)
     local fullName = (second and second ~= "" and _G.EllesmereUI and _G.EllesmereUI.IS_FOREVER)
@@ -414,14 +419,14 @@ local function PreviewLocalEmote(text)
     end
 end
 
-local function CheckCooldown(cdKey)
+local function IsOnCooldown(cdKey)
     local now = _G.GetTime and _G.GetTime() or 0
     local cd = mod:GetDB().cooldown or 20
-    if lastSentAt[cdKey] and (now - lastSentAt[cdKey]) < cd then
-        return false
-    end
-    lastSentAt[cdKey] = now
-    return true
+    return lastSentAt[cdKey] ~= nil and (now - lastSentAt[cdKey]) < cd
+end
+
+local function MarkCooldown(cdKey)
+    lastSentAt[cdKey] = _G.GetTime and _G.GetTime() or 0
 end
 
 -- 1) 坐下喝水回蓝检测（仅脱战，100% 避开战斗保密值）
@@ -430,7 +435,7 @@ local function IsPlayerDrinkingNow()
     if not (CA and CA.GetBuffDataByIndex) then return false end
     for i = 1, 40 do
         local ok, aura = pcall(CA.GetBuffDataByIndex, "player", i)
-        if not ok or type(aura) ~= "table" then break end
+        if not ok or F.IsSecret(aura) or type(aura) ~= "table" then break end
         local sid = F.PlainNumber(aura.spellId, nil)
         if sid and DRINK_SPELL_IDS[sid] then
             return true
@@ -460,11 +465,11 @@ local function OnPlayerAuraChanged()
         local pct = GetManaPct()
         local maxPct = db.drinkManaMax or 85
         if pct and pct <= maxPct and pct < 100 then
-            if CheckCooldown("drink") then
+            if not IsOnCooldown("drink") then
                 local lines = GetCategoryLines("drink")
                 local tpl = PickRandomLine("drink", lines)
-                if tpl then
-                    SendEmoteMessage(FormatTemplate(tpl, { mana = pct }), false)
+                if tpl and SendEmoteMessage(FormatTemplate(tpl, { mana = pct }), false) then
+                    MarkCooldown("drink")
                 end
             end
         end
@@ -518,13 +523,13 @@ local function OnPlayerSpellSent(_, _, unit, targetName, _, spellID)
     if type(spellMap) == "table" and spellMap[spellName] then
         local isUtil = IsUtilitySpell(spellName)
         if (isUtil and db.enableUtility ~= false) or (not isUtil and db.enableCombat ~= false) then
-            if CheckCooldown("spell:" .. spellName) then
+            if not IsOnCooldown("spell:" .. spellName) then
                 local customCat = isUtil and "utility" or "combat"
                 local customRaw = type(clsCustom) == "table" and clsCustom[customCat]
                 local pool = (type(customRaw) == "string" and Trim(customRaw) ~= "") and SplitLines(customRaw) or spellMap[spellName]
                 local tpl = PickRandomLine("spell:" .. spellName, pool)
-                if tpl then
-                    SendEmoteMessage(FormatTemplate(tpl, { target = cleanTarget, spell = spellName }), false)
+                if tpl and SendEmoteMessage(FormatTemplate(tpl, { target = cleanTarget, spell = spellName }), false) then
+                    MarkCooldown("spell:" .. spellName)
                 end
             end
         end
@@ -533,11 +538,11 @@ local function OnPlayerSpellSent(_, _, unit, targetName, _, spellID)
 
     -- 复活 / 拉人 / 传送门 / 造水糖等辅助技能
     if db.enableUtility ~= false and IsUtilitySpell(spellName) then
-        if CheckCooldown("utility:" .. spellName) then
+        if not IsOnCooldown("utility:" .. spellName) then
             local lines = GetCategoryLines("utility")
             local tpl = PickRandomLine("utility", lines)
-            if tpl then
-                SendEmoteMessage(FormatTemplate(tpl, { target = cleanTarget, spell = spellName }), false)
+            if tpl and SendEmoteMessage(FormatTemplate(tpl, { target = cleanTarget, spell = spellName }), false) then
+                MarkCooldown("utility:" .. spellName)
             end
         end
     end
@@ -694,16 +699,19 @@ local function OpenTextEditor(catKey)
             if not key then return end
             local txt = Trim(eb:GetText() or "")
             local db = mod:GetDB()
-            local _, cls = GetClassPreset()
+            local preset, cls = GetClassPreset()
             if key == "macro1" or key == "macro2" or key == "macro3" then
                 db.macros = type(db.macros) == "table" and db.macros or {}
-                db.macros[key:sub(6)] = (txt ~= "") and txt or nil
+                local defText = Trim(DEFAULT_MACROS[key:sub(6)] or "")
+                db.macros[key:sub(6)] = (txt ~= "" and txt ~= defText) and txt or nil
             else
                 db.customLines = type(db.customLines) == "table" and db.customLines or {}
                 db.customLines[cls] = type(db.customLines[cls]) == "table" and db.customLines[cls] or {}
-                db.customLines[cls][key] = (txt ~= "") and txt or nil
+                local defList = preset[key] or FALLBACK_PRESET[key] or {}
+                local defText = Trim(table_concat(defList, "\n"))
+                db.customLines[cls][key] = (txt ~= "" and txt ~= defText) and txt or nil
             end
-            F.Print("已保存趣味表情文案（留空则自动恢复当前职业默认文案）。")
+            F.Print("已保存趣味表情文案（留空或与职业默认一致时自动使用职业默认与招牌技能专属文案）。")
             f:Hide()
         end)
 

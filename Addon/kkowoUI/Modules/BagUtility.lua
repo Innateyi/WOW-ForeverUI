@@ -95,10 +95,19 @@ local function IsInsideTooltip(frame)
     local f = frame
     for _ = 1, 5 do
         if not f then return false end
-        if f.IsObjectType and f:IsObjectType("GameTooltip") then return true end
-        local okN, n = pcall(f.GetName, f)
-        if okN and type(n) == "string" and n:find("Tooltip", 1, true) then return true end
-        f = f.GetParent and f:GetParent() or nil
+        if f.IsForbidden then
+            local okF, forb = pcall(f.IsForbidden, f)
+            if not okF or forb then return true end
+        end
+        if f.IsObjectType then
+            local okT, isTT = pcall(f.IsObjectType, f, "GameTooltip")
+            if okT and isTT then return true end
+        end
+        local okN, rawN = pcall(f.GetName, f)
+        local n = okN and F.PlainString(rawN, nil) or nil
+        if n and n:find("Tooltip", 1, true) then return true end
+        local okP, parent = pcall(f.GetParent, f)
+        f = okP and parent or nil
     end
     return false
 end
@@ -324,6 +333,7 @@ local function EnlargeMacroFrame()
         return
     end
     F.RunOutOfCombat("FUI_EnlargeMacro", function()
+        if not (mod._active and mod:GetDB().enlargeMacro) then return end
         if not mf or macroEnlarged[mf] then return end
         macroEnlarged[mf] = true
         mf:SetSize(480, 560)
@@ -369,7 +379,11 @@ local function ScanLowValueItems()
 
     for bag = 0, 4 do
         -- 跳过箭袋/弹药袋/灵魂袋，且下面按物品类型再次过滤普通背包中的溢出弹药
-        local _, bagType = C.GetContainerNumFreeSlots and C.GetContainerNumFreeSlots(bag)
+        local bagType
+        if C.GetContainerNumFreeSlots then
+            local _, bt = C.GetContainerNumFreeSlots(bag)
+            bagType = bt
+        end
         if bagType == nil or bagType == 0 then
             local slots = C.GetContainerNumSlots(bag) or 0
             for slot = 1, slots do
@@ -547,18 +561,20 @@ local function EnsureLVILFrame()
         defaultRelPoint = "TOPRIGHT",
         defaultX = -320,
         defaultY = -180,
+        isHidden = function() return not (mod._active and mod:GetDB().lowValueHelper) end,
     })
     lvilFrame:Hide()
 end
 
-RefreshLVIL = function(forceShow)
+RefreshLVIL = function(forceShow, fromOptions)
     local db = mod:GetDB()
     if not (mod._active and db.lowValueHelper) then
         lvilManualOpen = false
         if lvilFrame then lvilFrame:Hide() end
         return
     end
-    if forceShow then
+    local manualPreview = (forceShow == true and fromOptions ~= false)
+    if manualPreview then
         lvilManualOpen = true
     end
     if not forceShow and db.onlyWhenFull and GetContainerFreeSlots() > 0 then
@@ -694,21 +710,21 @@ RefreshLVIL = function(forceShow)
         y = y - 24
         shown = shown + 1
     end
-    if shown == 0 and not forceShow then
+    if shown == 0 and not manualPreview then
         lvilManualOpen = false
         lvilFrame:Hide()
         return
     end
     lvilFrame:SetHeight(math.max(60, shown * 24 + 34))
-    -- 从 EUI 设置面板手动点击预览时临时置顶到 FULLSCREEN_DIALOG，避免被设置面板遮挡；关闭后自动回落 MEDIUM
-    if forceShow then
-        lvilFrame:SetFrameStrata("FULLSCREEN_DIALOG")
-        lvilFrame:SetFrameLevel(240)
+    -- 仅手动预览时提升到 DIALOG（不高于 StaticPopup 确认弹窗，避免绿装销毁确认框被盖住）；自动弹框保持 MEDIUM
+    if manualPreview then
+        lvilFrame:SetFrameStrata("DIALOG")
+        lvilFrame:SetFrameLevel(40)
     else
         lvilFrame:SetFrameStrata("MEDIUM")
     end
     lvilFrame:Show()
-    if forceShow then
+    if manualPreview then
         lvilFrame:Raise()
     end
 end
@@ -755,7 +771,10 @@ local function HandleMerchantShow()
 
     local euiHandlesRepair = euiQoL and (not euiDB or euiDB.autoRepair ~= false)
     if db.autoRepair ~= false and not euiHandlesRepair and _G.CanMerchantRepair and _G.CanMerchantRepair() then
-        local cost, canRepair = _G.GetRepairAllCost and _G.GetRepairAllCost()
+        local cost, canRepair = 0, false
+        if _G.GetRepairAllCost then
+            cost, canRepair = _G.GetRepairAllCost()
+        end
         cost = F.PlainNumber(cost, 0)
         if canRepair and cost > 0 then
             local money = _G.GetMoney and F.PlainNumber(_G.GetMoney(), 0) or 0
@@ -855,6 +874,12 @@ local function SetLootFrameSilent(silent)
                 inSilentPointSet = false
             end
             lootParked = false
+        elseif not canMove and lootParked then
+            F.RunOutOfCombat("FUI_UnparkLoot", function()
+                if not isSilentLooting and not lootPreArmed and lootParked then
+                    SetLootFrameSilent(false)
+                end
+            end)
         end
         inSilentAlphaSet = true
         pcall(lf.SetAlpha, lf, 1)
@@ -994,10 +1019,16 @@ local function HookLootFrameOnce()
                 if not (isSilentLooting or lootPreArmed) then return end
                 -- 若玩家正按住 Shift 手动开窗，不要劫持暴雪将窗口放到鼠标处的 SetPoint
                 if not isSilentLooting and not ShouldSilenceOnShow() then return end
-                local nx = F.PlainNumber(x, nil)
-                local ny = F.PlainNumber(y, nil)
+                local pRel, pRpt, pX, pY = rel, rpt, x, y
+                if type(rel) == "number" then
+                    pRel, pRpt, pX, pY = _G.UIParent, pt, rel, rpt
+                elseif type(rpt) == "number" then
+                    pRel, pRpt, pX, pY = rel or _G.UIParent, pt, rpt, x
+                end
+                local nx = F.PlainNumber(pX, nil)
+                local ny = F.PlainNumber(pY, nil)
                 if type(pt) == "string" and nx and ny and math.abs(nx) < 5000 and math.abs(ny) < 5000 then
-                    savedLootPoint = { pt, rel or _G.UIParent, rpt or pt, nx, ny }
+                    savedLootPoint = { pt, pRel or _G.UIParent, pRpt or pt, nx, ny }
                 end
                 local canMove = not (self.IsProtected and self:IsProtected() and _G.InCombatLockdown and _G.InCombatLockdown())
                 if canMove and self.ClearAllPoints and self.SetPoint then
@@ -1478,7 +1509,7 @@ local function StyleEmptyLootToast(f, getOpt)
     if eui and eui.ApplyModuleFont then
         pcall(eui.ApplyModuleFont, f.name, nil, textSize, "essentials")
     else
-        F.Theme.SetFont(f.name, textSize, "")
+        F.Theme.ApplyFont(f.name, textSize, "")
     end
 
     local hold = duration > 2.5 and 2.5 or (duration < 0.8 and 0.8 or duration)
@@ -1786,7 +1817,7 @@ function mod:OnEnable()
         if cleanMsg == _G.ERR_INV_FULL then
             if isSilentLooting then RevealLootWindow(true) end
             lvilManualOpen = false
-            RefreshLVIL(true)
+            RefreshLVIL(true, false)
             lvilManualOpen = false
         elseif isSilentLooting and (cleanMsg == _G.ERR_LOOT_CANT_LOOT_THAT or cleanMsg == _G.ERR_ITEM_MAX_COUNT) then
             RevealLootWindow(true)
@@ -1803,6 +1834,7 @@ function mod:OnEnable()
 end
 
 function mod:OnDisable()
+    AlignKnownMoneyFrames(0)
     RevealLootWindow()
     ApplyClickLootCVars(false)
     RestoreEUIQuickLoot()

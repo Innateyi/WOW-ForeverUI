@@ -206,6 +206,10 @@ end
 
 -- 「重新添加预设」：只忘掉「已添加过」的记录，让被你删掉的预设条在下次同步时回来
 local function ResetRemoved()
+    if not mod._active then
+        F.Print("请先启用「职业预设冷却条」模块。")
+        return
+    end
     local ns = CDM()
     if not ns then
         F.Print("EUI 冷却管理器未启用，无法添加预设冷却条。")
@@ -216,6 +220,9 @@ local function ResetRemoved()
     local st = SpecState(specKey)
     if st then st.added = {} end
     syncQueued = false
+    if _G.InCombatLockdown and _G.InCombatLockdown() then
+        F.Print("当前处于战斗中，已排队将在脱战后自动重新添加预设冷却条。")
+    end
     Sync()
 end
 mod.ResetRemoved = ResetRemoved

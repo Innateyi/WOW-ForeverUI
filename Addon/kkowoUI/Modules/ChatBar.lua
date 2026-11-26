@@ -39,9 +39,10 @@ local mod = F.RegisterModule("chatBar", {
         showActiveChannel = true,
         hideRedundantFriends = true, -- 自动隐藏 EUI 聊天侧边栏里与小地图重复的好友按钮
         unifiedRoundedPanel = true,  -- 统一圆角一体化聊天底板（融合左侧栏、标签栏与聊天正文）
-        panelAlpha = 0.34,           -- 清透微熏玻璃透明度（比纯透明略深即可看清文字，不挡场景）
+        panelAlpha = 0.24,           -- 统一清透玻璃透明度（比纯透明略深即可看清文字，不挡场景）
         panelRadius = 8,
         v6LightChatGlassMigrated = false,
+        v7OneGlassMigrated = false,
         channelOrder = nil,       -- 自定义频道按钮顺序（key 数组，nil 使用默认顺序）
         v2Migrated = false,
         v3ChatFitMigrated = false,
@@ -411,6 +412,7 @@ local function SyncEUIChatSidebar()
             if sbd then
                 if sbd.scrollBtn then sbd.scrollBtn:SetShown(ecfg.showScroll ~= false) end
                 if sbd.friendsBtn then sbd.friendsBtn:SetShown(ecfg.showFriends ~= false) end
+                if sbd.friendsCount then sbd.friendsCount:SetShown(ecfg.showFriends ~= false) end
             end
             -- 「回到底部」按钮随 scrollButtonOnChat 切换座位：EUI 提供的单按钮重挂函数（只动它自己的按钮，不走整条布局链）
             if echat.ApplyScrollButtonPosition then pcall(echat.ApplyScrollButtonPosition) end
@@ -777,7 +779,7 @@ local CHANNELS = {
         label = "团", tip = "左键：团队 / 副本频道（切换并记住）\n右键：团队警报 (/rw)",
         color = { 0.99, 0.65, 0.34 },
         left = function()
-            if _G.IsInGroup and _G.LE_PARTY_CATEGORY_INSTANCE and _G.IsInGroup(_G.LE_PARTY_CATEGORY_INSTANCE) and not (_G.IsInRaid and _G.IsInRaid()) then
+            if _G.IsInGroup and _G.LE_PARTY_CATEGORY_INSTANCE and _G.IsInGroup(_G.LE_PARTY_CATEGORY_INSTANCE) then
                 SwitchChatChannel("INSTANCE_CHAT", { sticky = true, prefix = "/i " })
             else
                 SwitchChatChannel("RAID", { sticky = true, prefix = "/ra " })
@@ -797,14 +799,39 @@ local CHANNELS = {
         color = { 0.96, 0.58, 0.90 },
         left = OpenReplyWhisper,
         right = function()
-            if _G.UnitExists and _G.UnitExists("target") and _G.UnitIsPlayer and _G.UnitIsPlayer("target") then
-                local name, realm = _G.UnitName("target")
-                name = F.PlainString(name, nil)
-                realm = F.PlainString(realm, nil)
-                if name and name ~= "" then
-                    local full = (realm and realm ~= "") and (name .. "-" .. realm) or name
-                    SwitchChatChannel("WHISPER", { tellTarget = full, sticky = false, prefix = "/w " .. full .. " " })
-                    return
+            -- pcall 的多返回值不能放进 and/or 表达式（会被截成 1 个值，第二个变量恒为 nil）
+            local function SafeCall2(fn, ...)
+                if type(fn) ~= "function" then return false, nil end
+                return pcall(fn, ...)
+            end
+            local okE, exists = SafeCall2(_G.UnitExists, "target")
+            local okP, isPlayer = false, nil
+            if okE and not F.IsSecret(exists) and exists then
+                okP, isPlayer = SafeCall2(_G.UnitIsPlayer, "target")
+            end
+            if okP and not F.IsSecret(isPlayer) and isPlayer then
+                local okF, isFriend = SafeCall2(_G.UnitIsFriend, "player", "target")
+                local okS, isSelf = SafeCall2(_G.UnitIsUnit, "player", "target")
+                if okF and not F.IsSecret(isFriend) and isFriend and not (okS and not F.IsSecret(isSelf) and isSelf) then
+                    local okN, name, realm = pcall(_G.UnitName, "target")
+                    name = okN and F.PlainString(name, nil) or nil
+                    realm = okN and F.PlainString(realm, nil) or nil
+                    if name and name ~= "" then
+                        local EUI = _G.EllesmereUI
+                        local full
+                        if EUI and EUI.IS_FOREVER then
+                            if realm and realm ~= "" then
+                                full = (type(EUI.WithSurname) == "function" and F.PlainString(EUI.WithSurname(name, realm, true), nil))
+                                    or (name .. " " .. realm)
+                            else
+                                full = name
+                            end
+                        else
+                            full = (realm and realm ~= "") and (name .. "-" .. realm) or name
+                        end
+                        SwitchChatChannel("WHISPER", { tellTarget = full, sticky = false, prefix = "/w " .. full .. " " })
+                        return
+                    end
                 end
             end
             OpenReplyWhisper()
@@ -1045,9 +1072,11 @@ local function IsAnyEditBoxFocused()
     return false
 end
 
+local activeDockMode = "left"
+
 local function TargetAlpha()
     local db = mod:GetDB()
-    if editBoxActive and db.dockMode == "bottom" then
+    if editBoxActive and activeDockMode == "bottom" then
         return 0
     end
     if db.combatFade == true and not isHovered then
@@ -1068,8 +1097,7 @@ end
 
 local function SyncAlpha(instant)
     if not barFrame then return end
-    local db = mod:GetDB()
-    if not mod._active or (editBoxActive and db.dockMode == "bottom") then
+    if not mod._active or (editBoxActive and activeDockMode == "bottom") then
         barFrame:Hide()
         if unifiedPanel and not mod._active then unifiedPanel:Hide() end
         return
@@ -1077,13 +1105,7 @@ local function SyncAlpha(instant)
     barFrame:Show()
     local goal = TargetAlpha()
     local cur = F.PlainNumber(barFrame:GetAlpha(), 1)
-    if instant or (cur and math.abs(cur - goal) < 0.015) then
-        if cur and math.abs(cur - goal) >= 0.015 then
-            F.Theme.FadeTo(barFrame, goal, 0)
-        end
-    else
-        F.Theme.FadeTo(barFrame, goal, goal > cur and 0.14 or 0.22)
-    end
+    F.Theme.FadeTo(barFrame, goal, instant and 0 or (goal > cur and 0.14 or 0.22))
     if unifiedPanel and unifiedPanel:IsShown() then
         unifiedPanel:SetAlpha(math_max(0.25, math_min(1.0, goal)))
     end
@@ -1317,6 +1339,38 @@ LayoutButtons = function()
 end
 
 local MeasureTabTopExtension -- 前向声明
+local MeasureTabRightExtension -- 前向声明
+local euiTabSyncHooked = false
+local CHAT_LINE_SPACING = 3
+local CHAT_SPACING_ALPHABETS = { "roman", "russian", "simplifiedchinese", "traditionalchinese" }
+
+-- 修正 EUI 聊天引擎仅给韩语加 3px 行距、简体中文行距为 0 导致鸿蒙字体上下轻微贴字/压字的问题：
+-- 同步给 EUIChatFontFamily1..10 的中英文成员补足 3px 行距（EUI 可见框与暴雪底层链接热区共享同一字体族，1:1 对齐且零污染）
+local function ApplyChatFontSpacingToFamily(fam, spacing)
+    if not (fam and fam.GetFontObjectForAlphabet) then return end
+    for _, alpha in ipairs(CHAT_SPACING_ALPHABETS) do
+        local ok, member = pcall(fam.GetFontObjectForAlphabet, fam, alpha)
+        if ok and member and member.SetSpacing then
+            pcall(member.SetSpacing, member, spacing)
+        end
+    end
+end
+
+local function SyncChatLineSpacing(reapplyEngine)
+    local spacing = mod._active and CHAT_LINE_SPACING or 0
+    for i = 1, 10 do
+        local fam = _G["EUIChatFontFamily" .. i]
+        if fam then
+            ApplyChatFontSpacingToFamily(fam, spacing)
+        end
+    end
+    if reapplyEngine then
+        local _, _, _, _, echat = GetEUIChatContext()
+        if echat and type(echat.EngineApplyFonts) == "function" then
+            pcall(echat.EngineApplyFonts)
+        end
+    end
+end
 
 ----------------------------------------------------------------------
 --  统一圆角一体化聊天玻璃底板（左侧栏 + 顶部标签栏 + 聊天正文同底同圆角，零污染）
@@ -1419,17 +1473,17 @@ local function SetEUIBgMuted(bg1, chatNS, muted)
     if qb and not (qb.IsForbidden and qb:IsForbidden()) then
         local ST = F.StyleTokens
         local qbTex = _G.CombatLogQuickButtonFrame_CustomTexture
+        local glass = combatLogGlass[qb]
         if muted then
             if qbTex and qbTex.SetAlpha then pcall(qbTex.SetAlpha, qbTex, 0) end
             if qb.GetRegions then
                 for _, reg in ipairs({ qb:GetRegions() }) do
-                    if reg and reg.GetObjectType and reg:GetObjectType() == "Texture" then
+                    if reg and reg ~= glass and reg.GetObjectType and reg:GetObjectType() == "Texture" then
                         mutedBgFrames[reg] = true
                         pcall(reg.SetAlpha, reg, 0)
                     end
                 end
             end
-            local glass = combatLogGlass[qb]
             if ST and not glass then
                 local g = qb:CreateTexture(nil, "BACKGROUND", nil, -4)
                 g:SetPoint("TOPLEFT", qb, "TOPLEFT", 2, -1)
@@ -1438,15 +1492,16 @@ local function SetEUIBgMuted(bg1, chatNS, muted)
                 ST.MaskTexture(qb, g, 5)
                 combatLogGlass[qb] = g
             elseif glass then
+                glass:SetAlpha(1)
                 glass:Show()
             end
         else
-            local glass = combatLogGlass[qb]
             if glass then glass:Hide() end
+            if ST then ST.ClearRoundedMask(qb) end
             if qbTex and qbTex.SetAlpha then pcall(qbTex.SetAlpha, qbTex, 1) end
             if qb.GetRegions then
                 for _, reg in ipairs({ qb:GetRegions() }) do
-                    if mutedBgFrames[reg] then
+                    if reg ~= glass and mutedBgFrames[reg] then
                         mutedBgFrames[reg] = nil
                         pcall(reg.SetAlpha, reg, 1)
                     end
@@ -1471,13 +1526,14 @@ SyncUnifiedChatPanel = function()
     end
 
     local rad = math_max(4, math_min(14, F.PlainNumber(db.panelRadius, ST.GetCornerRadius(8)) or 8))
-    local alpha = math_max(0.12, math_min(0.85, F.PlainNumber(db.panelAlpha, 0.34) or 0.34))
-    local mode = db.dockMode or "left"
+    local alpha = math_max(0.12, math_min(0.85, F.PlainNumber(db.panelAlpha, 0.24) or 0.24))
+    local gc = ST.COLORS.glass
+    local mode = activeDockMode or db.dockMode or "left"
 
     if not bg1 then
         if unifiedPanel then unifiedPanel:Hide() end
         if barFrame and barFrame._unifiedBg then
-            barFrame._unifiedBg:SetColorTexture(0.042, 0.048, 0.064, alpha)
+            barFrame._unifiedBg:SetColorTexture(gc[1], gc[2], gc[3], alpha)
             barFrame._unifiedBg:Show()
             ST.MaskTexture(barFrame, barFrame._unifiedBg, rad)
             ST.ApplyRoundedBorder(barFrame, rad, 0.18, 0.22, 0.30, 0.46, 5)
@@ -1488,12 +1544,14 @@ SyncUnifiedChatPanel = function()
     SetEUIBgMuted(bg1, chatNS, true)
 
     local p = EnsureUnifiedPanel()
-    p._fill:SetColorTexture(0.042, 0.048, 0.064, alpha)
+    p._fill:SetColorTexture(gc[1], gc[2], gc[3], alpha)
     ST.MaskTexture(p, p._fill, rad)
-    ST.MaskTexture(p, p._sheen, rad)
-    ST.ApplyRoundedBorder(p, rad, 0.18, 0.22, 0.30, 0.48, 5)
+    -- 整块底板只保留一层均匀玻璃 + 极淡圆角描边：去掉顶部高光带与内部分隔线，左侧栏 / 标签 / 正文浑然一体
+    p._sheen:Hide()
+    ST.ApplyRoundedBorder(p, rad, 0.30, 0.34, 0.40, 0.26, 5)
 
     local topExt = MeasureTabTopExtension and MeasureTabTopExtension(bg1, chatNS, ecfg) or 24
+    local rightExt = MeasureTabRightExtension and MeasureTabRightExtension(bg1, chatNS) or 0
     p:ClearAllPoints()
     p._vSep:Hide()
     p._hSep:Hide()
@@ -1504,32 +1562,32 @@ SyncUnifiedChatPanel = function()
         if barFrame._rightSep then barFrame._rightSep:Hide() end
         p:SetPoint("TOPLEFT", barFrame, "TOPLEFT", 0, 0)
         p:SetPoint("BOTTOMLEFT", barFrame, "BOTTOMLEFT", 0, 0)
-        p:SetPoint("BOTTOMRIGHT", bg1, "BOTTOMRIGHT", 0, 0)
+        p:SetPoint("BOTTOMRIGHT", bg1, "BOTTOMRIGHT", rightExt, 0)
 
         p._vSep:ClearAllPoints()
         p._vSep:SetWidth(onePx)
         if pp and pp.DisablePixelSnap then pp.DisablePixelSnap(p._vSep) end
         p._vSep:SetPoint("TOPLEFT", barFrame, "TOPRIGHT", 0, -6)
         p._vSep:SetPoint("BOTTOMLEFT", barFrame, "BOTTOMRIGHT", 0, 6)
-        p._vSep:Show()
+        p._vSep:Hide()
 
         p._hSep:ClearAllPoints()
         p._hSep:SetHeight(onePx)
         if pp and pp.DisablePixelSnap then pp.DisablePixelSnap(p._hSep) end
         p._hSep:SetPoint("TOPLEFT", bg1, "TOPLEFT", 2, 0)
-        p._hSep:SetPoint("TOPRIGHT", bg1, "TOPRIGHT", -6, 0)
-        p._hSep:Show()
+        p._hSep:SetPoint("TOPRIGHT", bg1, "TOPRIGHT", rightExt - 6, 0)
+        p._hSep:Hide()
     elseif mode == "top" and barFrame then
         ST.ClearRoundedMask(barFrame)
         if barFrame._unifiedBg then barFrame._unifiedBg:Hide() end
         p:SetPoint("TOPLEFT", barFrame, "TOPLEFT", 0, 0)
-        p:SetPoint("BOTTOMRIGHT", bg1, "BOTTOMRIGHT", 0, 0)
+        p:SetPoint("BOTTOMRIGHT", bg1, "BOTTOMRIGHT", rightExt, 0)
 
         p._hSep:ClearAllPoints()
         p._hSep:SetHeight(onePx)
         p._hSep:SetPoint("TOPLEFT", bg1, "TOPLEFT", 6, 0)
-        p._hSep:SetPoint("TOPRIGHT", bg1, "TOPRIGHT", -6, 0)
-        p._hSep:Show()
+        p._hSep:SetPoint("TOPRIGHT", bg1, "TOPRIGHT", rightExt - 6, 0)
+        p._hSep:Hide()
     elseif mode == "bottom" and barFrame then
         ST.ClearRoundedMask(barFrame)
         if barFrame._unifiedBg then barFrame._unifiedBg:Hide() end
@@ -1539,19 +1597,19 @@ SyncUnifiedChatPanel = function()
         p._hSep:ClearAllPoints()
         p._hSep:SetHeight(onePx)
         p._hSep:SetPoint("TOPLEFT", bg1, "TOPLEFT", 6, 0)
-        p._hSep:SetPoint("TOPRIGHT", bg1, "TOPRIGHT", -6, 0)
-        p._hSep:Show()
+        p._hSep:SetPoint("TOPRIGHT", bg1, "TOPRIGHT", rightExt - 6, 0)
+        p._hSep:Hide()
     else
         -- 自由模式：聊天本体与自由聊天条各自拥有一致的圆角玻璃底板
         p:SetPoint("TOPLEFT", bg1, "TOPLEFT", 0, topExt)
-        p:SetPoint("BOTTOMRIGHT", bg1, "BOTTOMRIGHT", 0, 0)
+        p:SetPoint("BOTTOMRIGHT", bg1, "BOTTOMRIGHT", rightExt, 0)
         p._hSep:ClearAllPoints()
         p._hSep:SetHeight(onePx)
         p._hSep:SetPoint("TOPLEFT", bg1, "TOPLEFT", 6, 0)
         p._hSep:SetPoint("TOPRIGHT", bg1, "TOPRIGHT", -6, 0)
-        p._hSep:Show()
+        p._hSep:Hide()
         if barFrame and barFrame._unifiedBg then
-            barFrame._unifiedBg:SetColorTexture(0.042, 0.048, 0.064, alpha)
+            barFrame._unifiedBg:SetColorTexture(gc[1], gc[2], gc[3], alpha)
             barFrame._unifiedBg:Show()
             ST.MaskTexture(barFrame, barFrame._unifiedBg, 6)
             ST.ApplyRoundedBorder(barFrame, 6, 0.16, 0.19, 0.26, 0.84, 5)
@@ -1728,6 +1786,53 @@ MeasureTabTopExtension = function(bg1, chatNS, ecfg)
     return tabH + tabPad
 end
 
+-- 测量停靠聊天标签栏右侧超出 bg1 的像素宽度（隐藏 EUI 原右侧边栏后，最右侧如「公会」标签会超出 bg1 右缘；
+-- 纯只读测量，不改暴雪标签位置与 GeneralDockManager，零污染，确保所有标签严丝合缝留在圆角玻璃框内）
+MeasureTabRightExtension = function(bg1, chatNS)
+    local bgR = bg1 and bg1.GetRight and F.PlainNumber(bg1:GetRight(), nil)
+    if not bgR then return 0 end
+    local bgS = bg1.GetEffectiveScale and F.PlainNumber(bg1:GetEffectiveScale(), 1) or 1
+    if bgS <= 0 then bgS = 1 end
+    local maxR = bgR
+    local function consider(f)
+        if not f or (f.IsForbidden and f:IsForbidden()) then return end
+        if f.IsShown and not f:IsShown() then return end
+        if not f.GetRight then return end
+        local r = F.PlainNumber(f:GetRight(), nil)
+        if not r then return end
+        local es = f.GetEffectiveScale and F.PlainNumber(f:GetEffectiveScale(), bgS) or bgS
+        if es <= 0 then es = bgS end
+        r = r * es / bgS
+        if r > maxR then maxR = r end
+    end
+    local dock = _G.GENERAL_CHAT_DOCK
+    if dock and type(dock.DOCKED_CHAT_FRAMES) == "table" then
+        for _, cf in ipairs(dock.DOCKED_CHAT_FRAMES) do
+            if cf and cf.GetName then
+                local nm = F.PlainString(cf:GetName(), nil)
+                if nm then consider(_G[nm .. "Tab"]) end
+            end
+        end
+    else
+        for i = 1, 10 do
+            local cf = _G["ChatFrame" .. i]
+            if cf and cf.isDocked then
+                consider(_G["ChatFrame" .. i .. "Tab"])
+            end
+        end
+    end
+    if chatNS and chatNS._chatTabStrip then
+        consider(chatNS._chatTabStrip)
+    end
+    local gdm = _G.GeneralDockManager
+    if gdm and gdm.overflowButton then
+        consider(gdm.overflowButton)
+    end
+    local over = maxR - bgR
+    if over <= 0.5 then return 0 end
+    return math_min(64, math_floor(over + 0.5) + 4)
+end
+
 -- EUI 聊天底板尺寸变化：单一钩子、按当前停靠模式动态分派，并合并到下一帧只跑一次
 -- （此前左侧/横栏两套分支共用 bgSizeHooked 标记，先装哪套就永远是哪套，切模式后失效且拖拽时每像素重排 3~4 次）
 local ApplyAnchor
@@ -1747,6 +1852,7 @@ local function OnBgResize()
             ApplyAnchor() -- 左侧模式下 ApplyAnchor 会自行排程 LayoutButtons
         else
             LayoutButtons()
+            SyncUnifiedChatPanel()
         end
     end)
 end
@@ -1794,6 +1900,7 @@ ApplyAnchor = function()
             effectiveMode = "top"
         end
     end
+    activeDockMode = effectiveMode
 
     barFrame:ClearAllPoints()
 
@@ -1845,18 +1952,19 @@ ApplyAnchor = function()
         end
         HookBgResize(bg1)
 
+        local rightExt = MeasureTabRightExtension and MeasureTabRightExtension(bg1, chatNS) or 0
         if effectiveMode == "bottom" then
             barFrame:SetPoint("TOPLEFT", bg1, "BOTTOMLEFT", 0, -gapPx)
-            barFrame:SetPoint("TOPRIGHT", bg1, "BOTTOMRIGHT", 0, -gapPx)
+            barFrame:SetPoint("TOPRIGHT", bg1, "BOTTOMRIGHT", rightExt, -gapPx)
         else
             local ext = chatNS and chatNS._chatBgExt
             if ext and ext:IsShown() then
                 barFrame:SetPoint("BOTTOMLEFT", ext, "TOPLEFT", 0, gapPx)
-                barFrame:SetPoint("BOTTOMRIGHT", ext, "TOPRIGHT", 0, gapPx)
+                barFrame:SetPoint("BOTTOMRIGHT", ext, "TOPRIGHT", rightExt, gapPx)
             else
                 local yOff = MeasureTabTopExtension(bg1, chatNS, ecfg)
                 barFrame:SetPoint("BOTTOMLEFT", bg1, "TOPLEFT", 0, yOff + gapPx)
-                barFrame:SetPoint("BOTTOMRIGHT", bg1, "TOPRIGHT", 0, yOff + gapPx)
+                barFrame:SetPoint("BOTTOMRIGHT", bg1, "TOPRIGHT", rightExt, yOff + gapPx)
             end
         end
     elseif cf1 then
@@ -1951,7 +2059,7 @@ end
 local function UnskinChatOverflow()
     local gdm = _G.GeneralDockManager
     local ob = gdm and gdm.overflowButton
-    if not (ob and overflowVisual[ob]) then return end
+    if not (ob and overflowVisual[ob]) or (ob.IsForbidden and ob:IsForbidden()) then return end
     for _, reg in ipairs({ ob:GetRegions() }) do
         if reg.GetObjectType and reg:GetObjectType() == "Texture" then
             reg:SetAlpha(1)
@@ -1959,7 +2067,7 @@ local function UnskinChatOverflow()
     end
     overflowVisual[ob]:Hide()
     local list = ob.list or _G.GeneralDockManagerOverflowButtonList
-    if list and overflowHooked[list] then
+    if list and not (list.IsForbidden and list:IsForbidden()) and overflowHooked[list] then
         if list.NineSlice and list.NineSlice.SetAlpha then
             list.NineSlice:SetAlpha(1)
         end
@@ -1979,7 +2087,7 @@ local function SkinChatOverflow()
     end
     local gdm = _G.GeneralDockManager
     local ob = gdm and gdm.overflowButton
-    if not ob then return end
+    if not ob or (ob.IsForbidden and ob:IsForbidden()) then return end
 
     for _, reg in ipairs({ ob:GetRegions() }) do
         if reg.GetObjectType and reg:GetObjectType() == "Texture" then
@@ -2219,10 +2327,35 @@ local function CreateBar()
         utilButtons[idx] = ubtn
     end
 
+    local draggingChatBar = false
+    local function StartFreeBarDrag()
+        if mod:GetDB().dockMode == "free" and _G.IsShiftKeyDown() and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+            draggingChatBar = true
+            barFrame:StartMoving()
+        end
+    end
+    local function StopFreeBarDrag(skipSave)
+        if not draggingChatBar then return end
+        draggingChatBar = false
+        -- 无论拖动途中是否切换了停靠模式，都必须先结束移动，否则框体会一直跟随鼠标
+        barFrame:StopMovingOrSizing()
+        if skipSave then return end
+        if mod:GetDB().dockMode ~= "free" then
+            ApplyAnchor()
+            return
+        end
+        local pt, _, rpt, x, y = barFrame:GetPoint(1)
+        -- SavePosition 内部会过滤 12.x 机密值与非法锚点
+        F.DB.SavePosition("ChatBar", pt, rpt, x, y)
+    end
+
     -- 创建频道切换按钮
     for i, ch in ipairs(CHANNELS) do
         local btn = CreateFrame("Button", nil, barFrame)
         btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        btn:RegisterForDrag("LeftButton")
+        btn:SetScript("OnDragStart", StartFreeBarDrag)
+        btn:SetScript("OnDragStop", function() StopFreeBarDrag(false) end)
         btn._ch = ch
 
         local tileBg = btn:CreateTexture(nil, "BACKGROUND", nil, -2)
@@ -2320,7 +2453,7 @@ local function CreateBar()
         defaultX = 10,
         defaultY = 290,
         allowShiftDrag = false,
-        isHidden = function() return mod:GetDB().dockMode ~= "free" end,
+        isHidden = function() return not mod._active or mod:GetDB().dockMode ~= "free" end,
         isAnchored = function() return mod:GetDB().dockMode ~= "free" end,
         ownsPosition = true,
         onReanchor = ApplyAnchor,
@@ -2341,28 +2474,11 @@ local function CreateBar()
         end)
     end
 
-    local draggingChatBar = false
     barFrame:SetMovable(true)
     barFrame:RegisterForDrag("LeftButton")
-    barFrame:HookScript("OnDragStart", function(self)
-        if mod:GetDB().dockMode == "free" and _G.IsShiftKeyDown() and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
-            draggingChatBar = true
-            self:StartMoving()
-        end
-    end)
-    barFrame:HookScript("OnDragStop", function(self)
-        if not draggingChatBar then return end
-        draggingChatBar = false
-        -- 无论拖动途中是否切换了停靠模式，都必须先结束移动，否则框体会一直跟随鼠标
-        self:StopMovingOrSizing()
-        if mod:GetDB().dockMode ~= "free" then
-            ApplyAnchor()
-            return
-        end
-        local pt, _, rpt, x, y = self:GetPoint(1)
-        -- SavePosition 内部会过滤 12.x 机密值与非法锚点
-        F.DB.SavePosition("ChatBar", pt, rpt, x, y)
-    end)
+    barFrame:HookScript("OnDragStart", StartFreeBarDrag)
+    barFrame:HookScript("OnDragStop", function() StopFreeBarDrag(false) end)
+    barFrame:HookScript("OnHide", function() StopFreeBarDrag(true) end)
 
     HookChatFrameInteractions()
 end
@@ -2450,19 +2566,57 @@ function mod:OnEnable()
     if not db.v6LightChatGlassMigrated then
         db.v6LightChatGlassMigrated = true
         if not db.panelAlpha or db.panelAlpha >= 0.55 then
-            db.panelAlpha = 0.34
+            db.panelAlpha = 0.24
         end
     end
-    if type(_G.FCFDock_SelectWindow) == "function" and not mod._dockSelectHooked then
-        mod._dockSelectHooked = true
-        _G.hooksecurefunc("FCFDock_SelectWindow", function()
+    -- 一整块清透玻璃：旧的 0.34 偏深、且有分隔线与顶部高光带，看起来一块块的
+    if not db.v7OneGlassMigrated then
+        db.v7OneGlassMigrated = true
+        if not db.panelAlpha or db.panelAlpha >= 0.30 then
+            db.panelAlpha = 0.24
+        end
+    end
+    -- 禁止 hooksecurefunc("FCFDock_SelectWindow")（实测会污染 dock.selected 与 chatFrame.isLocked）；
+    -- 改挂 EUI 自身非暴雪标签刷新函数 + UPDATE_CHAT_WINDOWS 事件，零污染同步底板尺寸与显隐
+    local function HookEUIChatTabSyncOnce()
+        if euiTabSyncHooked then return end
+        local _, _, _, _, echat = GetEUIChatContext()
+        if not echat then return end
+        euiTabSyncHooked = true
+        local function queuePanelSync()
             if mod._active then
                 C_Timer.After(0, function()
                     if mod._active then SyncUnifiedChatPanel() end
                 end)
             end
-        end)
+        end
+        if type(echat.TabsRefreshNow) == "function" then
+            _G.hooksecurefunc(echat, "TabsRefreshNow", queuePanelSync)
+        end
+        if type(echat.SyncChatFrameState) == "function" then
+            _G.hooksecurefunc(echat, "SyncChatFrameState", queuePanelSync)
+        end
+        if type(echat.EngineFontFamily) == "function" then
+            _G.hooksecurefunc(echat, "EngineFontFamily", function(id)
+                if mod._active and (type(id) == "number" or type(id) == "string") then
+                    local fam = _G["EUIChatFontFamily" .. id]
+                    if fam then ApplyChatFontSpacingToFamily(fam, CHAT_LINE_SPACING) end
+                end
+            end)
+        end
     end
+    HookEUIChatTabSyncOnce()
+    SyncChatLineSpacing(true)
+    self:RegisterEvent("UPDATE_CHAT_WINDOWS", function()
+        if mod._active then
+            C_Timer.After(0, function()
+                if mod._active then
+                    ApplyAnchor()
+                    SyncUnifiedChatPanel()
+                end
+            end)
+        end
+    end)
     leftRoomAdjusted = false
     CreateBar()
     SyncEUIChatSidebar()
@@ -2472,6 +2626,8 @@ function mod:OnEnable()
     SkinChatOverflow()
     C_Timer.After(0.8, function()
         if not mod._active then return end
+        HookEUIChatTabSyncOnce()
+        SyncChatLineSpacing(true)
         HookChatFrameInteractions()
         SyncEUIChatSidebar()
         ApplyAnchor()
@@ -2482,6 +2638,8 @@ function mod:OnEnable()
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         editBoxActive = IsAnyEditBoxFocused()
         isHovered = false
+        HookEUIChatTabSyncOnce()
+        SyncChatLineSpacing(true)
         HookChatFrameInteractions()
         SyncEUIChatSidebar()
         ApplyAnchor()
@@ -2491,6 +2649,7 @@ function mod:OnEnable()
         C_Timer.After(1.2, function()
             if not mod._active then return end
             editBoxActive = IsAnyEditBoxFocused()
+            SyncChatLineSpacing(true)
             SyncEUIChatSidebar()
             ApplyAnchor()
             ApplyVisuals()
@@ -2520,6 +2679,7 @@ end
 function mod:OnDisable()
     -- 基类已 UnregisterAllEvents，这里只需同步本地标志
     keywordWatching = false
+    SyncChatLineSpacing(true)
     SyncEUIChatSidebar()
     SyncUnifiedChatPanel()
     UnskinChatOverflow()
@@ -2572,10 +2732,10 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     }, {
         type = "slider",
         text = "统一聊天底板透明度",
-        tooltip = "控制左侧栏、顶部标签区与聊天消息背景的暗底不透明度（推荐 0.30~0.40 清透微熏，既看清字又不挡画面）。",
+        tooltip = "控制左侧栏、顶部标签区与聊天消息背景这一整块玻璃底板的不透明度（推荐 0.20~0.28：比透明略深，看得清字又不挡画面）。",
         min = 0.12, max = 0.85, step = 0.04,
         disabled = function() return db.unifiedRoundedPanel == false end,
-        getValue = function() return F.PlainNumber(db.panelAlpha, 0.34) or 0.34 end,
+        getValue = function() return F.PlainNumber(db.panelAlpha, 0.24) or 0.24 end,
         setValue = function(v) db.panelAlpha = v; SyncUnifiedChatPanel() end,
     })
     y = y - h

@@ -5,8 +5,8 @@
 local _, F = ...
 
 local _G = _G
-local math_floor, math_max, math_min, pcall, setmetatable, type =
-    math.floor, math.max, math.min, pcall, setmetatable, type
+local math_floor, math_max, math_min, pairs, pcall, setmetatable, type =
+    math.floor, math.max, math.min, pairs, pcall, setmetatable, type
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
 
@@ -47,7 +47,28 @@ ST.COLORS = {
     combatIn    = { 0.960, 0.360, 0.380, 1.00 },
     combatOut   = { 0.340, 0.880, 0.700, 1.00 },
     vignette    = { 0.780, 0.060, 0.090, 1.00 },
+    -- 语义强调色（统一规则）：战斗 HUD 用职业色；信息卡片 / 提示类用 info 青绿；
+    -- positive 只表示「正面状态」（已附魔、增益、满耐久）；hostile 用于敌对玩家红名
+    info        = { 0.440, 0.900, 0.920, 1.00 },
+    positive    = { 0.360, 0.920, 0.560, 1.00 },
+    hostile     = { 1.000, 0.300, 0.300, 1.00 },
+    -- 全 UI 共用的「清透玻璃」底色：比全透明略深，能看清文字又不挡场景
+    glass       = { 0.040, 0.046, 0.062, 0.24 },
 }
+
+-- 字号三档：说明 / 正文 / 标题（数值大字另用 value）
+ST.FONT = { caption = 10, body = 12, title = 14, value = 16 }
+
+-- 条内 / 卡片文字统一排版：无硬描边 + 1px 柔和投影（叠在亮色渐变条上依旧锐利，
+-- OUTLINE + 投影两层叠加会把中文字形糊成一团）
+function ST.ApplyText(fs, size, r, g, b, a)
+    if not fs then return end
+    F.Theme.ApplyFont(fs, size or ST.FONT.body, "", r or 0.96, g or 0.97, b or 0.99, a or 1)
+    if fs.SetShadowColor then
+        fs:SetShadowColor(0, 0, 0, 0.78)
+        fs:SetShadowOffset(1, -1)
+    end
+end
 
 -- 全职业双端横向渐变色表：
 --   bright = 左职业本色 -> 右向柔和亮白高光过渡（通透现代）
@@ -251,7 +272,11 @@ local function GetPerfectScale()
     if EUI and EUI.PP and type(EUI.PP.perfect) == "number" and EUI.PP.perfect > 0 then
         return EUI.PP.perfect
     end
-    local _, ph = _G.GetPhysicalScreenSize and _G.GetPhysicalScreenSize()
+    local ph = nil
+    if _G.GetPhysicalScreenSize then
+        local _, h = _G.GetPhysicalScreenSize()
+        ph = h
+    end
     ph = F.PlainNumber(ph, 1080) or 1080
     if ph <= 0 then ph = 1080 end
     return 768 / ph
@@ -280,12 +305,89 @@ function ST.Snap(v)
     return math_floor(v / px + 0.5) * px
 end
 
+-- 1 物理像素细线：按宿主有效缩放算出恰好 1 物理像素的粗细，并关闭像素吸附，
+-- 非整数 UI 缩放下也不会发虚或忽粗忽细。vertical = true 时设置宽度，否则设置高度。
+function ST.Hairline(tex, vertical)
+    if not tex then return end
+    local px = ST.GetPixel(tex.GetParent and tex:GetParent() or nil)
+    if vertical then tex:SetWidth(px) else tex:SetHeight(px) end
+    local PP = _G.EllesmereUI and _G.EllesmereUI.PP
+    if PP and PP.DisablePixelSnap then
+        pcall(PP.DisablePixelSnap, tex)
+    elseif tex.SetSnapToPixelGrid then
+        pcall(tex.SetSnapToPixelGrid, tex, false)
+        if tex.SetTexelSnappingBias then pcall(tex.SetTexelSnappingBias, tex, 0) end
+    end
+end
+
 -- GPU 9 宫格物理像素级圆角遮罩与 1px 同心抗锯齿细描边
 -- （复用 EllesmereUI/media/rounded 1~16px 资产，border 运行于 1:1 物理像素层 + 整像素边吸附 +
 --  正文遮罩内缩 1px 杜绝高光色渗透黑边形成毛边/锯齿；每次改半径前严格先分离再重绑，弱表零污染）
 local roundState = setmetatable({}, { __mode = "k" })
 local activePixelBorders = setmetatable({}, { __mode = "k" })
+local hookedMaskedTex = setmetatable({}, { __mode = "k" })
+local maskedTexHost = setmetatable({}, { __mode = "kv" })
+local pendingMasks = {}
+local maskWaitFrame = nil
 local scaleWatchFrame = nil
+
+local function IsTextureLoadedSafe(obj)
+    if not obj then return false end
+    if not obj.IsObjectLoaded then return true end
+    local ok, loaded = pcall(obj.IsObjectLoaded, obj)
+    if not ok or F.IsSecret(loaded) then return true end
+    return loaded == true
+end
+
+local function EnsureMaskWaitFrame()
+    if maskWaitFrame then return maskWaitFrame end
+    maskWaitFrame = CreateFrame("Frame")
+    maskWaitFrame:Hide()
+    maskWaitFrame:SetScript("OnUpdate", function(self)
+        local anyLeft = false
+        for tex, entry in pairs(pendingMasks) do
+            local mask = entry.mask
+            if not (tex and mask)
+                or (tex.IsForbidden and tex:IsForbidden())
+                or (mask.IsForbidden and mask:IsForbidden()) then
+                pendingMasks[tex] = nil
+            else
+                entry.tries = entry.tries + 1
+                if (IsTextureLoadedSafe(tex) and IsTextureLoadedSafe(mask)) or entry.tries >= 60 then
+                    pendingMasks[tex] = nil
+                    if tex.AddMaskTexture then
+                        pcall(tex.AddMaskTexture, tex, mask)
+                    end
+                else
+                    anyLeft = true
+                end
+            end
+        end
+        if not anyLeft then
+            self:Hide()
+        end
+    end)
+    return maskWaitFrame
+end
+
+-- WoW 12.1 异步贴图 + 遮罩引擎保护：贴图尚未加载完成时挂载遮罩会导致图标整格空白或残留左上极小碎块；
+-- 先请求同步加载，若仍未就绪则暂卸遮罩并在 IsObjectLoaded() 转 true 的当帧无感补回（空闲 0 CPU）
+local function AttachMaskSafely(tex, mask)
+    if not (tex and mask and tex.AddMaskTexture) then return end
+    if tex.SetBlockingLoadsRequested then
+        pcall(tex.SetBlockingLoadsRequested, tex, true)
+    end
+    if IsTextureLoadedSafe(tex) and IsTextureLoadedSafe(mask) then
+        pendingMasks[tex] = nil
+        pcall(tex.AddMaskTexture, tex, mask)
+    else
+        if tex.RemoveMaskTexture then
+            pcall(tex.RemoveMaskTexture, tex, mask)
+        end
+        pendingMasks[tex] = { mask = mask, tries = 0 }
+        EnsureMaskWaitFrame():Show()
+    end
+end
 
 local function HasEUIRounded()
     return _G.EllesmereUI ~= nil or F.IsAddOnLoaded("EllesmereUI")
@@ -383,8 +485,8 @@ local function ReseatHostBodyMask(host, st, reqRadius, insetPx)
     else
         m:SetAllPoints(host)
     end
-    for tex in _G.pairs(st.masked) do
-        if tex and tex.AddMaskTexture then pcall(tex.AddMaskTexture, tex, m) end
+    for tex in pairs(st.masked) do
+        if tex and tex.AddMaskTexture then AttachMaskSafely(tex, m) end
     end
 end
 
@@ -477,7 +579,9 @@ function ST.EnsureRoundedMask(host, radius)
     end
     if r <= 0 then
         if st.mask then
-            for tex in _G.pairs(st.masked) do
+            for tex in pairs(st.masked) do
+                pendingMasks[tex] = nil
+                maskedTexHost[tex] = nil
                 if tex and tex.RemoveMaskTexture then pcall(tex.RemoveMaskTexture, tex, st.mask) end
             end
             st.masked = setmetatable({}, { __mode = "k" })
@@ -507,9 +611,22 @@ function ST.MaskTexture(host, tex, radius)
     local mask = ST.EnsureRoundedMask(host, radius)
     local st = roundState[host]
     if not (mask and st) then return end
+    maskedTexHost[tex] = host
+    if not hookedMaskedTex[tex] and tex.SetTexture and not (tex.IsForbidden and tex:IsForbidden()) then
+        hookedMaskedTex[tex] = true
+        _G.hooksecurefunc(tex, "SetTexture", function(self)
+            local h = maskedTexHost[self]
+            local curSt = h and roundState[h]
+            if curSt and curSt.mask and curSt.masked[self] then
+                AttachMaskSafely(self, curSt.mask)
+            end
+        end)
+    end
     if not st.masked[tex] then
         st.masked[tex] = true
-        pcall(tex.AddMaskTexture, tex, mask)
+        AttachMaskSafely(tex, mask)
+    elseif pendingMasks[tex] then
+        AttachMaskSafely(tex, mask)
     end
 end
 
@@ -517,7 +634,9 @@ function ST.ClearRoundedMask(host)
     local st = host and roundState[host]
     if not st then return end
     if st.mask then
-        for tex in _G.pairs(st.masked) do
+        for tex in pairs(st.masked) do
+            pendingMasks[tex] = nil
+            maskedTexHost[tex] = nil
             if tex and tex.RemoveMaskTexture then pcall(tex.RemoveMaskTexture, tex, st.mask) end
         end
         st.masked = setmetatable({}, { __mode = "k" })

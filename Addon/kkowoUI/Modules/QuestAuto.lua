@@ -114,16 +114,21 @@ end
 -- 判断多选奖励中是否有本职业可用的装备（武器/护甲/饰品/戒指/项链）
 local function HasUsableEquipReward(n)
     local isUsable = _G.IsUsableItem or (_G.C_Item and _G.C_Item.IsUsableItem)
+    local playerLvl = (_G.UnitLevel and F.PlainNumber(_G.UnitLevel("player"), 1)) or 1
     for i = 1, n do
         local link = _G.GetQuestItemLink and _G.GetQuestItemLink("choice", i)
         if not link then
             return true -- 物品未缓存时保守停手
         end
-        local itemName, _, _, _, _, _, _, _, equipLoc = GetItemInfoCompat(link)
+        local itemName, _, _, _, minLevel, _, _, _, equipLoc = GetItemInfoCompat(link)
         if not itemName then
             return true -- 链接已有但物品数据未缓存：同样保守停手，绝不替玩家选奖励
         end
         if equipLoc and equipLoc ~= "" and equipLoc ~= "INVTYPE_BAG" then
+            -- 高等级跨级任务奖励装备会被 IsUsableItem 因等级不足判 false，同样保守停手保护升级装
+            if type(minLevel) == "number" and minLevel > playerLvl then
+                return true
+            end
             if not isUsable or isUsable(link) then
                 return true
             end
@@ -271,9 +276,10 @@ function mod:OnQuestEvent(event)
             return
         end
         C_Timer.After(0.05, function()
-            if not self._active then return end
+            if not (self._active and self:GetDB().autoTurnIn) then return end
             if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then return end
             if not (_G.QuestFrame and _G.QuestFrame:IsShown()) then return end
+            if _G.QuestFrameProgressPanel and not _G.QuestFrameProgressPanel:IsShown() then return end
             local money = (_G.GetQuestMoneyToGet and _G.GetQuestMoneyToGet()) or 0
             if money > 0 then
                 Note("该任务需要支付金币才能交付，已暂停自动提交。")
@@ -294,9 +300,10 @@ function mod:OnQuestEvent(event)
             return
         end
         C_Timer.After(0.05, function()
-            if not self._active then return end
+            if not (self._active and self:GetDB().autoTurnIn) then return end
             if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then return end
             if not (_G.QuestFrame and _G.QuestFrame:IsShown()) then return end
+            if _G.QuestFrameRewardPanel and not _G.QuestFrameRewardPanel:IsShown() then return end
             local money = (_G.GetQuestMoneyToGet and _G.GetQuestMoneyToGet()) or 0
             if money > 0 then
                 Note("该任务需要支付金币才能交付，已暂停自动提交。")
@@ -342,7 +349,7 @@ function mod:OnConfirmEvent(event, slotOrRoll, roll, ...)
         if _G.StaticPopup_Hide then _G.StaticPopup_Hide("CONFIRM_LOOT_ROLL") end
     elseif event == "LOOT_BIND_CONFIRM" and _G.ConfirmLootSlot then
         _G.ConfirmLootSlot(slotOrRoll)
-        if _G.StaticPopup_Hide then _G.StaticPopup_Hide("LOOT_BIND", ...) end
+        if _G.StaticPopup_Hide then _G.StaticPopup_Hide("LOOT_BIND") end
     end
 end
 
