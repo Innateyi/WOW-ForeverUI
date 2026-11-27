@@ -30,7 +30,7 @@ Theme.COLORS = {
 }
 
 Theme.FLAT_TEX = "Interface\\Buttons\\WHITE8x8"
-Theme.MERFIN_TEX = "Interface\\AddOns\\YaMedia\\statusbar\\MerfinMain"
+Theme.MERFIN_TEX = F.MEDIA .. "Textures\\MerfinMain"
 Theme.ICONS = F.MEDIA .. "Icons\\"
 
 local skinAPI = nil
@@ -44,10 +44,7 @@ function Theme.GetBarTexture()
             return tex
         end
     end
-    if F.IsAddOnLoaded("YaMedia") then
-        return Theme.MERFIN_TEX
-    end
-    return Theme.FLAT_TEX
+    return Theme.MERFIN_TEX or Theme.FLAT_TEX
 end
 
 function Theme.GetClassColor()
@@ -240,6 +237,13 @@ function Theme.RegisterEscapeClose(frame, onEscape)
             notOwned = true,
             onEscape = type(onEscape) == "function" and onEscape or nil,
         })
+        -- EUI.RegisterEscapeClose 仅挂 OnShow/OnHide，若窗体在注册当下已处于显示状态需立即唤醒代理
+        if frame.IsShown and frame:IsShown() then
+            local proxy = _G.EllesmereUI_EscapeProxy
+            if proxy and proxy.Show then
+                pcall(proxy.Show, proxy)
+            end
+        end
         return
     end
     local name = frame.GetName and frame:GetName()
@@ -585,8 +589,18 @@ end
 -- 共用 PrettyTooltip 100% 复刻卡片表面（深黑曜石纵向渐变 + 顶色带 + 四周内暗晕 + 2px 顶亮边 + 外柔光）
 -- 支持 square（严格复刻 PrettyTooltip 平铺卡）与 rounded（现代 MMO 抗锯齿圆角卡，用于聊天气泡与圆角卡片）
 local prettyOverlays = setmetatable({}, { __mode = "k" })
-local PTIP_GLOW = "Interface\\AddOns\\PrettyTooltip\\art\\glow"
+local PTIP_GLOW_VENDOR = "Interface\\AddOns\\kkowoUI_Tooltip\\Vendor\\art\\glow"
+local PTIP_GLOW_LEGACY = "Interface\\AddOns\\PrettyTooltip\\art\\glow"
 local EUI_ROUND_DIR = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
+
+local function ResolvePrettyGlowTexture()
+    if F.IsAddOnLoaded("kkowoUI_Tooltip") then
+        return PTIP_GLOW_VENDOR
+    elseif F.IsAddOnLoaded("PrettyTooltip") then
+        return PTIP_GLOW_LEGACY
+    end
+    return nil
+end
 
 local function ApplyNineSliceMask(obj, path, radius, wrap)
     if not obj then return end
@@ -713,11 +727,12 @@ function Theme.EnsurePrettyCardOverlay(host, opts)
 
     -- 1) 外发光柔光晕（与 PrettyTooltip\Panel\Layout.lua 完全同源：art\glow 9 宫格 + ADD 混合）
     local spread = (opts and opts.haloSpread) or 16
-    if F.IsAddOnLoaded("PrettyTooltip") then
+    local glowPath = ResolvePrettyGlowTexture()
+    if glowPath then
         local halo = ov:CreateTexture(nil, "BACKGROUND", nil, -8)
         halo:SetPoint("TOPLEFT", ov, "TOPLEFT", -spread, spread)
         halo:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", spread, -spread)
-        halo:SetTexture(PTIP_GLOW)
+        halo:SetTexture(glowPath)
         if halo.SetTextureSliceMargins then
             pcall(halo.SetTextureSliceMargins, halo, 24, 24, 24, 24)
         end

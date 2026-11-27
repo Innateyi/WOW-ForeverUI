@@ -35,9 +35,27 @@ TEMPLATE_DIR = os.path.join(HERE, 'friend_pack')
 SKIP_ADDON_DIRS = {
     '163UI_Info',            # 网易DD 自己的同步插件
     'Polestar_Extras_Mei',   # 作者个人路线扩展
+    'YaMedia',               # 已吸收 MerfinMain.tga 进 kkowoUI
+    # 阶段 2 已由 EUI + Polestar + kkowoUI 原生无损接管的 4 个重叠插件（保留 Scales 装备对比）
+    'BlizzMove', 'Leatrix_Maps', 'WaypointUI',
+    'VamoosesSlipstream', 'VamoosesSlipstream_kkowo',
+    # 阶段 3 已 MIT 合规吸收进 kkowoUI_Tooltip
+    'PrettyTooltip',
     'BlizzMove_Debug', 'QuestieTrace', 'ArcUI',
     'ArcAuras', 'ArcAuras_Finds', 'ArcAuras_LFG',  # 作者已改用 EUI 冷却管理器
 }
+
+# 同步 update_upstream.py 的净包死目录规则（EUI×6 / BigWigs×8 / LittleWigs×11 / Polestar×9）
+def _load_dead_folders():
+    up_path = os.path.join(HERE, 'update_upstream.py')
+    if not os.path.isfile(up_path):
+        return set()
+    spec = importlib.util.spec_from_file_location('update_upstream', up_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return set(getattr(mod, 'DEAD_FOLDERS', ()))
+
+SKIP_ADDON_DIRS |= _load_dead_folders()
 SKIP_ADDON_FILES = {'addon_strategy.txt', 'dd_author.toc'}
 SKIP_ACC_SV = re.compile(r'^(!BugGrabber|BugSack|Auctionator|QuestieTrace|RXPGuides|EUI-RestedXP|ArcAuras.*|ArcUI|Blizzard_.*|Polestar_Extras_Mei)\.lua$', re.I)
 ACC_FILES = ('bindings-cache.wtf', 'config-cache.wtf', 'edit-mode-cache-account.txt', 'macros-cache.txt')
@@ -133,11 +151,14 @@ def addons_txt_for_pack(text, pack_addons):
             name = VSS.NEW_NAME
         elif name == 'KkowoUI':
             name = 'kkowoUI'
+        elif name == 'PrettyTooltip' and 'kkowoUI_Tooltip' in pack_addons:
+            name = 'kkowoUI_Tooltip'
         if name in pack_addons and name not in seen:
             seen.add(name)
             out.append(f'{name}: {st.strip()}')
-    if 'kkowoUI' in pack_addons and 'kkowoUI' not in seen:
-        out.append('kkowoUI: enabled')
+    for kpkg in sorted(a for a in pack_addons if a.startswith('kkowoUI')):
+        if kpkg not in seen:
+            out.append(f'{kpkg}: enabled')
     return '\r\n'.join(out) + '\r\n'
 
 
@@ -173,11 +194,18 @@ def main():
         sys.exit(f'脱敏副本里应只有一个角色模板，实际 {len(chars)} 个')
     char_tpl = chars[0]
 
-    # 2) 插件清单（kkowoUI 始终取自 --kkowo-src，其余插件取自游戏目录）
-    addon_dirs = sorted(d for d in os.listdir(ADDONS) if os.path.isdir(os.path.join(ADDONS, d)) and d not in SKIP_ADDON_DIRS)
-    if 'kkowoUI' not in addon_dirs:
-        addon_dirs.append('kkowoUI')
-        addon_dirs.sort()
+    # 2) 插件清单（仓库内所有 kkowoUI* 套件始终取自 Addon\，其余插件取自游戏目录）
+    addon_base = os.path.dirname(kkowo_src)
+    repo_kkowo_pkgs = {
+        d: os.path.join(addon_base, d)
+        for d in sorted(os.listdir(addon_base))
+        if d.startswith('kkowoUI') and os.path.isfile(os.path.join(addon_base, d, d + '.toc'))
+    }
+    repo_kkowo_pkgs['kkowoUI'] = kkowo_src
+    addon_dirs = sorted(
+        {d for d in os.listdir(ADDONS) if os.path.isdir(os.path.join(ADDONS, d)) and d not in SKIP_ADDON_DIRS}
+        | set(repo_kkowo_pkgs.keys())
+    )
     if VSS.OLD_NAME in addon_dirs and VSS.NEW_NAME in addon_dirs:
         addon_dirs.remove(VSS.OLD_NAME)          # 已有改名版就用改名版
     pack_addons = {VSS.NEW_NAME if d == VSS.OLD_NAME else d for d in addon_dirs}
@@ -266,8 +294,8 @@ def main():
             for d in addon_dirs:
                 if d == VSS.OLD_NAME:
                     add_tree(vss_src, f'{top}/payload/Interface/AddOns/{VSS.NEW_NAME}')
-                elif d == 'kkowoUI':
-                    add_tree(kkowo_src, f'{top}/payload/Interface/AddOns/kkowoUI')
+                elif d in repo_kkowo_pkgs:
+                    add_tree(repo_kkowo_pkgs[d], f'{top}/payload/Interface/AddOns/{d}')
                 else:
                     add_tree(os.path.join(ADDONS, d), f'{top}/payload/Interface/AddOns/{d}')
             fonts = os.path.join(GAME, 'Fonts')
@@ -279,7 +307,8 @@ def main():
             if os.path.isdir(icons):
                 add_tree(icons, f'{top}/payload/Interface/Icons')
             # 1024x1024 超高清 SDF 3D 世界头顶标记图集（同步到 Interface\TargetingFrame）
-            raid_atlas = os.path.join(kkowo_src, 'Media', 'MarkBar', 'UI-RaidTargetingIcons.blp')
+            media_src = repo_kkowo_pkgs.get('kkowoUI_Media', kkowo_src)
+            raid_atlas = os.path.join(media_src, 'Media', 'MarkBar', 'UI-RaidTargetingIcons.blp')
             if os.path.isfile(raid_atlas):
                 z.write(raid_atlas, f'{top}/payload/Interface/TargetingFrame/UI-RaidTargetingIcons.blp')
             add_tree(os.path.join(wtf_acc, 'SavedVariables'), f'{top}/payload/WTF/Account/SavedVariables')

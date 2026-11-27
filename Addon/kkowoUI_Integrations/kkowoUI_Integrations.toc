@@ -1,0 +1,22 @@
+## Interface: 16001
+## Title: |cffdca77fkkowoUI|r 生态联动与现代美化
+## Notes: 零补丁 EUI/Polestar/Auctionator/伤害统计美化与运行时修复、角色/训练师/拍卖行/世界刷新现代化、姓名板主城减卡
+## Author: Mei
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## Dependencies: kkowoUI
+## OptionalDeps: EllesmereUIBlizzardSkin, EllesmereUIDamageMeters, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, Polestar, Auctionator, Questie, BugSack
+
+Data\PolestarZh.lua
+Data\CooldownPresets.lua
+EUIRuntimeFixes.lua
+PolestarNavPlus.lua
+CooldownPresets.lua
+AuctionSkin.lua
+DamageMeterSkin.lua
+ModernChrome\ModernChrome_Bars.lua
+ModernChrome\ModernChrome_HUD.lua
+ModernChrome\ModernChrome_World.lua
+ModernChrome\ModernChrome_Panels.lua
+ModernChrome\ModernChrome_Lifecycle.lua
+NameplateSmart.lua

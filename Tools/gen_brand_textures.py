@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Generate kkowoUI brand & motion textures (writes into Addon/kkowoUI/Media).
+"""Generate kkowoUI brand & motion textures (writes into Addon/kkowoUI_Media/Media).
 
   Media/Icons/kkowoUI.tga          128x128 flat grass-green geometric emblem (transparent bg)
   Media/Textures/SoftGlow.tga       64x64  radial soft glow (white, alpha falloff)
@@ -24,7 +24,7 @@ import os
 import numpy as np
 from PIL import Image, ImageDraw
 
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Addon", "kkowoUI", "Media")
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "Addon", "kkowoUI_Media", "Media")
 SIZE = 128
 
 # Fresh vibrant grass green (#52D669), pure flat monochrome matching EUI eg-logo.tga style

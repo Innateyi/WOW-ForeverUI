@@ -141,6 +141,11 @@ def fill_texts(text, guides, bad):
             body = [f'{head} {MARK}'] + [f'\t\t["{en}"] = "{lua_escape(zh)}", {MARK}' for en, zh in good.items()] + [f'}} end)() {MARK}']
             out = out[:reg] + '\n'.join(body) + '\n\n' + out[reg:]
             filled += len(good)
+    if filled > 0:
+        reg = out.rfind('Polestar.RegisterGuideTexts(')
+        if reg >= 0:
+            marker_line = f'if Polestar then Polestar._kkowoZhFilled = true end {MARK}\n'
+            out = out[:reg] + marker_line + out[reg:]
     return out, filled, out != text
 
 

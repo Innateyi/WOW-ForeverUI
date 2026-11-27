@@ -1,8 +1,8 @@
 # kkowoUI
 
-面向《魔兽世界：无限》（WoW Forever，Interface 16001）的模块化界面增强插件，建立在 [EllesmereUI](https://www.curseforge.com/wow/addons/ellesmereui)（EUI）之上。27 个模块都可以单独开关，设置页挂在 EUI 设置面板里，游戏内输入 `/kk` 打开。
+面向《魔兽世界：无限》（WoW Forever，Interface 16001）的模块化界面增强插件套件，建立在 [EllesmereUI](https://www.curseforge.com/wow/addons/ellesmereui)（EUI）之上。9 个独立可开关子包（含 2 个 `LoadOnDemand` 按需加载子包）与 30+ 精细模块，设置页与「整合包总控台」挂在 EUI 设置面板顶部，游戏内输入 `/kk` 打开。
 
-当前版本：**1.5.1**。插件名为 `kkowoUI`（区分大小写），曾用名 KkowoUI、ForeverUI，旧名的设置会自动迁移。
+当前版本：**2.0.0**。主包名为 `kkowoUI`（区分大小写），曾用名 KkowoUI、ForeverUI，旧名存档自动迁移，零配置丢失。
 
 ## 安装
 
@@ -13,7 +13,21 @@
 - 配置按插件合并：你配置过的插件保留你的设置和布局，没配置过的插件使用整合包布局。
 - 新账号要先进游戏登录一次再安装。
 
-**只装插件**：把 `Addon/kkowoUI` 复制到 `_forever_\Interface\AddOns\kkowoUI`（文件夹名必须是 `kkowoUI`），并安装 EllesmereUI。
+**只装插件**：把 `Addon/kkowoUI*` 全部 9 个目录复制到 `_forever_\Interface\AddOns\`，并安装 EllesmereUI。
+
+### 9 目录模块化架构（v2.0）
+
+| 子包目录 | 加载方式 | 职责 |
+| --- | --- | --- |
+| `kkowoUI` | 常驻核心 | 命名空间、主题与 12.1 安全圆角引擎、动效、存档、Guard（PatchGuard / DeadGuard / ESC 增强 / 返回总控台）、OptionsProxy |
+| `kkowoUI_Media` | 常驻资源 | 17MB 静态共享资源库（字体、原 YaMedia `MerfinMain.tga` 状态条、图标、音效） |
+| `kkowoUI_CoreHUD` | 常驻 | 核心双翼血蓝条与动态技能球（拆分为 4 个文件）、低血量红暗角、施法/挥砍/动作条/姓名板/增益栏动效 |
+| `kkowoUI_QoL` | 常驻 | 任务自动接交/快捷条/经验条、大地图 3D 光柱联动、战斗提醒、Roll/标记/聊天/系统栏、背包拾取与耐久 |
+| `kkowoUI_Tooltip` | 常驻 | MIT 合规内嵌 PrettyTooltip v1.5.0（`/ptip`）+ 全界面悬浮卡片圆角统一与 Scales 对齐 |
+| `kkowoUI_Integrations` | 常驻 | EUI/Polestar/Auctionator/伤害统计圆角与黑曜石明细卡美化、零补丁运行时修复、ModernChrome（拆分为 5 文件）+ 姓名板主城减卡 |
+| `kkowoUI_ClassPack` | 常驻（按职业生效） | 术士灵魂石提醒、猎人技能音效、武器附魔/特效计时条、职业趣味表情喊话 |
+| `kkowoUI_Options` | **LoadOnDemand** | `/kk` 设置面板、整合包总控台与 `/kk doctor` 体检（打开时自动载入，平时 0 内存） |
+| `kkowoUI_KeybindBoard` | **LoadOnDemand** | `/kkkeys` 可视化实体键盘拖拽绑键器（打开时自动载入，平时 0 内存） |
 
 ## 功能
 
@@ -82,22 +96,21 @@
 | `/kk toast` / `/kk ss` | 预览拾取播报 / 预览灵魂石提醒 |
 | `/kk wp` | 显示 / 关闭武器附魔与特效计时条示例（配合 `/kk unlock` 摆位置） |
 
-## 第三方插件与本地补丁
+## 第三方插件与极简本地补丁
 
-kkowoUI 依赖 EllesmereUI，并会和这些插件联动（装了才生效）：PrettyTooltip、Auctionator、Polestar、Questie、Leatrix_Maps、WaypointUI、BugSack、QFXSystemBar。大型插件都保持原版，不并进 kkowoUI。
-
-少数问题只能改第三方插件的文件来修，放在 `Patches/`。每个补丁都可以重复执行，执行前会把原文件备份：
+kkowoUI v2.0 保留 10 个高频更新的独立上游引擎（原名保留、尊重版权，由 `Tools/update_upstream.py` 与网易 DD 顺畅升级）：EllesmereUI、Polestar、Questie、DungeonsForever、BigWigs/LittleWigs、Auctionator、SpellActivationOverlay、GTFO、Scales、BugSack/+!BugGrabber；并已将原 7 个补丁零补丁化至仅剩 **3 个极简补丁**（带运行时 `PatchGuard` 自动守卫）：
 
 | 补丁 | 改的插件 | 作用 |
 | --- | --- | --- |
-| `eui_np_questtext_name.py` | EllesmereUINameplates | 姓名板任务计数不再压住怪物名字，字号同步 |
-| `eui_friendly_player_names.py` | EllesmereUINameplates | 不再每次登录强制打开友方玩家名字 |
-| `eui_chat_tab_fast.py` | EllesmereUIChat | 聊天标签点击即时切换 |
-| `vss_kkowo_rename.py` | VamoosesSlipstream | 改名为 `VamoosesSlipstream_kkowo`（极速导航 kkowo优化版），网易 DD 不会再用原版覆盖它；设置自动迁移 |
-| `vss_corpse_toggle.py` | 极速导航 | 加「死亡后提示跑尸路线」开关 |
-| `polestar_zhcn_fill.py` | Polestar_zhCN | 补齐 Polestar 未翻译的界面和指南文字 |
+| `eui_chat_tab_fast.py` | EllesmereUIChat | 聊天标签点击即时切换（附 `_kkowoFastTab` 探针） |
+| `polestar_nav_optimize.py` | Polestar | 寻路与怪区路线优化（附 `_kkowoNavOpt` 探针） |
+| `polestar_zhcn_fill.py` | Polestar_zhCN | 补齐 Polestar 未翻译的界面和指南文字（附 `_kkowoZhFilled` 探针） |
 
-网易 DD 更新 EllesmereUI、Polestar 或极速导航后，补丁会被覆盖：退出游戏，双击 `Tools\DD更新后重打补丁.bat` 即可重新打上。EUI 子插件和 Polestar_zhCN 是被主插件按文件夹名加载的，不能改名，所以只能这样重打。
+网易 DD 更新 EllesmereUI 或 Polestar 后，登录时 `PatchGuard` 会自动检测并在需要时发一条金色提醒；退出游戏双击 `Tools\DD更新后重打补丁.bat` 即可一键恢复。
+
+## 版本
+
+- **2.0.0**：全面架构升级为 **9 目录模块化套件**（含 `kkowoUI_Media` 资源分离 + `kkowoUI_Options` / `kkowoUI_KeybindBoard` 双 `LoadOnDemand` 按需加载 + MIT 合规内嵌 `kkowoUI_Tooltip`），并将原 `ModernChrome.lua`（6,910 行）拆分为 5 文件 + 独立 `NameplateSmart.lua`、`CoreHUD.lua`（4,450 行）拆分为 4 文件；新增 `/kk` 顶层「整合包总控台」与 `PatchGuard` 补丁守卫，支持子界面按 `ESC` 关闭并自动返回总控台（零补丁接管 BigWigs / BugSack / SettingsPanel ESC 关闭）；新增 `DamageMeterSkin` 零补丁美化 EUI 伤害统计圆角条与黑曜石明细悬停卡；修复 `Scales` 提示卡折行/对齐、登录聊天刷屏零污染静默收纳、大地图 3D 光柱双向联动与单图钉去重；上游升级至 `EllesmereUI v9.9.6` + `LittleWigs v12.1.24`，清理 68MB+ 正式服死目录与重叠插件。
 
 ## 开发
 

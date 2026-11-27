@@ -14,15 +14,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$src  = Join-Path $root 'Addon\kkowoUI'
+$addonBase = Join-Path $root 'Addon'
 $name = 'kkowoUI'
-$oldNames = @('kkowoUI', 'KkowoUI', 'ForeverUI')   # 文件夹名 Windows 不区分大小写，KkowoUI 与 kkowoUI 是同一个
+$pkgDirs = @(Get-ChildItem -LiteralPath $addonBase -Directory | Where-Object {
+    $_.Name -like 'kkowoUI*' -and (Test-Path -LiteralPath (Join-Path $_.FullName ($_.Name + '.toc')))
+} | Sort-Object Name)
 
 if (Get-Process -Name 'Wow*' -ErrorAction SilentlyContinue) {
     Write-Host '魔兽世界正在运行：请完全退出游戏后再部署（游戏退出时会覆盖存档与 AddOns.txt）。未做任何改动。' -ForegroundColor Yellow
     exit 1
 }
-if (-not (Test-Path -LiteralPath (Join-Path $src "$name.toc"))) { throw "找不到插件源目录：$src" }
+if ($pkgDirs.Count -eq 0) { throw "在 $addonBase 找不到任何 kkowoUI* 插件目录" }
 if (-not (Test-Path -LiteralPath $AddOns)) { throw "找不到游戏 AddOns 目录：$AddOns" }
 
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
@@ -33,6 +35,7 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 function Ensure-Dir([string]$p) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
 
 # ---------- 1) 旧插件文件夹 / 目录链接 ----------
+$oldNames = @('KkowoUI', 'ForeverUI') + ($pkgDirs | ForEach-Object { $_.Name })
 $old = @(Get-ChildItem -LiteralPath $AddOns -Directory -Force | Where-Object { $oldNames -contains $_.Name })
 foreach ($it in $old) {
     if ($it.LinkType -in @('Junction', 'SymbolicLink')) {
@@ -47,14 +50,17 @@ foreach ($it in $old) {
     }
 }
 
-# ---------- 2) 复制成真实文件夹 ----------
-$dst = Join-Path $AddOns $name
-& robocopy $src $dst /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) { throw "复制失败（robocopy 代码 $LASTEXITCODE）：$src -> $dst" }
-$nSrc = @(Get-ChildItem -LiteralPath $src -File -Recurse).Count
-$nDst = @(Get-ChildItem -LiteralPath $dst -File -Recurse).Count
-if ($nSrc -ne $nDst) { throw "复制校验失败：源 $nSrc 个文件，目标 $nDst 个" }
-Write-Host "已复制到：$dst（$nDst 个文件）" -ForegroundColor Green
+# ---------- 2) 复制所有 kkowoUI* 套件为真实文件夹 ----------
+foreach ($pkg in $pkgDirs) {
+    $src = $pkg.FullName
+    $dst = Join-Path $AddOns $pkg.Name
+    & robocopy $src $dst /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "复制失败（robocopy 代码 $LASTEXITCODE）：$src -> $dst" }
+    $nSrc = @(Get-ChildItem -LiteralPath $src -File -Recurse).Count
+    $nDst = @(Get-ChildItem -LiteralPath $dst -File -Recurse).Count
+    if ($nSrc -ne $nDst) { throw "复制校验失败（$($pkg.Name)）：源 $nSrc 个文件，目标 $nDst 个" }
+    Write-Host "已复制到：$dst（$nDst 个文件）" -ForegroundColor Green
+}
 
 # ---------- 3) 存档与 AddOns.txt 改名迁移 ----------
 $wtfAccount = Join-Path (Split-Path -Parent (Split-Path -Parent $AddOns)) 'WTF\Account'
@@ -94,15 +100,18 @@ if (Test-Path -LiteralPath $wtfAccount) {
         Write-Host "已迁移存档：$rel -> $newName" -ForegroundColor Green
     }
     $txts = @(Get-ChildItem -LiteralPath $accRoot -Recurse -File -Filter 'AddOns.txt' -Force -ErrorAction SilentlyContinue)
+    $pkgNames = @($pkgDirs | ForEach-Object { $_.Name })
     foreach ($t in $txts) {
         $raw = [System.IO.File]::ReadAllText($t.FullName, [System.Text.Encoding]::UTF8)
-        if ($raw -cnotmatch '(?m)^(ForeverUI|KkowoUI):') { continue }
+        $nl = if ($raw.Contains("`r`n")) { "`r`n" } else { "`n" }
+        $hasOld = $raw -cmatch '(?m)^(ForeverUI|KkowoUI):'
+        $hasNew = $raw -cmatch '(?m)^kkowoUI:'
+        $missingPkgs = @($pkgNames | Where-Object { $raw -cnotmatch ("(?m)^" + [regex]::Escape($_) + ":") })
+        if (-not $hasOld -and $missingPkgs.Count -eq 0) { continue }
         $rel = $t.FullName.Substring($accRoot.Length).TrimStart('\')
         $bakPath = Join-Path $bk ('WTF\' + $rel)
         Ensure-Dir (Split-Path -Parent $bakPath)
         Copy-Item -LiteralPath $t.FullName -Destination $bakPath
-        $nl = if ($raw.Contains("`r`n")) { "`r`n" } else { "`n" }
-        $hasNew = $raw -cmatch '(?m)^kkowoUI:'
         $out = New-Object System.Collections.Generic.List[string]
         foreach ($ln in ($raw -split "`r?`n")) {
             if ($ln -cmatch '^(ForeverUI|KkowoUI):(.*)$') {
@@ -112,8 +121,12 @@ if (Test-Path -LiteralPath $wtfAccount) {
             }
             $out.Add($ln)
         }
+        foreach ($mp in $missingPkgs) {
+            if ($mp -eq 'kkowoUI' -and $hasNew) { continue }
+            $out.Add($mp + ': enabled')
+        }
         [System.IO.File]::WriteAllText($t.FullName, ($out -join $nl), $utf8NoBom)
-        Write-Host "已更新插件启用列表：$rel" -ForegroundColor Green
+        Write-Host "已更新插件启用列表：$rel（补齐 $($missingPkgs.Count) 个套件条目）" -ForegroundColor Green
     }
 }
 

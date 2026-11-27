@@ -1,0 +1,355 @@
+----------------------------------------------------------------------
+--  kkowoUI — Modules/EUIRuntimeFixes.lua
+--  EllesmereUI 零文件修改运行时修复（替代原 2 个 EUI 姓名板文件补丁）：
+--    1) 拦截 EllesmereUINameplates 每次登录强制打开原生友方玩家名字 CVar
+--       （替代 Patches/eui_friendly_player_names.py；仅首次安装放行）
+--    2) 姓名板任务计数与怪物名字防重叠 + 上方槽位字号自动对齐
+--       （替代 Patches/eui_np_questtext_name.py；零污染 hooksecurefunc）
+--  所有状态均存放在弱表中，绝不向暴雪/EUI 框体写入自定义字段。
+----------------------------------------------------------------------
+local _G = _G
+local F = _G.kkowoUI
+if not F then return end
+local ipairs, math_abs, math_max, pairs, pcall, setmetatable, type =
+    ipairs, math.abs, math.max, pairs, pcall, setmetatable, type
+local C_Timer = C_Timer
+
+local mod = F.RegisterModule("euiRuntimeFixes", {
+    title = "EUI 零补丁运行时修复",
+    desc = "以零文件侵入钩子替代原 EllesmereUINameplates 补丁：不再强制重置友方玩家名字 CVar，并自动防止姓名板任务计数与怪物名字重叠。",
+    group = "theme",
+    order = 42,
+    defaults = {
+        enabled = true,
+        guardFriendlyNameCVar = true,
+        fixNameplateQuestOverlap = true,
+    },
+})
+
+----------------------------------------------------------------------
+--  1) 顶层尽早包装 EllesmereUI.SetCVar（在 PLAYER_LOGIN 前拦截）
+----------------------------------------------------------------------
+local origEUISetCVar = nil
+
+local function ShouldGuardFriendlyCVar()
+    local sv = _G.kkowoUIDB or _G.KkowoUIDB
+    local cfg = type(sv) == "table" and type(sv.modules) == "table" and sv.modules.euiRuntimeFixes
+    if type(cfg) == "table" then
+        if cfg.enabled == false or cfg.guardFriendlyNameCVar == false then
+            return false
+        end
+    end
+    return true
+end
+
+do
+    local EUI = _G.EllesmereUI
+    if type(EUI) == "table" and type(EUI.SetCVar) == "function" then
+        origEUISetCVar = EUI.SetCVar
+        EUI.SetCVar = function(name, value, owner)
+            if name == "UnitNameFriendlyPlayerName"
+                and owner == "EllesmereUINameplates"
+                and (value == 1 or value == "1" or value == true)
+                and not EUI._firstInstallPending
+                and ShouldGuardFriendlyCVar() then
+                return false
+            end
+            return origEUISetCVar(name, value, owner)
+        end
+    end
+end
+
+----------------------------------------------------------------------
+--  2) 姓名板任务计数与名字防重叠 + 上方任务计数字号同步
+----------------------------------------------------------------------
+local hookedPlates = setmetatable({}, { __mode = "k" })
+local plateShiftState = setmetatable({}, { __mode = "k" })
+
+local function GetEUIActiveNameplateProfile()
+    local db = _G.EllesmereUINameplatesDB
+    if type(db) ~= "table" or type(db.profiles) ~= "table" then
+        return nil
+    end
+    local profName = db.activeProfile or "Default"
+    local prof = db.profiles[profName]
+    if type(prof) == "table" then
+        return prof
+    end
+    for _, v in pairs(db.profiles) do
+        if type(v) == "table" then
+            return v
+        end
+    end
+    return nil
+end
+
+local function IsTopRowFrame(frame, health)
+    if not (frame and health and frame.IsShown and frame:IsShown()) then
+        return false, nil
+    end
+    local ok, p, rel, rp = pcall(frame.GetPoint, frame, 1)
+    if not (ok and rel == health and type(rp) == "string") then
+        return false, nil
+    end
+    if rp == "TOPLEFT" then
+        return true, "left"
+    elseif rp == "TOPRIGHT" then
+        return true, "right"
+    elseif rp == "TOP" then
+        return true, "center"
+    end
+    return false, nil
+end
+
+local function FrameWidthSafe(frame)
+    if not (frame and frame.GetWidth) then
+        return 0
+    end
+    local w = F.PlainNumber(frame._npW, nil)
+    if not w or w <= 0 then
+        w = F.PlainNumber(frame._npSz, nil)
+    end
+    if not w or w <= 0 then
+        local ok, raw = pcall(frame.GetWidth, frame)
+        w = ok and F.PlainNumber(raw, 0) or 0
+    end
+    return w or 0
+end
+
+local function SyncQuestTextFontSize(plate)
+    if not (mod._active and mod:GetDB().fixNameplateQuestOverlap ~= false) then
+        return
+    end
+    local qf = plate.questTextFrame
+    local nameFS = plate.name
+    local health = plate.health
+    if not (qf and nameFS and health and qf.IsShown and qf:IsShown()) then
+        return
+    end
+    local onTop = IsTopRowFrame(qf, health)
+    if not onTop then
+        return
+    end
+    local prof = GetEUIActiveNameplateProfile()
+    if type(prof) == "table" and prof.questObjectiveTextSize ~= nil then
+        return
+    end
+    local okN, nFont, nSize, nFlags = pcall(nameFS.GetFont, nameFS)
+    nSize = okN and F.PlainNumber(nSize, nil) or nil
+    if not (nFont and nSize and nSize >= 6) then
+        return
+    end
+    -- EUI questTextFrame 内部 FontString 可能是 qf.text / qf.fs 或唯一子 FontString
+    local qfs = qf.text or qf.fs
+    if not qfs and qf.GetRegions then
+        local regs = { qf:GetRegions() }
+        for i = 1, #regs do
+            local r = regs[i]
+            if r and r.GetObjectType and r:GetObjectType() == "FontString" then
+                qfs = r
+                break
+            end
+        end
+    end
+    if not (qfs and qfs.GetFont and qfs.SetFont) then
+        return
+    end
+    local okQ, qFont, qSize, qFlags = pcall(qfs.GetFont, qfs)
+    qSize = okQ and F.PlainNumber(qSize, nil) or nil
+    if qSize and math_abs(qSize - nSize) < 0.25 then
+        return
+    end
+    pcall(qfs.SetFont, qfs, qFont or nFont, nSize, qFlags or nFlags or "")
+    if qfs.GetStringWidth and qf.SetWidth then
+        local okW, sw = pcall(qfs.GetStringWidth, qfs)
+        sw = okW and F.PlainNumber(sw, nil) or nil
+        if sw and sw > 0 then
+            pcall(qf.SetWidth, qf, sw + 2)
+        end
+    end
+end
+
+local function AdjustTopNameShift(plate)
+    if not (mod._active and mod:GetDB().fixNameplateQuestOverlap ~= false) then
+        return
+    end
+    local nameFS = plate.name
+    local health = plate.health
+    if not (nameFS and health and nameFS.GetPoint) then
+        return
+    end
+    local okP, pt, rel, rpt, xOff, yOff = pcall(nameFS.GetPoint, nameFS, 1)
+    if not (okP and pt == "BOTTOM" and rel == health and rpt == "TOP") then
+        return
+    end
+    xOff = F.PlainNumber(xOff, 0) or 0
+    yOff = F.PlainNumber(yOff, 0) or 0
+
+    -- 先还原上次我们施加的平移量，算出 EUI 原始基准 x
+    local st = plateShiftState[plate]
+    local prevShift = st and st.applied or 0
+    local baseX = xOff - prevShift
+
+    local leftRes, rightRes = 0, 0
+    local candidates = {
+        { frame = plate.raidFrame, pad = 2 },
+        { frame = plate.classFrame, pad = 4 },
+        { frame = plate.questFrame, pad = 4 },
+        { frame = plate.questTextFrame, pad = 4 },
+        { frame = plate.factionFrame, pad = 4 },
+    }
+    for i = 1, #candidates do
+        local c = candidates[i]
+        local onTop, side = IsTopRowFrame(c.frame, health)
+        if onTop and (side == "left" or side == "right") then
+            local w = FrameWidthSafe(c.frame)
+            if w > 0 then
+                if side == "left" then
+                    leftRes = leftRes + w + c.pad
+                else
+                    rightRes = rightRes + w + c.pad
+                end
+            end
+        end
+    end
+
+    local newShift = (leftRes - rightRes) * 0.5
+    if math_abs(newShift - prevShift) < 0.25 and math_abs(newShift) < 0.25 then
+        if st then st.applied = 0 end
+        return
+    end
+
+    if not st then
+        st = {}
+        plateShiftState[plate] = st
+    end
+    st.applied = newShift
+
+    pcall(nameFS.ClearAllPoints, nameFS)
+    pcall(nameFS.SetPoint, nameFS, "BOTTOM", health, "TOP", baseX + newShift, yOff)
+
+    -- 同步收紧名字最大宽度，确保不越界压入左侧/右侧任务计数
+    if health.GetWidth and nameFS.GetWidth and nameFS.SetWidth then
+        local okHB, hbW = pcall(health.GetWidth, health)
+        local okNW, curNW = pcall(nameFS.GetWidth, nameFS)
+        hbW = okHB and F.PlainNumber(hbW, nil) or nil
+        curNW = okNW and F.PlainNumber(curNW, nil) or nil
+        if hbW and curNW and (leftRes > 0 or rightRes > 0) then
+            local avail = math_max(hbW - leftRes - rightRes, 24)
+            if curNW > avail then
+                pcall(nameFS.SetWidth, nameFS, avail)
+            end
+        end
+    end
+end
+
+local function FindEUIPlateFromBlizzPlate(blizzPlate)
+    if type(blizzPlate) ~= "table" then
+        return nil
+    end
+    -- EUI 姓名板挂载为暴雪 nameplate 的子框体，具备 health + name + UpdateNameWidth 方法
+    if blizzPlate.GetChildren then
+        local children = { blizzPlate:GetChildren() }
+        for i = 1, #children do
+            local ch = children[i]
+            if type(ch) == "table" and ch.health and ch.name and type(ch.UpdateNameWidth) == "function" then
+                return ch
+            end
+        end
+    end
+    return nil
+end
+
+local function HookEUIPlate(plate)
+    if not (plate and not hookedPlates[plate] and _G.hooksecurefunc) then
+        return
+    end
+    hookedPlates[plate] = true
+    if type(plate.UpdateQuestText) == "function" then
+        _G.hooksecurefunc(plate, "UpdateQuestText", function(self)
+            SyncQuestTextFontSize(self)
+            AdjustTopNameShift(self)
+        end)
+    end
+    if type(plate.UpdateNameWidth) == "function" then
+        _G.hooksecurefunc(plate, "UpdateNameWidth", function(self)
+            AdjustTopNameShift(self)
+        end)
+    end
+    if type(plate.RefreshNamePosition) == "function" then
+        _G.hooksecurefunc(plate, "RefreshNamePosition", function(self)
+            local st = plateShiftState[self]
+            if st then st.applied = 0 end
+            AdjustTopNameShift(self)
+        end)
+    end
+    SyncQuestTextFontSize(plate)
+    AdjustTopNameShift(plate)
+end
+
+local function ScanAllPlates()
+    local NP = _G.C_NamePlate
+    if not (NP and type(NP.GetNamePlates) == "function") then
+        return
+    end
+    local ok, list = pcall(NP.GetNamePlates)
+    if not (ok and type(list) == "table") then
+        return
+    end
+    for i = 1, #list do
+        local ep = FindEUIPlateFromBlizzPlate(list[i])
+        if ep then
+            HookEUIPlate(ep)
+        end
+    end
+end
+
+function mod:OnEnable()
+    self:RegisterEvent("NAME_PLATE_UNIT_ADDED", function(_, _, unit)
+        local NP = _G.C_NamePlate
+        if NP and NP.GetNamePlateForUnit and unit then
+            local ok, bp = pcall(NP.GetNamePlateForUnit, unit)
+            if ok and bp then
+                local ep = FindEUIPlateFromBlizzPlate(bp)
+                if ep then
+                    HookEUIPlate(ep)
+                    return
+                end
+            end
+        end
+        C_Timer.After(0, ScanAllPlates)
+    end)
+    self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        C_Timer.After(0.5, ScanAllPlates)
+    end)
+    C_Timer.After(0.5, ScanAllPlates)
+end
+
+function mod:OnDisable()
+    -- 停止后续修正；保留已安装的安全空转钩子
+end
+
+function mod:BuildOptions(W, parent, y, enableSlot)
+    local db = self:GetDB()
+    local _, h
+    _, h = W:DualRow(parent, y, enableSlot, {
+        type = "toggle",
+        text = "禁止 EUI 每次登录强开友方玩家名字",
+        tooltip = "拦截 EllesmereUINameplates 每次登录时强制改写 UnitNameFriendlyPlayerName CVar，尊重你在暴雪界面里的勾选（零文件补丁实现）。",
+        getValue = function() return db.guardFriendlyNameCVar ~= false end,
+        setValue = function(v) db.guardFriendlyNameCVar = v == true end,
+    })
+    y = y - h
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "姓名板任务计数防压字与字号同步",
+        tooltip = "自动按上方左右角任务计数/稀有标记占宽平移怪物名字并同步字号，避免压字（零文件补丁实现）。",
+        getValue = function() return db.fixNameplateQuestOverlap ~= false end,
+        setValue = function(v)
+            db.fixNameplateQuestOverlap = v == true
+            if db.fixNameplateQuestOverlap then ScanAllPlates() end
+        end,
+    }, nil)
+    y = y - h
+    return y
+end

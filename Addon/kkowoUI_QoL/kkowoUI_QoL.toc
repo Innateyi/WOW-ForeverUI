@@ -1,0 +1,32 @@
+## Interface: 16001
+## Title: |cffdca77fkkowoUI|r 练级社交与日常便利
+## Notes: 自动任务与快捷条、经验/声望条、地图等级与 3D 光柱联动、战斗提醒、Roll条、快捷标记、融合聊天条、聊天气泡、背包拾取、装备耐久与系统栏
+## Author: Mei
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## Dependencies: kkowoUI
+## OptionalDeps: EllesmereUIChat, EllesmereUIBags, EllesmereUIMinimap, EllesmereUIQuestTracker, Polestar, Questie, Auctionator
+
+Data\ZoneLevels.lua
+Data\NodeReminderData.lua
+QuestAuto.lua
+QuestBar.lua
+QuestXP.lua
+XPBar.lua
+NodeReminder.lua
+ZoneLabels.lua
+WaypointAutoTrack.lua
+WorldNames.lua
+CombatAlert.lua
+RollBars.lua
+MarkBar.lua
+ChatBar.lua
+ChatBubbles.lua
+SocialTools.lua
+BagUtility.lua
+LootToast.lua
+Durability.lua
+GearList.lua
+ExtraFrameMover.lua
+ImmersiveHUD.lua
+SystemBar.lua

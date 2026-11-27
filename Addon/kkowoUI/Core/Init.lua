@@ -4,14 +4,21 @@
 ----------------------------------------------------------------------
 local ADDON_NAME, F = ...
 
-F.NAME = ADDON_NAME
-F.VERSION = "1.5.1"
-F.MEDIA = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Media\\"
-F.PREFIX = "|cffdca77f[kkowoUI]|r "
-
 local _G = _G
 local type, tostring, tonumber = type, tostring, tonumber
-local pairs, ipairs, pcall = pairs, ipairs, pcall
+local pairs, ipairs, pcall, select = pairs, ipairs, pcall, select
+
+_G.kkowoUI = F
+F.NAME = ADDON_NAME
+F.VERSION = "2.0.0"
+do
+    local ca = _G.C_AddOns
+    local hasMedia = (ca and ca.DoesAddOnExist and select(2, pcall(ca.DoesAddOnExist, "kkowoUI_Media")) == true)
+        or (ca and ca.IsAddOnLoaded and select(2, pcall(ca.IsAddOnLoaded, "kkowoUI_Media")) == true)
+    F.MEDIA = hasMedia and "Interface\\AddOns\\kkowoUI_Media\\Media\\"
+        or ("Interface\\AddOns\\" .. ADDON_NAME .. "\\Media\\")
+end
+F.PREFIX = "|cffdca77f[kkowoUI]|r "
 local math_floor, math_abs = math.floor, math.abs
 local string_format = string.format
 local CreateFrame = CreateFrame
@@ -279,6 +286,8 @@ do
         for _, spec in pairs(F.DAMAGE_FONTS) do
             pcall(LSM.Register, LSM, "font", spec.smName, spec.path, 255)
         end
+        -- 吸收原 YaMedia 的 MerfinMain 状态条材质，EUI / BigWigs / kkowoUI 共用且无需再装独立 YaMedia
+        pcall(LSM.Register, LSM, "statusbar", "MerfinMain", F.MEDIA .. "Textures\\MerfinMain.tga")
     end
 
     local probeFS = nil
@@ -350,6 +359,296 @@ do
         end
         if event == "PLAYER_LOGIN" then
             self:UnregisterEvent("PLAYER_LOGIN")
+        end
+    end)
+end
+
+----------------------------------------------------------------------
+--  登录聊天窗口刷屏精简（零污染：只保留 kkowoUI 与 Bug/报错提醒）
+--  • 遵循 12.1 零污染铁律：绝不替换 ChatFrame1.AddMessage 字段，仅使用
+--    hooksecurefunc 后置监听 + 官方 RemoveMessagesByPredicate 同步清理
+--    Blizzard ChatFrame1 与 EllesmereUIChat 的 ScrollingMessageFrame
+--  • 仅在登录窗口期（进入世界后 12 秒内）生效，之后自动解除，绝不拦截
+--    玩家正常聊天、系统提示、手动 /polestar /bw /df 等命令输出
+--  • 被隐藏的第三方横幅按序保存在内存，随时可输入 /kk loginlog 回看
+----------------------------------------------------------------------
+do
+    local suppressed = {}
+    local suppressedSet = {}
+    local MAX_LOG = 60
+    local WINDOW_SEC = 30
+    local active = true
+    local enteredAt = nil
+    local hookInstalled = false
+    local sweeping = false
+    local sweepQueued = false
+
+    local KEEP_LINK_PATTERNS = {
+        "|hplayer:",
+        "|hbnplayer:",
+        "|hchannel:",
+        "|hclubticket:",
+        "|hbuggrabber:",
+        "|hitem:",
+        "|hspell:",
+        "|hquest:",
+        "|hachievement:",
+    }
+
+    local KEEP_KEYWORDS = {
+        "kkowoui",
+        "foreverui",
+        "buggrabber",
+        "bugsack",
+        "bug in your soup",
+        "there's a bug",
+        "lua error",
+        "error:",
+        "taint",
+        "stack",
+        "报错",
+        "错误",
+        "异常",
+        "失败",
+        "捕获",
+        "污染",
+        "警告",
+    }
+
+    local ADDON_BANNER_KEYWORDS = {
+        "ellesmereui",
+        "ellesmere",
+        "polestar",
+        "极星",
+        "questie",
+        "bigwigs",
+        "littlewigs",
+        "dungeonsforever",
+        "无限副本手册",
+        "df_cnlocale",
+        "auctionator",
+        "prettytooltip",
+        "ptip",
+        "gtfo",
+        "spellactivationoverlay",
+        "leatrix",
+        "blizzmove",
+        "scales",
+        "waypoint",
+        "vamoose",
+        "slipstream",
+        "[vss]",
+        "极速导航",
+        "汉化已启用",
+        "已过期",
+        "out of date",
+        "out-of-date",
+        "tomtom",
+        "weakauras",
+        "details!",
+        "plater",
+        "elvui",
+        "163ui",
+        "大脚",
+        "网易",
+        "已加载",
+        "加载成功",
+        "加载完成",
+        " loaded",
+        "type /",
+        "for options",
+        "for help",
+        "输入 /",
+    }
+
+    local function IsLoginQuietEnabled()
+        local sv = _G.kkowoUIDB or _G.KkowoUIDB
+        local cb = type(sv) == "table" and type(sv.modules) == "table" and sv.modules.chatBar
+        if type(cb) == "table" and cb.loginQuiet == false then
+            return false
+        end
+        return true
+    end
+
+    local function StripEscapes(s)
+        local out = s:gsub("|c%x%x%x%x%x%x%x%x", "")
+        out = out:gsub("|cn[^:]+:", "")
+        out = out:gsub("|r", "")
+        out = out:gsub("|T.-|t", "")
+        out = out:gsub("|A.-|a", "")
+        out = out:gsub("^%s+", ""):gsub("%s+$", "")
+        return out
+    end
+
+    local function RecordSuppressed(clean)
+        if clean == "" or suppressedSet[clean] or #suppressed >= MAX_LOG then
+            return
+        end
+        suppressedSet[clean] = true
+        suppressed[#suppressed + 1] = clean
+    end
+
+    local function ShouldSuppressLine(msg, _, _, _, lineID, _, _, event)
+        local plain = F.PlainString(msg, nil)
+        if not plain or plain == "" then
+            return false
+        end
+        -- 服务器聊天事件（带数字 chatTypeID 或 CHAT_MSG_* 事件）一律保留
+        if type(lineID) == "number" and lineID > 0 then
+            return false
+        end
+        local evPlain = F.PlainString(event, nil)
+        if evPlain and evPlain:sub(1, 9) == "CHAT_MSG_" then
+            return false
+        end
+
+        local rawLower = plain:lower()
+        for i = 1, #KEEP_LINK_PATTERNS do
+            if rawLower:find(KEEP_LINK_PATTERNS[i], 1, true) then
+                return false
+            end
+        end
+
+        local clean = StripEscapes(plain)
+        if clean == "" then
+            return false
+        end
+        local low = clean:lower()
+        for i = 1, #KEEP_KEYWORDS do
+            if low:find(KEEP_KEYWORDS[i], 1, true) then
+                return false
+            end
+        end
+
+        for i = 1, #ADDON_BANNER_KEYWORDS do
+            if low:find(ADDON_BANNER_KEYWORDS[i], 1, true) then
+                RecordSuppressed(clean)
+                return true
+            end
+        end
+        return false
+    end
+
+    local hookedSMF = setmetatable({}, { __mode = "k" })
+
+    local function FindEUIChatSMF(cf)
+        local EUI = _G.EllesmereUI
+        local cfd = EUI and EUI._chatCFD
+        if type(cfd) ~= "function" then
+            return nil
+        end
+        local ok, d = pcall(cfd, cf)
+        local bg = ok and type(d) == "table" and d.bg
+        if not (bg and bg.GetChildren) then
+            return nil
+        end
+        local children = { bg:GetChildren() }
+        for i = 1, #children do
+            local ch = children[i]
+            if ch and ch.GetObjectType and ch:GetObjectType() == "ScrollingMessageFrame"
+                and ch.RemoveMessagesByPredicate then
+                return ch
+            end
+        end
+        return nil
+    end
+
+    local OnChatAddMessage
+
+    local function EnsureSMFHook(smf)
+        if smf and not hookedSMF[smf] and _G.hooksecurefunc then
+            hookedSMF[smf] = true
+            _G.hooksecurefunc(smf, "AddMessage", OnChatAddMessage)
+        end
+    end
+
+    local function SweepNow()
+        sweepQueued = false
+        if sweeping or not active or not IsLoginQuietEnabled() then
+            return
+        end
+        if enteredAt and (GetTime() - enteredAt) > WINDOW_SEC then
+            active = false
+            return
+        end
+        sweeping = true
+        local cf = _G.ChatFrame1
+        if cf and cf.RemoveMessagesByPredicate then
+            pcall(cf.RemoveMessagesByPredicate, cf, ShouldSuppressLine)
+            local smf = FindEUIChatSMF(cf)
+            if smf then
+                EnsureSMFHook(smf)
+                pcall(smf.RemoveMessagesByPredicate, smf, ShouldSuppressLine)
+            end
+        end
+        sweeping = false
+    end
+
+    OnChatAddMessage = function()
+        if sweeping or not active or not IsLoginQuietEnabled() then
+            return
+        end
+        -- 同步在当帧立即清理，避免第三方横幅先闪现一帧再消失；再补一次 0s 防 EUI 后置镜像慢半拍
+        SweepNow()
+        if not sweepQueued then
+            sweepQueued = true
+            C_Timer.After(0, SweepNow)
+        end
+    end
+
+    local function EnsureHook()
+        local cf = _G.ChatFrame1
+        if cf and not hookInstalled and _G.hooksecurefunc then
+            hookInstalled = true
+            _G.hooksecurefunc(cf, "AddMessage", OnChatAddMessage)
+        end
+        if cf then
+            local smf = FindEUIChatSMF(cf)
+            if smf then
+                EnsureSMFHook(smf)
+            end
+        end
+    end
+
+    EnsureHook()
+
+    function F.SweepLoginChatBanners()
+        SweepNow()
+    end
+
+    function F.DumpSuppressedLoginMsgs()
+        if #suppressed == 0 then
+            F.Print("本次登录没有隐藏任何第三方插件刷屏提示。")
+            return
+        end
+        F.Print("本次登录共隐藏 " .. tostring(#suppressed) .. " 条第三方插件提示：")
+        for i = 1, #suppressed do
+            _G.print("  |cff888888" .. tostring(i) .. ".|r " .. suppressed[i])
+        end
+    end
+
+    local qf = CreateFrame("Frame")
+    qf:RegisterEvent("PLAYER_LOGIN")
+    qf:RegisterEvent("PLAYER_ENTERING_WORLD")
+    qf:SetScript("OnEvent", function(self, event)
+        if not IsLoginQuietEnabled() then
+            active = false
+            self:UnregisterAllEvents()
+            return
+        end
+        EnsureHook()
+        if event == "PLAYER_LOGIN" then
+            SweepNow()
+        elseif event == "PLAYER_ENTERING_WORLD" then
+            self:UnregisterEvent("PLAYER_ENTERING_WORLD")
+            self:UnregisterEvent("PLAYER_LOGIN")
+            enteredAt = GetTime()
+            for _, delay in ipairs({ 0.05, 0.4, 1.2, 2.5, 5.0, 9.0, 16.0, 22.0 }) do
+                C_Timer.After(delay, SweepNow)
+            end
+            C_Timer.After(WINDOW_SEC + 0.5, function()
+                active = false
+            end)
         end
     end)
 end

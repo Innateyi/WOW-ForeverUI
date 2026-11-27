@@ -1,0 +1,20 @@
+## Interface: 16001
+## Title: |cffdca77fkkowoUI|r 核心双翼 HUD 与动效
+## Notes: 核心双翼血蓝条与动态技能球、独立宠物/目标条、低血量红暗角、施法/挥砍/动作条/姓名板/增益栏圆角与动效
+## Author: Mei
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## Dependencies: kkowoUI
+## OptionalDeps: EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUINameplates, EllesmereUICooldownManager
+
+MotionControl.lua
+AuraBarSkin.lua
+CoreHUD\CoreHUD_Init.lua
+CoreHUD\CoreHUD_Wings.lua
+CoreHUD\CoreHUD_PetAndTarget.lua
+CoreHUD\CoreHUD_Runtime.lua
+LowHealthAlert.lua
+CastbarMotion.lua
+SwingTimerMotion.lua
+ActionBarMotion.lua
+NameplateMotion.lua

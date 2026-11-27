@@ -1,11 +1,11 @@
 ## Interface: 16001
-## Title: |cffdca77fkkowoUI|r 无限现代整合模块
-## Notes: 面向《魔兽世界：无限》的零污染模块化增强与现代极简视觉统一插件（依赖 EllesmereUI）
+## Title: |cffdca77fkkowoUI|r 核心框架
+## Notes: 面向《魔兽世界：无限》的零污染模块化现代 UI 核心框架（提供主题、圆角引擎、动效、存档、安全守卫与总控代理；依赖 EllesmereUI）
 ## Author: Mei
-## Version: 1.5.1
-## IconTexture: Interface\AddOns\kkowoUI\Media\Icons\kkowoUI
-## Dependencies: EllesmereUI
-## OptionalDeps: EllesmereUIQuestTracker, EllesmereUIBlizzardSkin, EllesmereUIBags, EllesmereUIDamageMeters, EllesmereUIChat, EllesmereUIMinimap, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, EllesmereUIForeverEssentials, Auctionator, Questie, Polestar, BugSack, WaypointUI, QFXSystemBar, PrettyTooltip, Leatrix_Maps
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## Dependencies: EllesmereUI, kkowoUI_Media
+## OptionalDeps: EllesmereUIBlizzardSkin, EllesmereUIChat, EllesmereUIMinimap, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, EllesmereUIDamageMeters, Polestar, BigWigs, BugSack, GTFO, Scales
 ## SavedVariables: kkowoUIDB, KkowoUIDB
 ## SavedVariablesPerCharacter: kkowoUICharDB, KkowoUICharDB
 
@@ -16,47 +16,5 @@ Core\MotionEngine.lua
 Core\DB.lua
 Core\Modules.lua
 Core\Mover.lua
-Data\ZoneLevels.lua
-Data\NodeReminderData.lua
-Data\PolestarZh.lua
-Data\CooldownPresets.lua
-
-Modules\QuestAuto.lua
-Modules\QuestBar.lua
-Modules\QuestXP.lua
-Modules\XPBar.lua
-Modules\NodeReminder.lua
-Modules\ZoneLabels.lua
-Modules\PolestarNavPlus.lua
-Modules\WorldNames.lua
-Modules\CombatAlert.lua
-Modules\CooldownPresets.lua
-Modules\WeaponProcs.lua
-Modules\SoulstoneAlert.lua
-Modules\SpellSounds.lua
-Modules\RollBars.lua
-Modules\MarkBar.lua
-Modules\ChatBar.lua
-Modules\ChatBubbles.lua
-Modules\SocialTools.lua
-Modules\ClassEmote.lua
-Modules\BagUtility.lua
-Modules\LootToast.lua
-Modules\Durability.lua
-Modules\GearList.lua
-Modules\ModernChrome.lua
-Modules\AuctionSkin.lua
-Modules\ImmersiveHUD.lua
-Modules\SystemBar.lua
-Modules\TooltipStyle.lua
-Modules\MotionControl.lua
-Modules\AuraBarSkin.lua
-Modules\CoreHUD.lua
-Modules\LowHealthAlert.lua
-Modules\CastbarMotion.lua
-Modules\SwingTimerMotion.lua
-Modules\ActionBarMotion.lua
-Modules\NameplateMotion.lua
-Modules\KeybindBoard.lua
-
-Core\Options.lua
+Core\Guard.lua
+Core\OptionsProxy.lua

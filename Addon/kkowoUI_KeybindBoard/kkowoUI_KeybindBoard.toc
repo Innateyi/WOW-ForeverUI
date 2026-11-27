@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: |cffdca77fkkowoUI|r 可视化实体键盘绑键器
+## Notes: 按需加载可视化键盘拖拽绑键器（输入 /kkkeys 或在总控台点击打开时自动载入，平时零内存占用）
+## Author: Mei
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## Dependencies: kkowoUI
+## LoadOnDemand: 1
+
+KeybindBoard.lua

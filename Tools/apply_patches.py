@@ -11,12 +11,12 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATCH_DIR = os.path.join(ROOT, 'Patches')
+# 仅保留 3 个无法通过纯外部 Hook 替代的极简补丁：
+#   • 原 eui_np_questtext_name / eui_friendly_player_names 已转为 Modules/EUIRuntimeFixes.lua 零补丁运行时钩子
+#   • 原 polestar_nav_optimize 中 350 行 DungeonToast.lua 地图副本提醒已迁入 Modules/PolestarNavPlus.lua
+#   • 原 vss_kkowo_rename / vss_corpse_toggle 已随极速导航被 Polestar Journey 替代而退役
 PATCH_LIST = [
-    'eui_np_questtext_name.py',
-    'eui_friendly_player_names.py',
     'eui_chat_tab_fast.py',
-    'vss_kkowo_rename.py',      # 先改名为 VamoosesSlipstream_kkowo（DD 不再认得、不会覆盖），再打跑尸开关
-    'vss_corpse_toggle.py',
     'polestar_zhcn_fill.py',
     'polestar_nav_optimize.py',
 ]

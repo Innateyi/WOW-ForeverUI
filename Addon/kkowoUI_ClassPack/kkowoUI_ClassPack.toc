@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: |cffdca77fkkowoUI|r 职业特色扩展包
+## Notes: 术士灵魂石到期提醒、猎人技能音效、武器附魔/攻击触发计时条、职业趣味表情喊话（按职业自动按需生效）
+## Author: Mei
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## Dependencies: kkowoUI
+
+SoulstoneAlert.lua
+SpellSounds.lua
+WeaponProcs.lua
+ClassEmote.lua

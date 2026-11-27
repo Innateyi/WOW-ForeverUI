@@ -21,7 +21,7 @@ ADDONS_TXT = os.environ.get("WOW_ADDONS_TXT", r"E:\Program Files\World of Warcra
 KKOWOUI_SV = os.environ.get("WOW_KKOWOUI_SV", r"E:\Program Files\World of Warcraft\_forever_\WTF\Account\<YourAccountID>\SavedVariables\kkowoUI.lua")
 BACKUP_ROOT = os.environ.get("WOW_BACKUP_ROOT", r"D:\code\wow\backups")
 
-# 已合并进 kkowoUI 的 6 个插件（PrettyTooltip 保留以完整呈现卡片提示）
+# 已合并进 kkowoUI 的 7 个插件（含已吸收 MerfinMain 的 YaMedia）
 MERGED_INTO_KKOWOUI = [
     "QFXSystemBar",
     "QFXSystemBar_Config",
@@ -29,9 +29,11 @@ MERGED_INTO_KKOWOUI = [
     "QFXSystemBar_Locale",
     "QFXSystemBar_MeetingStone",
     "EllesmereUIDataBars",
+    "YaMedia",
 ]
 
-# 确认闲置 / 练级无用 / 调试 / 重叠重型插件
+# 确认闲置 / 正式服无用 / 调试 / 重叠重型插件
+# 注意：DungeonsForever 的 8 个百科子库均为 LoadOnDemand 按需加载，不占启动内存，不再停用
 IDLE_OR_REDUNDANT = [
     "TalentsForever",
     "ForeverFishing",
@@ -42,19 +44,14 @@ IDLE_OR_REDUNDANT = [
     "EllesmereUIAuraBuffReminders",
     "EllesmereUIQuickdraw",
     "EllesmereUIMythicTimer",
+    "EllesmereUIFriends",
+    "EllesmereUIGroupFinder",
+    "Polestar_Arcade",
     "GlowingBars",
     "MiniMarkers",
     "163UI_Info",
     "QuestieTrace",
     "BlizzMove_Debug",
-    "DungeonsForeverPvP",
-    "DungeonsForeverExplore",
-    "DungeonsForeverClass",
-    "DungeonsForeverProf",
-    "DungeonsForeverGear",
-    "DungeonsForeverSpell",
-    "DungeonsForeverFaction",
-    "DungeonsForeverQuest",
 ]
 
 TO_DISABLE = set(MERGED_INTO_KKOWOUI + IDLE_OR_REDUNDANT)

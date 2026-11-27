@@ -11,8 +11,8 @@ kkowoUI — Ultra-Smooth Vector Icon & Global Raid Marker Generator
    Lanczos mipmaps + RGB edge-color dilation on every mip level for zero halo & zero jaggedness
    even when enlarged to 48-96px on nameplates or 3D overhead billboards!).
    Deploys to:
-     - Addon/kkowoUI/Media/MarkBar/Mark1.tga .. Mark8.tga
-     - Addon/kkowoUI/Media/MarkBar/UI-RaidTargetingIcons.blp
+     - Addon/kkowoUI_Media/Media/MarkBar/Mark1.tga .. Mark8.tga
+     - Addon/kkowoUI_Media/Media/MarkBar/UI-RaidTargetingIcons.blp
      - E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame\UI-RaidTargetingIcons.blp
 3) Writes visual inspection contact sheets (PNG) to Tools/_preview for verification.
 """
@@ -23,8 +23,8 @@ import numpy as np
 from PIL import Image
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LUCIDE_OUT = os.path.join(REPO_ROOT, "Addon", "kkowoUI", "Media", "SystemBar", "Lucide")
-MARK_DIR = os.path.join(REPO_ROOT, "Addon", "kkowoUI", "Media", "MarkBar")
+LUCIDE_OUT = os.path.join(REPO_ROOT, "Addon", "kkowoUI_Media", "Media", "SystemBar", "Lucide")
+MARK_DIR = os.path.join(REPO_ROOT, "Addon", "kkowoUI_Media", "Media", "MarkBar")
 WOW_TARGETING_DIR = os.environ.get(
     "WOW_TARGETING_DIR",
     r"E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame",

@@ -14,6 +14,11 @@ F.Modules = Modules
 
 local registry = {}
 local orderList = {}
+local modulesBooted = false
+
+function Modules.IsBooted()
+    return modulesBooted
+end
 
 local ModuleProto = {}
 ModuleProto.__index = ModuleProto
@@ -212,6 +217,7 @@ bootFrame:SetScript("OnEvent", function(self, event, arg1)
         if not F.db then
             F.DB.Init()
         end
+        modulesBooted = true
         -- 若检测到旧版哈兰德同时启用，给出一次友好提示，避免双重生效
         if F.IsAddOnLoaded("EUI_Haalandtool") then
             F.Print("|cffffcc00提示：检测到 EUI_Haalandtool 仍在启用中。联调确认后建议在插件列表停用它，以免同类功能重复生效。|r")

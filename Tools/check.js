@@ -26,8 +26,9 @@ if (!luaparse) {
   process.exit(2);
 }
 
-const ADDON_ROOT = path.join(__dirname, '..', 'Addon', 'kkowoUI');
+const ADDON_BASE = path.join(__dirname, '..', 'Addon');
 const ALLOWED_GLOBALS = new Set([
+  'kkowoUI',
   'kkowoUIDB',
   'kkowoUICharDB',
   // 改名前的旧存档变量（DB.Init 里搬到新名字后清空）
@@ -49,14 +50,29 @@ const FORBIDDEN_BLIZZ_WRITES = new Set([
 function walkLua(dir, out = []) {
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, ent.name);
-    if (ent.isDirectory()) walkLua(full, out);
-    else if (ent.name.endsWith('.lua')) out.push(full);
+    if (ent.isDirectory()) {
+      // 跳过 MIT 原样内嵌的第三方上游源码目录（如 kkowoUI_Tooltip/Vendor）
+      if (ent.name === 'Vendor') continue;
+      walkLua(full, out);
+    } else if (ent.name.endsWith('.lua')) {
+      out.push(full);
+    }
   }
   return out;
 }
 
+function collectAddonFiles() {
+  const out = [];
+  for (const ent of fs.readdirSync(ADDON_BASE, { withFileTypes: true })) {
+    if (ent.isDirectory() && ent.name.startsWith('kkowoUI')) {
+      walkLua(path.join(ADDON_BASE, ent.name), out);
+    }
+  }
+  return out.sort();
+}
+
 function checkFile(filePath) {
-  const rel = path.relative(ADDON_ROOT, filePath);
+  const rel = path.relative(ADDON_BASE, filePath);
   const src = fs.readFileSync(filePath, 'utf8');
   const errors = [];
   const warnings = [];
@@ -209,7 +225,7 @@ function checkFile(filePath) {
   return { errors, warnings };
 }
 
-const files = walkLua(ADDON_ROOT).sort();
+const files = collectAddonFiles();
 let totalErrors = 0;
 let totalWarnings = 0;
 for (const f of files) {

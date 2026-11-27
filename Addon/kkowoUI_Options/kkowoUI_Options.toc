@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: |cffdca77fkkowoUI|r 总控台与设置面板
+## Notes: kkowoUI 按需加载设置面板与整合包总控台（输入 /kk 或打开 EUI 菜单时自动载入，平时零内存占用）
+## Author: Mei
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## Dependencies: kkowoUI
+## LoadOnDemand: 1
+
+ControlHubUI.lua
+Options.lua

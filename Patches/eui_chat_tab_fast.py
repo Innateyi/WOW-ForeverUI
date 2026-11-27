@@ -15,7 +15,8 @@ WOW_ROOT = os.environ.get('WOW_FOREVER_DIR', r'E:\Program Files\World of Warcraf
 DEFAULT_DIR = os.path.join(WOW_ROOT, 'Interface', 'AddOns', 'EllesmereUIChat')
 # 默认放在仓库同级的 backups 目录（绝不写进游戏目录）
 BACKUP_ROOT = os.environ.get('WOW_BACKUP_ROOT', os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backups')))
-MARK = '[fui-chat-fasttab v1]'
+MARK = '[fui-chat-fasttab v2]'
+OLD_MARKS = ('[fui-chat-fasttab v1]',)
 
 # 9.9.2 原版锚点；9.9.3 起注释里的 colour 改成了 color，代码本身未变，两种拼写都接受
 _FOLLOWER_OLD = '''        -- State compares are cheaper at a coarse cadence.
@@ -45,7 +46,8 @@ FILE_PATCHES = {
     'EllesmereUIChat.lua': [
         (
             (_FOLLOWER_OLD, _FOLLOWER_OLD.replace('colour', 'color')),
-            '''        -- [fui-chat-fasttab v1] 选中标签切换改为当帧即时检测与同步刷新（零 100ms 延迟、不误触 QueueFullPass）
+            '''        -- [fui-chat-fasttab v2] 选中标签切换改为当帧即时检测与同步刷新（零 100ms 延迟、不误触 QueueFullPass）
+        ns._kkowoFastTab = true
         if GENERAL_CHAT_DOCK and FCFDock_GetSelectedWindow then
             local sel = FCFDock_GetSelectedWindow(GENERAL_CHAT_DOCK)
             if sel ~= lastSelected then
@@ -92,7 +94,7 @@ FILE_PATCHES = {
             texPath = ns.chatBgTextures and ns.chatBgTextures[texKey]
         end
     end''',
-            '''    -- [fui-chat-fasttab v1] 按标签材质键缓存解析结果，避免每次切换对 6+ 标签重复遍历 SharedMedia
+            '''    -- [fui-chat-fasttab v2] 按标签材质键缓存解析结果，避免每次切换对 6+ 标签重复遍历 SharedMedia
     local texKey = cfg.tabBackgroundTexture or "none"
     local texPath
     if texKey ~= "none" then
@@ -144,6 +146,20 @@ def run(addon_dir=DEFAULT_DIR, check_only=False):
         if MARK in text:
             applied_count += 1
             continue
+        if any(m in text for m in OLD_MARKS):
+            orig_src = os.path.join(bdir, fname)
+            if os.path.exists(orig_src):
+                text, crlf = read_text(orig_src)
+            else:
+                # 兜底：若找不到原版备份，从 Upstream/downloads/EllesmereUI-v<ver>.zip 读纯净原版
+                z_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'Upstream', 'downloads', f'EllesmereUI-v{ver}.zip')
+                if os.path.isfile(z_path):
+                    import zipfile
+                    with zipfile.ZipFile(z_path, 'r') as zf:
+                        arc = f'EllesmereUIChat/{fname}'
+                        if arc in zf.namelist():
+                            raw = zf.read(arc).decode('utf-8')
+                            text, crlf = raw.replace('\r\n', '\n'), '\r\n' in raw
         for old, new in pairs:
             # 锚点可给多个版本的写法，取恰好匹配一次的那个
             olds = old if isinstance(old, tuple) else (old,)

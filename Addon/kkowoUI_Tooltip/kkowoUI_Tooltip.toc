@@ -1,0 +1,72 @@
+## Interface: 16001
+## AllowLoadGameType: camelot
+## Title: |cffdca77fkkowoUI|r 悬浮提示引擎 (PrettyTooltip)
+## Notes: kkowoUI 现代悬浮提示引擎（基于 MIT 开源协议整合 PrettyTooltip v1.5.0，保留完整原作者署名与 /ptip 样式编辑器）
+## Author: FallenShard (PrettyTooltip, MIT) & Mei (kkowoUI Integration)
+## Version: 1.5.0-kkowo
+## X-License: MIT
+## X-Upstream: https://github.com/FallenShard/PrettyTooltip
+## IconTexture: Interface\AddOns\kkowoUI_Tooltip\Vendor\art\logo
+## SavedVariables: PrettyTooltipDB, PrettyTooltipCaptures
+## OptionalDeps: kkowoUI, Questie, Auctionator, DialogueUI, EllesmereUI, LibSharedMedia-3.0
+
+Bridge\Compat.lua
+
+Vendor\Core\Util.lua
+Vendor\Core\Palette.lua
+Vendor\Core\Settings.lua
+Vendor\Core\TooltipPlacement.lua
+Vendor\Locale\Locale.lua
+Vendor\Locale\English.lua
+Vendor\Locale\deDE.lua [AllowLoadTextLocale deDE]
+Vendor\Locale\esES.lua [AllowLoadTextLocale esES]
+Vendor\Locale\esMX.lua [AllowLoadTextLocale esMX]
+Vendor\Locale\frFR.lua [AllowLoadTextLocale frFR]
+Vendor\Locale\koKR.lua [AllowLoadTextLocale koKR]
+Vendor\Locale\Portuguese.lua [AllowLoadTextLocale ptBR, ptPT]
+Vendor\Locale\ruRU.lua [AllowLoadTextLocale ruRU]
+Vendor\Locale\zhCN.lua [AllowLoadTextLocale zhCN]
+Vendor\Locale\zhTW.lua [AllowLoadTextLocale zhTW]
+Vendor\Game\Game.lua
+Vendor\Game\TooltipData.lua
+Vendor\Game\SpellAmounts.lua
+Vendor\Data\Schools.lua
+Vendor\Data\Stats.lua
+Vendor\Data\Imbues.lua
+Vendor\Panel\Layout.lua
+Vendor\Panel\Render.lua
+Vendor\Data\Disenchant.lua
+Vendor\Data\Nodes.lua
+Vendor\Data\NodeNames.lua
+Vendor\Data\NodeSkills.lua
+Vendor\Data\Skinning.lua
+Vendor\Data\SpellParts.lua
+Vendor\Data\Coefficients.lua
+Vendor\Tooltips\Item.lua
+Vendor\Tooltips\Spell.lua
+Vendor\Tooltips\Object.lua
+Vendor\Tooltips\Unit.lua
+Vendor\Tooltips\Aura.lua
+Vendor\Tooltips\Imbue.lua
+Vendor\Tooltips\Quest.lua
+Vendor\Tooltips\Macro.lua
+Vendor\Tooltips\PetAction.lua
+Vendor\Tooltips\Minimap.lua
+Vendor\Tooltips\FlightPath.lua
+Vendor\Tooltips\Mail.lua
+Vendor\UI\Options.lua
+Vendor\UI\Samples.lua
+Vendor\UI\EditorSkin.lua
+Vendor\UI\Editor.lua
+Vendor\Integration\Native.lua
+Vendor\Integration\Placement.lua
+Vendor\Integration\Hooks.lua
+Vendor\Integration\Details.lua
+Vendor\Integration\ItemLite.lua
+Vendor\Integration\Cursor.lua
+Vendor\UI\Report.lua
+Vendor\UI\Debug.lua
+Vendor\UI\Commands.lua
+Vendor\PrettyTooltip.lua
+
+Bridge\TooltipStyle.lua

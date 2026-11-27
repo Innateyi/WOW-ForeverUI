@@ -1,0 +1,9 @@
+## Interface: 16001
+## Title: |cffdca77fkkowoUI|r 共享材质与音效库
+## Notes: kkowoUI 静态共享资源包（字体、MerfinMain 状态条、高清图标与职业音效），代码更新时无需重复下载大资源
+## Author: Mei
+## Version: 2.0.0
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
+## OptionalDeps: LibSharedMedia-3.0
+
+MediaInit.lua

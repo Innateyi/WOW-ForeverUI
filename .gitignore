@@ -1,5 +1,6 @@
 node_modules/
 Upstream/reports/
+Upstream/downloads/
 Tools/_preview/
 *.zip
 *.bak
