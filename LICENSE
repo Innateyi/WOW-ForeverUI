@@ -1,21 +1,64 @@
-MIT License
+Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
 
-Copyright (c) 2026 Innateyi
+Copyright (c) 2026 Innateyi (kkowoUI)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This project (all original code, artwork, media assets, configuration presets, and scripts
+in kkowoUI, unless otherwise stated below) is licensed under the Creative Commons
+Attribution-NonCommercial-ShareAlike 4.0 International Public License ("CC BY-NC-SA 4.0").
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Full official license text:
+https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+================================================================================
+Summary of Key Terms (Non-Commercial Requirement / 非商业许可摘要)
+================================================================================
+
+You are free to:
+- Use & Share: Copy, install, and redistribute this work for personal gameplay
+  and non-commercial community sharing.
+- Adapt: Remix, transform, and build upon the material for non-commercial purposes.
+
+Under the following mandatory terms:
+1. Attribution (署名): You must give clear credit to the original author
+   ("Innateyi / kkowoUI"), link to the original repository
+   (https://github.com/Innateyi/kkowoUI), and indicate if changes were made.
+2. NonCommercial (非商业性使用): You may NOT use this project, any part of it,
+   or any repackaged/bundled version for commercial purposes. Prohibited uses
+   include, without limitation:
+   - Selling or reselling this addon or any addon pack containing it (e.g., on
+     Taobao, Xianyu, Weidian, Patreons, or paid marketplaces);
+   - Distributing behind paywalls, paid memberships, paid QQ/Discord/WeChat
+     groups, or paid download links;
+   - Bundling into any commercial service, boosting service, or paid client.
+   (Also required by Blizzard Entertainment's World of Warcraft UI Add-On
+   Development Policy: all Add-Ons must be distributed completely free of charge.)
+3. ShareAlike (相同方式共享): If you remix, transform, or build upon this work
+   and distribute it publicly, you must distribute your contributions under the
+   same CC BY-NC-SA 4.0 license.
+
+中文简要说明：
+- 允许个人免费游玩、学习及非商业性质的社区分享（须保留原作者 Innateyi / kkowoUI
+  署名与本仓库链接，若修改需注明，且二次公开分发须继续采用相同 CC BY-NC-SA 4.0 协议）。
+- 严禁任何形式的商业用途，包括但不限于：在淘宝/闲鱼/微店等平台售卖或搭售整合包、
+  设置付费群/付费会员/赞助解锁下载链接、捆绑商业服务分发等。
+
+================================================================================
+Third-Party Components & Excluded Material (第三方组件声明)
+================================================================================
+
+- Addon/kkowoUI_Tooltip/Vendor/ contains upstream PrettyTooltip code by
+  FallenShard and remains licensed under its original MIT License (see
+  Addon/kkowoUI_Tooltip/Vendor/LICENSE).
+- External third-party addons referenced or integrated (such as EllesmereUI,
+  Polestar, Questie, BigWigs, Auctionator, GTFO, Scales, BugSack, etc.) and
+  third-party fonts/assets remain the copyright and property of their
+  respective authors under their own licenses.
+
+================================================================================
+Disclaimer of Warranties and Limitation of Liability
+================================================================================
+
+UNLESS OTHERWISE SEPARATELY UNDERTAKEN BY THE LICENSOR, TO THE EXTENT POSSIBLE,
+THE LICENSOR OFFERS THE LICENSED MATERIAL AS-IS AND AS-AVAILABLE, AND MAKES NO
+REPRESENTATIONS OR WARRANTIES OF ANY KIND CONCERNING THE LICENSED MATERIAL,
+WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHER.

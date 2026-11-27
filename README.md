@@ -1,5 +1,7 @@
 # kkowoUI
 
+![kkowoUI v2.0](KkowoUI_cover.png)
+
 面向《魔兽世界：无限》（WoW Forever，Interface `16001`）的模块化界面增强套件，基于 [EllesmereUI](https://www.curseforge.com/wow/addons/ellesmereui) 构建，游戏内输入 `/kk` 打开设置面板。
 
 当前版本：**v2.0.0**（旧版 `KkowoUI` / `ForeverUI` 存档自动迁移，设置不丢失）。
@@ -70,4 +72,8 @@ python Tools/apply_patches.py --apply
 
 ## 许可
 
-kkowoUI 以 MIT 协议开源（见 [LICENSE](LICENSE)）。EllesmereUI、Polestar 等第三方插件版权归原作者所有。
+kkowoUI 原创代码、贴图与脚本采用 **CC BY-NC-SA 4.0**（署名-非商业性使用-相同方式共享 4.0）许可发布（见 [LICENSE](LICENSE)）：
+
+- 欢迎个人免费游玩、学习及非商业分享（须保留 `Innateyi / kkowoUI` 署名与仓库链接，修改后公开分发须采用相同协议）。
+- **禁止一切商业用途**（含平台售卖、付费群/付费链接分发、商业打包搭售等）。
+- `Addon/kkowoUI_Tooltip/Vendor/` 保留上游 PrettyTooltip 原 MIT 许可；EllesmereUI、Polestar 等第三方插件版权归各自作者所有。
