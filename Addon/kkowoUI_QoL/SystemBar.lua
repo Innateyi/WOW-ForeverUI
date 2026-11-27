@@ -20,8 +20,8 @@ local GetTime = GetTime
 local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("systemBar", {
-    title = "一体化系统微菜单栏",
-    desc = "将微菜单图标、好友/公会在线角标、一键炉石与时钟/FPS/延迟融为一条零污染极简栏（替代 QFXSystemBar×5 + EUI DataBars）。",
+    title = "系统栏",
+    desc = "集成微菜单图标、好友公会角标、一键炉石与时钟帧率延迟显示。",
     group = "theme",
     order = 20,
     yieldIfLoaded = "QFXSystemBar",
@@ -923,12 +923,22 @@ local function ApplyVisuals()
     local dir = ICON_DIRS[db.iconStyle or "lucide"] or ICON_DIRS.lucide
 
     if db.showBackdrop then
-        F.Theme.StylePanel(barFrame, 0.72, 0.55)
-        if barFrame._fuiBg then barFrame._fuiBg:Show() end
+        F.Theme.StyleLuminousCard(barFrame, {
+            palette = "class",
+            radius = 7,
+            bgAlpha = 0.74,
+            tintMix = 0.14,
+            glowAlpha = 0.18,
+            glowWidth = 140,
+            borderAlpha = 0.72,
+            leftBar = false,
+        })
+        if barFrame._fuiBg then barFrame._fuiBg:Hide() end
         if barFrame._fuiBorders then
-            for _, b in ipairs(barFrame._fuiBorders) do b:Show() end
+            for _, b in ipairs(barFrame._fuiBorders) do b:Hide() end
         end
     else
+        F.Theme.SetLuminousCardShown(barFrame, false)
         if barFrame._fuiBg then barFrame._fuiBg:Hide() end
         if barFrame._fuiBorders then
             for _, b in ipairs(barFrame._fuiBorders) do b:Hide() end
@@ -1573,8 +1583,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "图标风格",
-        tooltip = "Lucide 为轻盈的现代细线扁平风（默认）；GameIcons 为清晰实心游戏图标。",
-        values = { lucide = "Lucide（极简细线）", gameicons = "GameIcons（经典实心）" },
+        tooltip = "细线风为轻盈扁平图标，游戏图标为实心经典样式。",
+        values = { lucide = "极简细线（默认）", gameicons = "经典实心图标" },
         order = { "lucide", "gameicons" },
         getValue = function() return db.iconStyle or "lucide" end,
         setValue = function(v) db.iconStyle = v; ApplyVisuals() end,
@@ -1583,22 +1593,23 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "显示右侧 时钟 / FPS / 延迟",
+        text = "显示时钟与延迟",
+        tooltip = "在系统栏右侧显示当前时间、帧率与网络延迟。",
         getValue = function() return db.showTelemetry ~= false end,
         setValue = function(v) db.showTelemetry = v == true; ApplyVisuals() end,
     }, {
         type = "toggle",
-        text = "显示暗色玻璃托底",
-        tooltip = "关闭时完全透明悬浮（与原截图一致）；开启后增加一层极淡暗色托底与 1px 边框。",
-        getValue = function() return db.showBackdrop == true end,
-        setValue = function(v) db.showBackdrop = v == true; ApplyVisuals() end,
+        text = "显示一键炉石按钮",
+        tooltip = "在系统栏显示快捷炉石按钮及冷却时间。",
+        getValue = function() return db.showHearthstone ~= false end,
+        setValue = function(v) db.showHearthstone = v == true; ApplyVisuals() end,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "底栏显示好友按钮（取代小地图好友图标）",
-        tooltip = "在底栏显示「好友与社交」按钮（带在线好友数角标），同时隐藏 EUI 小地图上的好友按钮；关闭后小地图好友按钮自动恢复。",
+        text = "底栏好友按钮",
+        tooltip = "在底栏显示好友在线数并隐藏小地图好友图标，关闭即恢复。",
         getValue = function() return db.socialInBar ~= false end,
         setValue = function(v)
             db.socialInBar = v == true
@@ -1609,7 +1620,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     }, {
         type = "toggle",
         text = "底栏显示公会按钮",
-        tooltip = "在底栏显示「公会与社区」按钮（带在线公会成员数角标）。",
+        tooltip = "在底栏显示公会与社区按钮及在线人数角标。",
         getValue = function() return db.showSocialGuild == true end,
         setValue = function(v) db.showSocialGuild = v == true; ApplyVisuals(); UpdateBadges(false) end,
     })
@@ -1617,51 +1628,59 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "显示未分配点数角标与炉石冷却",
-        tooltip = "在底部「天赋与法术 / 传承与成就」图标右下角直接显示未分配点数，并在炉石图标显示冷却时间。",
+        text = "点数角标与冷却",
+        tooltip = "在天赋与成就图标显示未分配点数，并在炉石图标显示冷却。",
         getValue = function() return db.showBadges ~= false end,
         setValue = function(v) db.showBadges = v == true; UpdateBadges(false) end,
-    }, blank)
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "替换暴雪黄色提醒气泡（中上方单次轻提示）",
-        tooltip = "隐藏挡在动作条上的暴雪黄色「你有未分配的天赋」气泡，改为屏幕中上方现代半透明轻提示提醒一次后自动消失。",
-        getValue = function() return db.replaceMicroAlerts ~= false end,
-        setValue = function(v)
-            db.replaceMicroAlerts = v == true
-            if v then SuppressBlizzardMicroHelpTips(false) end
-        end,
     }, {
-        type = "toggle",
-        text = "显示一键炉石按钮",
-        getValue = function() return db.showHearthstone ~= false end,
-        setValue = function(v) db.showHearthstone = v == true; ApplyVisuals() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "战斗中自动淡出",
         getValue = function() return db.combatFade == true end,
         setValue = function(v) db.combatFade = v == true; ApplyVisuals() end,
-    }, blank)
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "图标尺寸",
-        min = 14, max = 28, step = 1,
-        getValue = function() return db.iconSize or 20 end,
-        setValue = function(v) db.iconSize = v; ApplyVisuals() end,
-    }, {
-        type = "slider",
-        text = "图标间距",
-        min = 2, max = 16, step = 1,
-        getValue = function() return db.iconSpacing or 8 end,
-        setValue = function(v) db.iconSpacing = v; ApplyVisuals() end,
     })
     y = y - h
+
+    local function buildAdv(w, p, curY)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "显示暗色玻璃托底",
+            tooltip = "关闭时完全透明悬浮，开启后添加淡暗色底板与细边框。",
+            getValue = function() return db.showBackdrop == true end,
+            setValue = function(v) db.showBackdrop = v == true; ApplyVisuals() end,
+        }, {
+            type = "toggle",
+            text = "替换黄色提醒泡",
+            tooltip = "隐藏遮挡动作条的黄色提醒气泡，改为中上方单次轻提示。",
+            getValue = function() return db.replaceMicroAlerts ~= false end,
+            setValue = function(v)
+                db.replaceMicroAlerts = v == true
+                if v then SuppressBlizzardMicroHelpTips(false) end
+            end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "图标尺寸 (px)",
+            min = 14, max = 28, step = 1,
+            getValue = function() return db.iconSize or 20 end,
+            setValue = function(v) db.iconSize = v; ApplyVisuals() end,
+        }, {
+            type = "slider",
+            text = "图标间距 (px)",
+            min = 2, max = 16, step = 1,
+            getValue = function() return db.iconSpacing or 8 end,
+            setValue = function(v) db.iconSpacing = v; ApplyVisuals() end,
+        })
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("systemBar", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

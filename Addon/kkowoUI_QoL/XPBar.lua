@@ -102,7 +102,7 @@ local EQUIP_SLOTS = { 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
 
 local mod = F.RegisterModule("xpBar", {
     title = "经验与声望条",
-    desc = "一体化现代流光玻璃风经验条，左侧融合半透明职业徽印、等级与清透发光装等，支持悬停概览、可交任务预览、双倍经验与右键重置速率。",
+    desc = "显示职业徽印、等级装等、可交任务经验预览与独立声望条。",
     group = "quest",
     order = 40,
     defaults = {
@@ -1456,7 +1456,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "经验条配色主题",
-        tooltip = "丝缎流光配色：「琉璃幻紫」紫条配暖琥珀任务段、「职业主题色」跟随当前职业色、「翡翠流光」、「冰川钴蓝」、「暖香槟金」。",
+        tooltip = "选择经验条与可交任务段的配色方案，可跟随当前职业色。",
         values = THEME_VALUES,
         order = THEME_ORDER,
         getValue = function()
@@ -1473,14 +1473,14 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "左侧职业图标（含大号等级与装等）",
-        tooltip = "在经验条左端显示高清职业图标，并在图标下方展示大号等级与实时平均装等。",
+        text = "显示职业徽印",
+        tooltip = "在经验条左侧显示职业图标、角色等级与当前平均装等。",
         getValue = function() return db.showEmblem ~= false end,
         setValue = function(v) db.showEmblem = v == true; self:Refresh() end,
     }, {
         type = "dropdown",
         text = "职业图标风格",
-        tooltip = "切换经验条左侧的高清职业图标样式（现代高清 / 暗夜纹章 / 简约徽印 / 符文纹章 / 暴雪原生）。",
+        tooltip = "切换经验条左侧职业图标风格，可选现代、纹章或原版样式。",
         values = ICON_STYLE_VALUES,
         order = ICON_STYLE_ORDER,
         getValue = function() return db.iconStyle or "glyph" end,
@@ -1490,79 +1490,16 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "叠加已完成任务经验",
-        tooltip = "在经验条上以高对比实色段预览可交任务总经验，并在百分比旁用箭头提示交任务后进度。",
+        text = "叠加任务经验",
+        tooltip = "在经验条上预览已完成任务的总经验及交任务后的进度。",
         getValue = function() return db.showQuestXP ~= false end,
         setValue = function(v) db.showQuestXP = v == true; self:Refresh() end,
     }, {
         type = "toggle",
-        text = "条下显示升级预计与汇总",
-        tooltip = "开启时在条下展示预计升级时间、速率与可交/双倍统计；关闭则切换为极简两词模式（左百分比 / 右预计时间）。",
+        text = "下方升级汇总",
+        tooltip = "条下显示升级预计、速率与双倍统计，关闭则切换极简模式。",
         getValue = function() return db.showBottomStats ~= false end,
         setValue = function(v) db.showBottomStats = v == true; self:Refresh() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "显示 10% 等分刻度线",
-        tooltip = "默认关闭以保持纯净无割裂的现代扁平条风格。",
-        getValue = function() return db.showTicks == true end,
-        setValue = function(v) db.showTicks = v == true; self:Refresh() end,
-    }, {
-        type = "toggle",
-        text = "获得经验时轻闪反馈",
-        tooltip = "获得经验瞬间在经验条上触发一次极克制的纯平闪光反馈。",
-        getValue = function() return db.showGlow ~= false end,
-        setValue = function(v) db.showGlow = v == true; self:Refresh() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "经验条、等级与装等浅发光",
-        tooltip = "在已填充进度背后呈现均匀柔光晕，并为左侧等级与装等数字增添淡淡的柔光光环。",
-        getValue = function() return db.softGlow ~= false end,
-        setValue = function(v) db.softGlow = v == true; self:Refresh() end,
-    }, {
-        type = "button",
-        text = "重置本次经验速率",
-        noCapture = true,
-        tooltip = "立即清零本次在线的经验/小时统计并重新计时（也可直接右键点击经验条重置）。",
-        onClick = function()
-            ResetXPSession(false)
-            UpdateXP()
-        end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "经验条宽度",
-        min = 260, max = 680, step = 10,
-        getValue = function() return db.width or 430 end,
-        setValue = function(v) db.width = v; self:Refresh() end,
-    }, {
-        type = "slider",
-        text = "经验条高度",
-        min = 5, max = 18, step = 1,
-        getValue = function() return db.height or 7 end,
-        setValue = function(v) db.height = v; self:Refresh() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "文字大小",
-        min = 10, max = 16, step = 1,
-        getValue = function() return db.fontSize or 11 end,
-        setValue = function(v) db.fontSize = v; self:Refresh() end,
-    }, {
-        type = "toggle",
-        text = "条上额外显示本级/本次耗时",
-        tooltip = "默认关闭以保持清爽（鼠标悬停经验条或职业图标随时可看详细耗时）。",
-        getValue = function() return db.showTopTimers == true end,
-        setValue = function(v) db.showTopTimers = v == true; self:Refresh() end,
     })
     y = y - h
 
@@ -1573,18 +1510,91 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         setValue = function(v) db.showRepBar = v == true; self:Refresh() end,
     }, {
         type = "toggle",
-        text = "战斗中自动淡出",
-        getValue = function() return db.combatFade == true end,
-        setValue = function(v) db.combatFade = v == true; self:Refresh() end,
+        text = "满级自动隐藏",
+        getValue = function() return db.hideAtMaxLevel ~= false end,
+        setValue = function(v) db.hideAtMaxLevel = v == true; self:Refresh() end,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "满级自动隐藏",
-        getValue = function() return db.hideAtMaxLevel ~= false end,
-        setValue = function(v) db.hideAtMaxLevel = v == true; self:Refresh() end,
-    }, blank)
+        text = "战斗中自动淡出",
+        getValue = function() return db.combatFade == true end,
+        setValue = function(v) db.combatFade = v == true; self:Refresh() end,
+    }, {
+        type = "button",
+        text = "重置经验速率",
+        noCapture = true,
+        tooltip = "清零本次在线经验速率并重新计时，也可右键点击经验条重置。",
+        onClick = function()
+            ResetXPSession(false)
+            UpdateXP()
+        end,
+    })
     y = y - h
+
+    local function buildAdv(w, p, curY, blk)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "经验条宽度 (px)",
+            min = 260, max = 680, step = 10,
+            getValue = function() return db.width or 430 end,
+            setValue = function(v) db.width = v; self:Refresh() end,
+        }, {
+            type = "slider",
+            text = "经验条高度 (px)",
+            min = 5, max = 18, step = 1,
+            getValue = function() return db.height or 7 end,
+            setValue = function(v) db.height = v; self:Refresh() end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "文字大小 (px)",
+            min = 10, max = 16, step = 1,
+            getValue = function() return db.fontSize or 11 end,
+            setValue = function(v) db.fontSize = v; self:Refresh() end,
+        }, {
+            type = "toggle",
+            text = "显示等分刻度",
+            tooltip = "在经验条上绘制 10% 等分刻度线，默认关闭。",
+            getValue = function() return db.showTicks == true end,
+            setValue = function(v) db.showTicks = v == true; self:Refresh() end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "获经验闪光",
+            tooltip = "获得经验时在经验条上显示简短闪光提示。",
+            getValue = function() return db.showGlow ~= false end,
+            setValue = function(v) db.showGlow = v == true; self:Refresh() end,
+        }, {
+            type = "toggle",
+            text = "进度条浅发光",
+            tooltip = "为经验条进度与左侧等级装等数字添加柔和光晕。",
+            getValue = function() return db.softGlow ~= false end,
+            setValue = function(v) db.softGlow = v == true; self:Refresh() end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "显示升级耗时",
+            tooltip = "在条上额外显示本级与本次耗时，关闭后悬停仍可查看。",
+            getValue = function() return db.showTopTimers == true end,
+            setValue = function(v) db.showTopTimers = v == true; self:Refresh() end,
+        }, blk)
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("xpBar", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y, blank)
+    end
     return y
 end

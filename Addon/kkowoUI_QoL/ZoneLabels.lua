@@ -20,8 +20,8 @@ local C_Timer = C_Timer
 local ST = F.StyleTokens
 
 local mod = F.RegisterModule("zoneLabels", {
-    title = "地图区域等级与飞艇航线指引",
-    desc = "在大陆地图标注区域名称与等级；并在区域地图、飞艇塔/码头站台及飞艇管理员头顶清晰标出每班飞艇与航船的目的地（零污染）。",
+    title = "地图等级与航线",
+    desc = "在大地图标注区域等级，并在地图、码头与管理员头顶标注航线。",
     group = "quest",
     order = 60,
     defaults = {
@@ -910,7 +910,7 @@ _G.SlashCmdList.KKOWOUIZLMAP = function(msg)
     msg = (msg or ""):gsub("^%s+", ""):gsub("%s+$", "")
     if msg == "reset" then
         db.customOffsets = {}
-        F.Print("已重置全部自定义地图区域标签偏移（恢复 21 个内置精调坐标）。")
+        F.Print("已重置全部大地图区域标签偏移。")
         ScheduleRedraw()
         return
     end
@@ -930,8 +930,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "显示大陆常驻区域标签",
-        tooltip = "在卡利姆多/东部王国大陆地图上直接标注各区域名称与等级（已内置 21 个精调偏移）。",
+        text = "大陆区域标签",
+        tooltip = "在卡利姆多与东部王国大陆地图上直接标注区域名与等级。",
         getValue = function() return db.showLabels ~= false end,
         setValue = function(v) db.showLabels = v == true; ScheduleRedraw() end,
     })
@@ -939,14 +939,14 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "区域地图分离式飞艇 / 航船航线标签",
-        tooltip = "打开杜隆塔尔、提瑞斯法、荆棘谷、黑海岸、湿地等区域地图时，用不重叠的圆角胶囊与引线清晰标出每班飞艇与航船的目的地。",
+        text = "地图航线标签",
+        tooltip = "在含飞艇与航船的区域地图上以引线标出每班航线目的地。",
         getValue = function() return db.showTransportMap ~= false end,
         setValue = function(v) db.showTransportMap = v == true; ScheduleRedraw() end,
     }, {
         type = "toggle",
-        text = "站上飞艇塔/码头弹出当前泊位指引",
-        tooltip = "靠近飞艇塔或码头时在顶部弹出圆角胶囊，即时标出当前泊位与对侧泊位分别前往何地（离开自动隐藏，其它区域零开销）。",
+        text = "码头泊位指引",
+        tooltip = "站上飞艇塔或码头时在顶部提示当前与对侧泊位目的地。",
         getValue = function() return db.showTransportBanner ~= false end,
         setValue = function(v) db.showTransportBanner = v == true; SyncPlatformZoneWatch() end,
     })
@@ -954,13 +954,13 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "飞艇管理员头顶姓名板显示目的地标牌",
-        tooltip = "靠近弗雷萨、斯努尔克、萨匹塔等飞艇管理员时，直接在其姓名板上方显示前往目的地的圆角胶囊（同时补充鼠标提示）。",
+        text = "管理员目的地",
+        tooltip = "靠近飞艇管理员时在其姓名板上方显示目的地标牌。",
         getValue = function() return db.showTransportNameplates ~= false end,
         setValue = function(v) db.showTransportNameplates = v == true; SweepTransportNameplates() end,
     }, {
         type = "toggle",
-        text = "地图底部悬停区域等级条",
+        text = "底部等级提示条",
         tooltip = "鼠标滑过世界地图任意区域时，在地图底部显示该区域名称与等级区间。",
         getValue = function() return db.showBottomBar ~= false end,
         setValue = function(v) db.showBottomBar = v == true; ScheduleRedraw() end,
@@ -969,7 +969,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "标签包含区域名称与难度着色",
+        text = "含区域名与着色",
         getValue = function() return db.showName ~= false end,
         setValue = function(v) db.showName = v == true; db.colorByDifficulty = v == true; ScheduleRedraw() end,
     }, {

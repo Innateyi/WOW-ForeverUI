@@ -10,7 +10,7 @@ local GetTime = GetTime
 
 local mod = F.RegisterModule("spellSounds", {
     title = "猎人技能音效",
-    desc = "施放射击/陷阱/手雷/急速射击等技能播放自定义音效；支持自动识别枪械与弓/弩切换对应套音效，默认仅猎人生效。",
+    desc = "为射击、陷阱、手雷等技能播放自定义音效，默认仅猎人生效。",
     group = "combat",
     order = 20,
     defaults = {
@@ -257,7 +257,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "远程武器音效模式",
-        tooltip = "「自动识别」会根据你远程栏装备自动切换：装备弓/弩时播放物理弓弦箭雨音效，装备枪械时播放枪声音效；也可手动锁定某一套。",
+        tooltip = "自动按远程装备切换弓弩与枪械音效，也可手动锁定。",
         values = {
             auto = "自动识别装备（枪械 / 弓弩）",
             bow  = "始终使用弓箭音效",
@@ -296,7 +296,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "脱战自动停止急速射击战歌",
+        text = "脱战停急速战歌",
         tooltip = "战斗提前结束时淡出停止 15 秒战歌音效。",
         getValue = function() return db.stopLongOnOOC ~= false end,
         setValue = function(v) db.stopLongOnOOC = v == true end,

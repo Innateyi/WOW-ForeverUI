@@ -18,8 +18,8 @@ local GetTime = GetTime
 local setmetatable = setmetatable
 
 local mod = F.RegisterModule("nodeReminder", {
-    title = "采集与拾取闪光提醒",
-    desc = "仅在草药、矿脉、可互动物件任务目标与钓鱼浮漂上方显示图标提醒，联动 Questie 并自动保活拾取闪光。",
+    title = "采集提醒",
+    desc = "在草药、矿脉、地上任务物件与鱼漂上方显示标记并保持拾取闪光。",
     group = "quest",
     order = 50,
     defaults = {
@@ -41,10 +41,10 @@ local mod = F.RegisterModule("nodeReminder", {
 
 local MEDIA_FMT = F.MEDIA .. "NodeReminder\\NodeReminder_%02d.tga"
 local KIND_CFG = {
-    herbs  = { pic = 37, height = 20, scale = 1.00 },
-    ore    = { pic = 11, height = 25, scale = 1.00 },
-    quests = { pic = 38, height = 25, scale = 1.00 },
-    bobber = { pic = 27, height = 50, scale = 0.62 },
+    herbs  = { pic = 37, height = 20, scale = 1.00, glow = { 0.28, 0.92, 0.56 } },
+    ore    = { pic = 11, height = 25, scale = 1.00, glow = { 1.00, 0.74, 0.26 } },
+    quests = { pic = 38, height = 25, scale = 1.00, glow = { 0.45, 0.86, 1.00 } },
+    bobber = { pic = 27, height = 50, scale = 0.62, glow = { 0.36, 0.76, 1.00 } },
 }
 local SKILL_LINE = { herbs = 182, ore = 186 }
 local BOBBER_OBJ_ID = 35591
@@ -410,11 +410,49 @@ local function AcquireMark()
         f = CreateFrame("Frame", nil, _G.UIParent)
         f:SetFrameStrata("HIGH")
         f:EnableMouse(false)
+        f.glow = f:CreateTexture(nil, "BACKGROUND")
+        f.glow:SetTexture((F.StyleTokens and F.StyleTokens.TEX and F.StyleTokens.TEX.SOFT_GLOW) or (F.MEDIA .. "Textures\\SoftGlow.tga"))
+        f.glow:SetBlendMode("ADD")
+        f.glow:SetPoint("CENTER", f, "CENTER", 0, 0)
+        f.glow:SetAlpha(0.42)
         f.tex = f:CreateTexture(nil, "OVERLAY")
         f.tex:SetAllPoints()
         f.tex:SetBlendMode("BLEND")
+
+        local popIn = f:CreateAnimationGroup()
+        local pSc1 = popIn:CreateAnimation("Scale")
+        pSc1:SetOrder(1); pSc1:SetOrigin("CENTER", 0, 0)
+        pSc1:SetScaleFrom(0.66, 0.66); pSc1:SetScaleTo(1.08, 1.08)
+        pSc1:SetDuration(0.14); pSc1:SetSmoothing("OUT")
+        local pAl = popIn:CreateAnimation("Alpha")
+        pAl:SetOrder(1); pAl:SetFromAlpha(0); pAl:SetToAlpha(1)
+        pAl:SetDuration(0.12); pAl:SetSmoothing("OUT")
+        local pSc2 = popIn:CreateAnimation("Scale")
+        pSc2:SetOrder(2); pSc2:SetOrigin("CENTER", 0, 0)
+        pSc2:SetScaleFrom(1.08, 1.08); pSc2:SetScaleTo(1.0, 1.0)
+        pSc2:SetDuration(0.10); pSc2:SetSmoothing("IN")
+        f.popIn = popIn
+
+        local floatAnim = f:CreateAnimationGroup()
+        floatAnim:SetLooping("BOUNCE")
+        local fTr = floatAnim:CreateAnimation("Translation")
+        fTr:SetOffset(0, 3.2); fTr:SetDuration(1.15); fTr:SetSmoothing("IN_OUT")
+        f.floatAnim = floatAnim
     end
     return f
+end
+
+local function SetMarkDimmed(m, dimmed)
+    if not m then return end
+    m.gathering = dimmed and true or nil
+    m:SetAlpha(dimmed and 0.25 or 1)
+    if m.floatAnim then
+        if dimmed then
+            m.floatAnim:Stop()
+        elseif m:IsShown() and not m.floatAnim:IsPlaying() then
+            m.floatAnim:Play()
+        end
+    end
 end
 
 local function ReleaseMark(plate)
@@ -423,6 +461,8 @@ local function ReleaseMark(plate)
     marks[plate] = nil
     m.soundKey = nil
     m.gathering = nil
+    if m.popIn then m.popIn:Stop() end
+    if m.floatAnim then m.floatAnim:Stop() end
     m:Hide()
     m:ClearAllPoints()
     spare[#spare + 1] = m
@@ -498,6 +538,13 @@ local function EvaluatePlate(unit)
     m.nodeKey = keyId
     m.kind = kind
     m:SetSize(baseSize, baseSize)
+    if m.glow then
+        m.glow:SetSize(baseSize * 1.48, baseSize * 1.48)
+        local gc = cfg.glow
+        if gc then
+            m.glow:SetVertexColor(gc[1], gc[2], gc[3], 0.42)
+        end
+    end
     m:ClearAllPoints()
     m:SetPoint("CENTER", plate, "BOTTOM", 0, cfg.height or 25)
     m.tex:SetTexture(MEDIA_FMT:format(cfg.pic))
@@ -505,6 +552,17 @@ local function EvaluatePlate(unit)
     m.gathering = dimmed or nil
     m:SetAlpha(dimmed and 0.25 or 1)
     m:Show()
+    if isNew and not dimmed and m.popIn then
+        m.popIn:Stop()
+        m.popIn:Play()
+    end
+    if m.floatAnim then
+        if dimmed then
+            m.floatAnim:Stop()
+        elseif not m.floatAnim:IsPlaying() then
+            m.floatAnim:Play()
+        end
+    end
 
     if isNew and kind ~= "bobber" then
         PlayAlertSound(nodeKey)
@@ -713,8 +771,7 @@ function mod:OnEnable()
             gatherStopToken = gatherStopToken + 1
             if self:GetDB().gatherDim then
                 for _, m in pairs(marks) do
-                    m.gathering = true
-                    m:SetAlpha(0.25)
+                    SetMarkDimmed(m, true)
                 end
             end
         end
@@ -735,8 +792,7 @@ function mod:OnEnable()
                 activeGatherKey = nil
                 activeGatherKind = nil
                 for _, m in pairs(marks) do
-                    m.gathering = nil
-                    m:SetAlpha(1)
+                    SetMarkDimmed(m, false)
                 end
                 QueueUpdateAll()
             end)
@@ -746,8 +802,7 @@ function mod:OnEnable()
         activeGatherKind = nil
         if not isLootingGather then
             for _, m in pairs(marks) do
-                m.gathering = nil
-                m:SetAlpha(1)
+                SetMarkDimmed(m, false)
             end
         end
     end)
@@ -792,8 +847,7 @@ function mod:OnEnable()
             HideMarksForKey(activeGatherKey)
         elseif srcKind == "gameobject" and self:GetDB().gatherDim then
             for _, m in pairs(marks) do
-                m.gathering = true
-                m:SetAlpha(0.25)
+                SetMarkDimmed(m, true)
             end
         end
     end)
@@ -813,8 +867,7 @@ function mod:OnEnable()
             end
         end
         for _, m in pairs(marks) do
-            m.gathering = nil
-            m:SetAlpha(1)
+            SetMarkDimmed(m, false)
         end
         QueueUpdateAll()
     end)
@@ -840,8 +893,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "任务物品拾取闪光保活",
-        tooltip = "自动维持 outlineModeShowLootEffectWhenDisabled = 1（替代 ForeverLootSparkles）。",
+        text = "保持拾取闪光",
+        tooltip = "关闭轮廓模式时仍保持任务物品与可拾取物件的闪光特效。",
         getValue = function() return db.lootSparkles ~= false end,
         setValue = function(v) db.lootSparkles = v == true; ApplyLootSparkleCVar(v == true and mod._active) end,
     })
@@ -862,7 +915,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "地上任务物件标记（不含怪物）",
+        text = "地上任务物件",
         tooltip = "仅对地上的可互动物件任务目标显示，绝不标记怪物或尸体。",
         getValue = function() return db.quests ~= false end,
         setValue = function(v) db.quests = v == true; UpdateAll() end,
@@ -876,13 +929,13 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "仅提醒已学采集专业",
+        text = "仅已学专业",
         tooltip = "未学采药/采矿时不提示草药和矿脉（不影响地上任务物件和鱼漂）。",
         getValue = function() return db.professionOnly ~= false end,
         setValue = function(v) db.professionOnly = v == true; UpdateAll() end,
     }, {
         type = "toggle",
-        text = "发现时播放轻提示音",
+        text = "发现播放提示音",
         tooltip = "带 5 秒同节点去重与 3 秒全局冷却。",
         getValue = function() return db.soundAlert ~= false end,
         setValue = function(v) db.soundAlert = v == true end,
@@ -897,7 +950,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         setValue = function(v) db.iconSize = v; UpdateAll() end,
     }, {
         type = "toggle",
-        text = "采集/拾取时自动淡化标记",
+        text = "采集时淡化标记",
         getValue = function() return db.gatherDim ~= false end,
         setValue = function(v) db.gatherDim = v == true end,
     })

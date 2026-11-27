@@ -5,9 +5,12 @@
 ## Version: 2.0.0
 ## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
 ## Dependencies: kkowoUI
-## OptionalDeps: EllesmereUIBlizzardSkin, EllesmereUIDamageMeters, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, Polestar, Auctionator, Questie, BugSack
+## OptionalDeps: EllesmereUIBlizzardSkin, EllesmereUIDamageMeters, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, Polestar, Auctionator, Questie, BugSack, GTFO, BigWigs
 
+Data\PolestarNamesData.lua
+Data\PolestarGuideData.lua
 Data\PolestarZh.lua
+Data\ThirdPartyZh.lua
 Data\CooldownPresets.lua
 EUIRuntimeFixes.lua
 PolestarNavPlus.lua

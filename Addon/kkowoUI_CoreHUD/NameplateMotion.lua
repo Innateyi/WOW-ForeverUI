@@ -20,8 +20,8 @@ local ST = F.StyleTokens
 local M = F.Motion
 
 local mod = F.RegisterModule("nameplateMotion", {
-    title = "姓名板圆角、任务进度与目标动效",
-    desc = "为姓名板血条/施法条施加统一圆角美化、头顶任务击杀进度（如 1/10，副本内同样生效）、目标呼吸箭头、斜向条纹、非目标压暗与掉血残影。",
+    title = "姓名板动效",
+    desc = "提供姓名板圆角、任务进度、目标箭头、条纹、非目标压暗与残影。",
     group = "motion",
     order = 40,
     masterKey = "motionFX",
@@ -904,11 +904,22 @@ local function AnchorBreathingArrows(plate, fx, w, h)
     local barH = F.PlainNumber(plate.health.GetHeight and plate.health:GetHeight(), 14) or 14
     local dy = (h - barH) * 0.5
 
-    -- 左侧箭头：若 EUI 原生左箭头处于显示状态（仅被我们 SetAlpha(0) 静音），直接同步其防重叠外推坐标；否则按侧边元素宽度兜底外推
+    -- 左侧箭头：若 EUI 原生左箭头处于显示状态（仅被我们 SetAlpha(0) 静音），直接同步其防重叠外推坐标；
+    -- 若目标标记额外放大（MarkBar 当前目标放大），补足额外外推避免与放大后的标记重叠
+    local markExtraL, markExtraR = 0, 0
+    if plate.raidFrame and plate.raidFrame.IsShown and plate.raidFrame:IsShown() then
+        local extra = F.PlainNumber(plate.raidFrame._kkScaledExtra, 0) or 0
+        if extra > 0 then
+            local npNS = GetEUINPNS()
+            local rmPos = npNS and type(npNS.GetRaidMarkerPos) == "function" and npNS.GetRaidMarkerPos() or nil
+            if rmPos == "left" then markExtraL = extra
+            elseif rmPos == "right" then markExtraR = extra end
+        end
+    end
     fx.leftBox:ClearAllPoints()
     if plate.leftArrow and IsSafe(plate.leftArrow) and plate.leftArrow.IsShown and plate.leftArrow:IsShown() then
-        fx.leftBox:SetPoint("TOP", plate.leftArrow, "CENTER", 0, halfH)
-        fx.leftBox:SetPoint("BOTTOM", plate.leftArrow, "CENTER", 0, -halfH)
+        fx.leftBox:SetPoint("TOP", plate.leftArrow, "CENTER", -markExtraL, halfH)
+        fx.leftBox:SetPoint("BOTTOM", plate.leftArrow, "CENTER", -markExtraL, -halfH)
     else
         local lPush = ComputeSidePush(plate, "left", h)
         local lx = 6 + w * 0.5 + lPush
@@ -920,8 +931,8 @@ local function AnchorBreathingArrows(plate, fx, w, h)
     -- 右侧箭头同理
     fx.rightBox:ClearAllPoints()
     if plate.rightArrow and IsSafe(plate.rightArrow) and plate.rightArrow.IsShown and plate.rightArrow:IsShown() then
-        fx.rightBox:SetPoint("TOP", plate.rightArrow, "CENTER", 0, halfH)
-        fx.rightBox:SetPoint("BOTTOM", plate.rightArrow, "CENTER", 0, -halfH)
+        fx.rightBox:SetPoint("TOP", plate.rightArrow, "CENTER", markExtraR, halfH)
+        fx.rightBox:SetPoint("BOTTOM", plate.rightArrow, "CENTER", markExtraR, -halfH)
     else
         local rPush = ComputeSidePush(plate, "right", h)
         local rx = 6 + w * 0.5 + rPush
@@ -929,6 +940,14 @@ local function AnchorBreathingArrows(plate, fx, w, h)
         fx.rightBox:SetPoint("BOTTOM", plate.health, "BOTTOMRIGHT", rx, -dy)
     end
     fx.rightBox:SetWidth(w)
+end
+
+F._RefreshNameplateMotionArrows = function(plate)
+    if not (mod._active and plate) then return end
+    local fx = plateFX[plate]
+    if fx and fx.leftBox and fx.rightBox then
+        AnchorBreathingArrows(plate, fx, fx.arrowW, fx.arrowH)
+    end
 end
 
 local function InstallEUIArrowSyncHook()
@@ -1265,14 +1284,14 @@ function mod:OnThemeChanged()
     RefreshAllPlates(true)
 end
 
-function mod:BuildOptions(W, parent, y, enableSlot)
+function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local db = self:GetDB()
     local _, h
 
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "姓名板血条与施法条圆角美化",
-        tooltip = "将 EUI 姓名板的血条与施法条统一升级为抗锯齿圆角胶囊与 1px 圆角细框。",
+        text = "血条施法条圆角",
+        tooltip = "为 EUI 姓名板的血条与施法条应用圆角与 1px 细边框。",
         getValue = function() return db.roundBars ~= false end,
         setValue = function(v) db.roundBars = v == true; RefreshAllPlates(true) end,
     })
@@ -1280,14 +1299,14 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "关闭粗糙宽大外发光，改用 1px 贴边圆角高亮框",
-        tooltip = "屏蔽 EUI 原生 6px 宽糊外发光框，改用贴合血条边缘的 1px 锐利圆角锁敌细框，清晰精致不毛糙。",
+        text = "细框替代宽发光",
+        tooltip = "关闭 EUI 宽大外发光，改用贴边 1px 圆角目标高亮框。",
         getValue = function() return db.muteCrudeTargetGlow ~= false end,
         setValue = function(v) db.muteCrudeTargetGlow = v == true; RefreshAllPlates(true) end,
     }, {
         type = "toggle",
-        text = "头顶显示任务击杀/收集进度（如 1/10）",
-        tooltip = "在任务目标怪物血条右上方醒目显示当前进度（野外与副本内同样生效，击杀后实时跳数，不与 EUI 自带进度重复）。",
+        text = "头顶任务进度",
+        tooltip = "在任务怪血条右上方显示击杀或收集进度，野外与副本均生效。",
         getValue = function() return db.showQuestProgress ~= false end,
         setValue = function(v) db.showQuestProgress = v == true; WipeQuestCache(); RefreshAllPlates(true) end,
     })
@@ -1295,8 +1314,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "当前目标左右霓虹呼吸指向器",
-        tooltip = "选中目标时在姓名板两侧展示双层霓虹呼吸指向标，清晰炫酷锁定焦点。",
+        text = "目标两侧箭头",
+        tooltip = "在当前目标姓名板两侧显示动态脉冲指向箭头。",
         getValue = function() return db.breathingArrows ~= false end,
         setValue = function(v) db.breathingArrows = v == true; RefreshAllPlates(true) end,
     }, {
@@ -1304,12 +1323,12 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         text = "目标指向器造型",
         disabled = function() return db.breathingArrows == false end,
         values = {
-            split   = "裂刃双翼（推荐·简洁炫酷）",
-            double  = "流光双箭（Double）",
-            bracket = "战术锁框（Bracket）",
-            crystal = "霓虹棱晶（Crystal）",
-            curved  = "弧光瞄准（Curved）",
-            winged  = "锐翼准星（Winged）",
+            split   = "裂刃双翼（推荐）",
+            double  = "流光双箭",
+            bracket = "战术锁框",
+            crystal = "霓虹棱晶",
+            curved  = "弧光瞄准",
+            winged  = "锐翼准星",
         },
         order = { "split", "double", "bracket", "crystal", "curved", "winged" },
         getValue = function() return db.arrowStyle or "split" end,
@@ -1319,85 +1338,94 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "dropdown",
-        text = "目标指向器流光配色",
+        text = "箭头配色",
         disabled = function() return db.breathingArrows == false end,
         values = {
-            amber   = "熔金霓虹锁敌（推荐）",
-            class   = "当前职业流光色",
-            green   = "青草绿霓虹",
-            cyan    = "冰蓝电弧",
-            crimson = "炽焰猩红",
+            amber   = "熔金（推荐）",
+            class   = "当前职业色",
+            green   = "翠绿",
+            cyan    = "冰蓝",
+            crimson = "猩红",
         },
         order = { "amber", "class", "green", "cyan", "crimson" },
         getValue = function() return db.arrowColorMode or "amber" end,
         setValue = function(v) db.arrowColorMode = v; RefreshAllPlates(true) end,
     }, {
         type = "toggle",
-        text = "当前目标高对比斜向警示条纹",
-        tooltip = "为当前目标血条叠加高辨识度斜向条纹，在多怪混战中一眼锁定焦点目标。",
+        text = "目标斜向条纹",
+        tooltip = "为当前目标血条叠加斜向条纹，混战中快速辨认目标。",
         getValue = function() return db.targetStripes ~= false end,
         setValue = function(v) db.targetStripes = v == true; RefreshAllPlates(true) end,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "斜向条纹亮度",
-        min = 0.20, max = 0.85, step = 0.05,
-        disabled = function() return db.targetStripes == false end,
-        getValue = function() return F.PlainNumber(db.stripeAlpha, 0.42) or 0.42 end,
-        setValue = function(v) db.stripeAlpha = v; RefreshAllPlates(true) end,
-    }, {
         type = "toggle",
-        text = "非目标姓名板柔和压暗",
+        text = "压暗非目标板",
         getValue = function() return db.dimNonTarget ~= false end,
         setValue = function(v) db.dimNonTarget = v == true; RefreshAllPlates(true) end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "非目标透明度",
-        min = 0.45, max = 0.95, step = 0.05,
-        disabled = function() return db.dimNonTarget == false end,
-        getValue = function() return F.PlainNumber(db.nonTargetAlpha, 0.78) or 0.78 end,
-        setValue = function(v) db.nonTargetAlpha = v; RefreshAllPlates(true) end,
     }, {
         type = "toggle",
-        text = "施法条可打断 / 不可打断高反差光边",
-        getValue = function() return db.castContrast ~= false end,
-        setValue = function(v) db.castContrast = v == true; RefreshAllPlates(true) end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "dropdown",
-        text = "姓名板掉血延迟残影范围",
-        tooltip = "推荐「仅当前目标」以保持大群拉怪极限帧率，高配机器可开启「全部可见姓名板」。",
-        values = {
-            target = "仅当前目标（推荐·低开销）",
-            all    = "全部可见姓名板",
-            off    = "关闭残影",
-        },
-        order = { "target", "all", "off" },
-        getValue = function() return db.trailMode or "target" end,
-        setValue = function(v) db.trailMode = v; RefreshAllPlates(true) end,
-    }, {
-        type = "toggle",
-        text = "过图/传送瞬间拦截暴雪原生姓名板闪现",
-        getValue = function() return db.suppressTeleportFlash ~= false end,
-        setValue = function(v) db.suppressTeleportFlash = v == true; SweepBlizzNameplateFlash() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "敌对阵营玩家显示红名（区分怪物）",
-        tooltip = "野外遇到敌对阵营玩家时，姓名板名字改成红色，与同色的怪物一眼区分；顶部目标条与目标的目标同样显示红名。",
+        text = "敌对玩家红名",
+        tooltip = "野外敌对阵营玩家姓名板与顶部目标条显示红名以区分怪物。",
         getValue = function() return db.redHostilePlayers ~= false end,
         setValue = function(v) db.redHostilePlayers = v == true; RefreshAllPlates(true) end,
     })
     y = y - h
 
+    local function buildAdv(w, p, curY, blk)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "斜向条纹亮度",
+            min = 0.20, max = 0.85, step = 0.05,
+            disabled = function() return db.targetStripes == false end,
+            getValue = function() return F.PlainNumber(db.stripeAlpha, 0.42) or 0.42 end,
+            setValue = function(v) db.stripeAlpha = v; RefreshAllPlates(true) end,
+        }, {
+            type = "slider",
+            text = "非目标透明度",
+            min = 0.45, max = 0.95, step = 0.05,
+            disabled = function() return db.dimNonTarget == false end,
+            getValue = function() return F.PlainNumber(db.nonTargetAlpha, 0.78) or 0.78 end,
+            setValue = function(v) db.nonTargetAlpha = v; RefreshAllPlates(true) end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "施法可断高反差",
+            getValue = function() return db.castContrast ~= false end,
+            setValue = function(v) db.castContrast = v == true; RefreshAllPlates(true) end,
+        }, {
+            type = "dropdown",
+            text = "掉血残影范围",
+            tooltip = "推荐仅当前目标以兼顾群拉帧率，高配可改为全部可见板。",
+            values = {
+                target = "仅当前目标（推荐）",
+                all    = "全部可见姓名板",
+                off    = "关闭残影",
+            },
+            order = { "target", "all", "off" },
+            getValue = function() return db.trailMode or "target" end,
+            setValue = function(v) db.trailMode = v; RefreshAllPlates(true) end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "过图防原生闪现",
+            getValue = function() return db.suppressTeleportFlash ~= false end,
+            setValue = function(v) db.suppressTeleportFlash = v == true; SweepBlizzNameplateFlash() end,
+        }, blk)
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("nameplateMotion", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y, blank)
+    end
     return y
 end

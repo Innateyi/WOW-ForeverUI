@@ -19,8 +19,8 @@ local C_Timer = C_Timer
 ----------------------------------------------------------------------
 do
     local npMod = F.RegisterModule("nameplateSmart", {
-        title = "姓名板与主城减卡优化",
-        desc = "压制 EUI 强制开启友方玩家名，支持主城自动隐藏或全局隐藏友方玩家 ID（大幅缓解主城卡顿），并可选统一远处 NPC 原生文字。",
+        title = "主城姓名板减卡",
+        desc = "在主城自动或全局隐藏友方玩家名与公会，缓解人群卡顿。",
         group = "visual",
         order = 15,
         defaults = {
@@ -345,7 +345,7 @@ do
         db.friendlyMode = target
         ClearManualOverrides()
         ApplyAll()
-        F.Print("友方玩家 ID 策略已切换为：|cff5fd3a6" .. (MODE_LABELS[target] or target) .. "|r")
+        F.Print("友方玩家名字策略已切换为：|cff5fd3a6" .. (MODE_LABELS[target] or target) .. "|r")
     end
 
     function npMod:OnEnable()
@@ -440,8 +440,8 @@ do
         local _, h
         _, h = W:DualRow(parent, y, enableSlot, {
             type = "dropdown",
-            text = "友方玩家 ID 隐藏策略",
-            tooltip = "压制 EUI 强制重开友方玩家名，显著缓解主城卡顿。\n聊天框输入 /kk friendly 可一键切换模式。",
+            text = "友方名字策略",
+            tooltip = "控制友方玩家名字显示时机以缓解卡顿，可用 /kk friendly 切换。",
             values = {
                 city_hide     = "主城/休整区自动隐藏（推荐）",
                 instance_only = "仅副本内显示（主城+野外隐藏）",
@@ -456,14 +456,14 @@ do
 
         _, h = W:DualRow(parent, y, {
             type = "toggle",
-            text = "同步隐藏友方公会与头衔",
+            text = "隐藏公会与头衔",
             tooltip = "隐藏友方玩家 ID 时一并关闭公会与头衔渲染，主城帧数提升更明显。",
             getValue = function() return db.hideGuildTitle ~= false end,
             setValue = function(v) db.hideGuildTitle = v == true; ClearManualOverrides(); ApplyAll() end,
         }, {
             type = "toggle",
-            text = "主城同时隐藏友方 NPC 姓名板",
-            tooltip = "在主城/休整区临时隐藏卫兵、商人等友方 NPC 姓名板以换取最高帧数（离开主城自动恢复）。",
+            text = "主城藏友方NPC",
+            tooltip = "在主城隐藏卫兵与商人姓名板提升帧率，离开主城自动恢复。",
             getValue = function() return db.hideCityNpcPlates == true end,
             setValue = function(v) db.hideCityNpcPlates = v == true; ClearManualOverrides(); ApplyAll() end,
         })
@@ -471,8 +471,8 @@ do
 
         _, h = W:DualRow(parent, y, {
             type = "toggle",
-            text = "公会与头衔在所有地方都隐藏（含自己）",
-            tooltip = "默认只在主城/休整区隐藏公会与头衔，离开后恢复；开启后在野外和副本也一直隐藏，包括你自己名字下方的公会。\n需同时开启「同步隐藏友方公会与头衔」；关闭后恢复为开启前的游戏设置。",
+            text = "全局藏公会头衔",
+            tooltip = "在野外与副本也隐藏公会和头衔，需先开启隐藏公会与头衔。",
             getValue = function() return db.guildTitleAlways == true end,
             setValue = function(v) db.guildTitleAlways = v == true; ClearManualOverrides(); ApplyAll() end,
         }, blank)
@@ -480,8 +480,8 @@ do
 
         _, h = W:DualRow(parent, y, {
             type = "dropdown",
-            text = "45 码外原生 NPC 名称",
-            tooltip = "无限服引擎将姓名板最远距离硬锁在 45 码。\n关闭远处原生 NPC 名称可彻底统一视觉（全部由 45 码内 EUI 姓名板呈现）。",
+            text = "远处NPC名称",
+            tooltip = "关闭 45 码外原版 NPC 名称，仅在姓名板范围内统一显示。",
             values = {
                 keep       = "保持当前游戏设置",
                 quest_only = "仅显示远处任务/特殊 NPC",

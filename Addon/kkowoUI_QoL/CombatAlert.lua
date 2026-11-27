@@ -95,6 +95,8 @@ local function StopAllAnimations()
         textFrame.enter:Stop()
         textFrame.leave:Stop()
         if textFrame.modernPop then textFrame.modernPop:Stop() end
+        if textFrame.beamAnim then textFrame.beamAnim:Stop() end
+        if textFrame.beamLine then textFrame.beamLine:Hide() end
         textFrame:Hide()
     end
 end
@@ -193,6 +195,25 @@ local function BuildFrames()
     halo:Hide()
     textFrame.halo = halo
 
+    -- 现代流光横刃底线（进/脱战时自中心向两侧展开并柔散）
+    local beamLine = textFrame:CreateTexture(nil, "ARTWORK")
+    beamLine:SetTexture(F.MEDIA .. "Textures\\SoftGlow.tga")
+    beamLine:SetBlendMode("ADD")
+    beamLine:SetPoint("BOTTOM", textFrame, "BOTTOM", 0, 0)
+    beamLine:SetSize(220, 4)
+    beamLine:SetAlpha(0)
+    beamLine:Hide()
+    textFrame.beamLine = beamLine
+
+    local beamAnim = beamLine:CreateAnimationGroup()
+    local bSc1 = AddAnim(beamAnim, "Scale", 0.22, 0); bSc1:SetOrder(1); bSc1:SetOrigin("CENTER", 0, 0); bSc1:SetScaleFrom(0.08, 1.0); bSc1:SetScaleTo(1.08, 1.0); bSc1:SetSmoothing("OUT")
+    local bAl1 = AddAnim(beamAnim, "Alpha", 0.12, 0); bAl1:SetOrder(1); bAl1:SetFromAlpha(0); bAl1:SetToAlpha(0.92); bAl1:SetSmoothing("OUT")
+    local bSc2 = AddAnim(beamAnim, "Scale", 0.36, 0.24); bSc2:SetOrder(2); bSc2:SetOrigin("CENTER", 0, 0); bSc2:SetScaleFrom(1.08, 1.0); bSc2:SetScaleTo(0.68, 1.0); bSc2:SetSmoothing("IN")
+    local bAl2 = AddAnim(beamAnim, "Alpha", 0.36, 0.24); bAl2:SetOrder(2); bAl2:SetFromAlpha(0.92); bAl2:SetToAlpha(0); bAl2:SetSmoothing("OUT")
+    beamAnim:SetScript("OnFinished", function() beamLine:SetAlpha(0); beamLine:Hide() end)
+    beamAnim:SetScript("OnStop", function() beamLine:SetAlpha(0); beamLine:Hide() end)
+    textFrame.beamAnim = beamAnim
+
     textFrame.text = textFrame:CreateFontString(nil, "OVERLAY")
     textFrame.text:SetPoint("CENTER", 0, 0)
 
@@ -234,7 +255,7 @@ local function BuildFrames()
         animFrame.shield.enter, animFrame.shield.leave,
         animFrame.swordL.enter, animFrame.swordL.leave,
         animFrame.swordR.enter, animFrame.swordR.leave,
-        textFrame.enter, textFrame.leave, textFrame.modernPop,
+        textFrame.enter, textFrame.leave, textFrame.modernPop, textFrame.beamAnim,
     }
 end
 
@@ -362,7 +383,11 @@ PlayAlert = function(alertType, preview)
                 textFrame.text:SetTextColor(1, 0.96, 0.96, 1)
                 textFrame.text:SetShadowColor(c[1], c[2], c[3], 0.95)
                 if textFrame.halo then
-                    textFrame.halo:SetVertexColor(c[1], c[2], c[3], 0.55)
+                    if F.StyleTokens and F.StyleTokens.ApplyGradient then
+                        F.StyleTokens.ApplyGradient(textFrame.halo, "HORIZONTAL", c[1], c[2], c[3], 0.56, 1.0, 0.62, 0.28, 0.52)
+                    else
+                        textFrame.halo:SetVertexColor(c[1], c[2], c[3], 0.55)
+                    end
                     textFrame.halo:Show()
                 end
             else
@@ -373,6 +398,21 @@ PlayAlert = function(alertType, preview)
             local th = F.PlainNumber(textFrame.text:GetStringHeight(), 26)
             textFrame:SetSize(math.max(100, tw + 16), math.max(28, th + 8))
             if textFrame.halo then textFrame.halo:SetSize(math.max(160, tw + 72), math.max(44, th + 28)) end
+            if textFrame.beamLine then
+                textFrame.beamLine:SetSize(math.max(150, tw + 56), 4)
+                if style == "modern" or style == "both" then
+                    if F.StyleTokens and F.StyleTokens.ApplyGradient then
+                        F.StyleTokens.ApplyGradient(textFrame.beamLine, "HORIZONTAL", c[1], c[2], c[3], 0.92, 1.0, 0.72, 0.36, 0.92)
+                    else
+                        textFrame.beamLine:SetVertexColor(c[1], c[2], c[3], 0.92)
+                    end
+                    textFrame.beamLine:SetAlpha(0)
+                    textFrame.beamLine:Show()
+                    textFrame.beamAnim:Restart()
+                else
+                    textFrame.beamLine:Hide()
+                end
+            end
             textFrame:ClearAllPoints()
             if style == "modern" then
                 textFrame:SetPoint("CENTER", alertFrame, "CENTER", 0, 0)
@@ -407,7 +447,11 @@ PlayAlert = function(alertType, preview)
                 textFrame.text:SetTextColor(0.95, 1.0, 0.98, 1)
                 textFrame.text:SetShadowColor(c[1], c[2], c[3], 0.95)
                 if textFrame.halo then
-                    textFrame.halo:SetVertexColor(c[1], c[2], c[3], 0.50)
+                    if F.StyleTokens and F.StyleTokens.ApplyGradient then
+                        F.StyleTokens.ApplyGradient(textFrame.halo, "HORIZONTAL", c[1], c[2], c[3], 0.52, 0.42, 0.92, 1.0, 0.48)
+                    else
+                        textFrame.halo:SetVertexColor(c[1], c[2], c[3], 0.50)
+                    end
                     textFrame.halo:Show()
                 end
             else
@@ -418,6 +462,21 @@ PlayAlert = function(alertType, preview)
             local th = F.PlainNumber(textFrame.text:GetStringHeight(), 26)
             textFrame:SetSize(math.max(100, tw + 16), math.max(28, th + 8))
             if textFrame.halo then textFrame.halo:SetSize(math.max(160, tw + 72), math.max(44, th + 28)) end
+            if textFrame.beamLine then
+                textFrame.beamLine:SetSize(math.max(150, tw + 56), 4)
+                if style == "modern" or style == "both" then
+                    if F.StyleTokens and F.StyleTokens.ApplyGradient then
+                        F.StyleTokens.ApplyGradient(textFrame.beamLine, "HORIZONTAL", c[1], c[2], c[3], 0.90, 0.50, 0.94, 1.0, 0.90)
+                    else
+                        textFrame.beamLine:SetVertexColor(c[1], c[2], c[3], 0.90)
+                    end
+                    textFrame.beamLine:SetAlpha(0)
+                    textFrame.beamLine:Show()
+                    textFrame.beamAnim:Restart()
+                else
+                    textFrame.beamLine:Hide()
+                end
+            end
             textFrame:ClearAllPoints()
             if style == "modern" then
                 textFrame:SetPoint("CENTER", alertFrame, "CENTER", 0, 0)
@@ -471,11 +530,11 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "进/脱战提醒风格",
-        tooltip = "现代粗斜体：暖红/青绿柔光弹入淡出；经典剑盾：保留原有双剑与盾动画；或两者叠加。",
+        tooltip = "选择现代粗斜体、经典剑盾动画或两者叠加样式。",
         values = {
-            modern  = "现代粗斜体发光（推荐）",
+            modern  = "现代粗斜体（推荐）",
             classic = "经典剑盾动画",
-            both    = "剑盾 + 现代斜体发光",
+            both    = "剑盾 + 现代斜体",
         },
         order = { "modern", "classic", "both" },
         getValue = function() return db.alertStyle or "modern" end,
@@ -486,20 +545,10 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "显示提示文字",
-        tooltip = "关闭后不再出现进/脱战文字（可只保留音效或剑盾动画）。",
+        tooltip = "关闭后不再显示进脱战文字，可仅保留音效或动画。",
         getValue = function() return db.text ~= false end,
         setValue = function(v) db.text = v == true end,
     }, {
-        type = "toggle",
-        text = "显示剑盾动画（经典 / 叠加风格）",
-        tooltip = "仅在「经典剑盾」或「剑盾 + 现代斜体」风格下生效。",
-        disabled = function() return (db.alertStyle or "modern") == "modern" end,
-        getValue = function() return db.animation ~= false end,
-        setValue = function(v) db.animation = v == true end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
         type = "dropdown",
         text = "提示文案预设",
         values = {
@@ -509,43 +558,21 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         order = { "en", "zh" },
         getValue = function() return db.textPreset or "en" end,
         setValue = function(v) db.textPreset = v end,
-    }, {
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "启用提示音效",
         getValue = function() return db.sound == true end,
         setValue = function(v) db.sound = v == true end,
-    })
-    y = y - h
-
-    local soundVals = { none = "静音", raidwarn = "团队警报（8959）", ready = "就位确认（8960）" }
-    local soundOrd = { "none", "raidwarn", "ready" }
-    _, h = W:DualRow(parent, y, {
-        type = "dropdown",
-        text = "进战音效",
-        values = soundVals, order = soundOrd,
-        getValue = function() return db.soundEnter or "raidwarn" end,
-        setValue = function(v) db.soundEnter = v end,
     }, {
-        type = "dropdown",
-        text = "脱战音效",
-        values = soundVals, order = soundOrd,
-        getValue = function() return db.soundLeave or "ready" end,
-        setValue = function(v) db.soundLeave = v end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "动画缩放",
-        min = 0.3, max = 1.0, step = 0.05,
-        getValue = function() return db.animationSize or 0.55 end,
-        setValue = function(v) db.animationSize = v; ApplySizes() end,
-    }, {
-        type = "slider",
-        text = "文字字号",
-        min = 14, max = 32, step = 1,
-        getValue = function() return db.fontSize or 24 end,
-        setValue = function(v) db.fontSize = v; ApplySizes() end,
+        type = "toggle",
+        text = "显示剑盾动画",
+        tooltip = "仅在经典剑盾或叠加风格下生效。",
+        disabled = function() return (db.alertStyle or "modern") == "modern" end,
+        getValue = function() return db.animation ~= false end,
+        setValue = function(v) db.animation = v == true end,
     })
     y = y - h
 
@@ -553,5 +580,47 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         function() PlayAlert("ENTER", true) end,
         function() PlayAlert("LEAVE", true) end)
     y = y - h
+
+    local function buildAdv(w, p, curY)
+        local _, rh
+        local soundVals = { none = "静音", raidwarn = "团队警报（8959）", ready = "就位确认（8960）" }
+        local soundOrd = { "none", "raidwarn", "ready" }
+        _, rh = w:DualRow(p, curY, {
+            type = "dropdown",
+            text = "进战音效",
+            values = soundVals, order = soundOrd,
+            getValue = function() return db.soundEnter or "raidwarn" end,
+            setValue = function(v) db.soundEnter = v end,
+        }, {
+            type = "dropdown",
+            text = "脱战音效",
+            values = soundVals, order = soundOrd,
+            getValue = function() return db.soundLeave or "ready" end,
+            setValue = function(v) db.soundLeave = v end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "动画缩放 (倍)",
+            min = 0.3, max = 1.0, step = 0.05,
+            getValue = function() return db.animationSize or 0.55 end,
+            setValue = function(v) db.animationSize = v; ApplySizes() end,
+        }, {
+            type = "slider",
+            text = "文字字号 (px)",
+            min = 14, max = 32, step = 1,
+            getValue = function() return db.fontSize or 24 end,
+            setValue = function(v) db.fontSize = v; ApplySizes() end,
+        })
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("combatAlert", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

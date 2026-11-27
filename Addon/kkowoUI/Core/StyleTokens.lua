@@ -27,6 +27,16 @@ ST.TEX = {
     VIGNETTE     = F.MEDIA .. "Textures\\VignetteEdge.tga",
     DIAG_STRIPES = F.MEDIA .. "Textures\\DiagStripes.tga",
     LOGO_FLAT    = F.MEDIA .. "Icons\\kkowoUI.tga",
+    WP_DISC      = F.MEDIA .. "Waypoint\\WaypointDisc.tga",
+    WP_RIM       = F.MEDIA .. "Waypoint\\WaypointCrescentRim.tga",
+    WP_SWEEP     = F.MEDIA .. "Waypoint\\WaypointSweep.tga",
+    WP_BEAM_CORE = F.MEDIA .. "Waypoint\\WaypointBeamCore.tga",
+    WP_BEAM_HALO = F.MEDIA .. "Waypoint\\WaypointBeamHalo.tga",
+    WP_RIPPLE    = F.MEDIA .. "Waypoint\\WaypointRipple.tga",
+    WP_PIN       = F.MEDIA .. "Waypoint\\WaypointPin.tga",
+    WP_QUEST     = F.MEDIA .. "Waypoint\\WaypointQuest.tga",
+    WP_CORPSE    = F.MEDIA .. "Waypoint\\WaypointCorpse.tga",
+    WP_ARROW     = F.MEDIA .. "Waypoint\\WaypointArrow.tga",
 }
 
 local EUI_ROUND_DIR = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
@@ -739,6 +749,9 @@ end
 local function HasEUIRounded()
     return _G.EllesmereUI ~= nil or F.IsAddOnLoaded("EllesmereUI")
 end
+ST.HasEUIRounded = HasEUIRounded
+ST.EUI_ROUND_DIR = EUI_ROUND_DIR
+ST.EUI_AURA_MASK_DIR = EUI_AURA_MASK_DIR
 
 local function SetNineSlice(obj, path, margin, wrap)
     if not obj then return end
@@ -758,6 +771,7 @@ local function SetNineSlice(obj, path, margin, wrap)
         pcall(obj.SetTextureSliceMode, obj, sm)
     end
 end
+ST.SetNineSlice = SetNineSlice
 
 -- WoW 12.1 (D3D12) 引擎铁律：绝不对整图 MaskTexture 调用 SetTextureSliceMargins（哪怕传 0,0,0,0）！
 -- 只要对一个 MaskTexture 调过一次 SetTextureSliceMargins，引擎就会永久激活其 9 宫格着色器路径，
@@ -769,6 +783,7 @@ local function SetWholeMask(obj, path)
     end
     pcall(obj.SetTexture, obj, path, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
 end
+ST.SetWholeMask = SetWholeMask
 
 local function GetSizeSafe(region)
     if not (region and region.GetSize) then return nil, nil end

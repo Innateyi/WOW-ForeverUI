@@ -13,8 +13,8 @@
 local _G = _G
 local F = _G.kkowoUI
 if not F then return end
-local ipairs, math_floor, math_max, math_min, pairs, pcall, tostring, type =
-    ipairs, math.floor, math.max, math.min, pairs, pcall, tostring, type
+local ipairs, math_abs, math_floor, math_max, math_min, pairs, pcall, tostring, type =
+    ipairs, math.abs, math.floor, math.max, math.min, pairs, pcall, tostring, type
 local setmetatable = setmetatable
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
@@ -25,8 +25,8 @@ local EUI_CHAT_MEDIA = "Interface\\AddOns\\EllesmereUIChat\\media\\"
 local RAIL_WIDTH = 26
 
 local mod = F.RegisterModule("chatBar", {
-    title = "融合聊天条与窗口美化",
-    desc = "将聊天频道快捷切换与复制/设置/回底按钮融为一体，默认贴合聊天框左侧竖向停靠并自动隐藏重复的右侧边栏与好友图标。",
+    title = "聊天条",
+    desc = "将频道切换与复制、设置、回底按钮融为一体，默认贴合左侧。",
     group = "social",
     order = 10,
     defaults = {
@@ -88,6 +88,8 @@ local overflowHooked = setmetatable({}, { __mode = "k" })
 local overflowVisual = setmetatable({}, { __mode = "k" })
 local bgSizeHooked = setmetatable({}, { __mode = "k" })
 local wheelHooked = setmetatable({}, { __mode = "k" })
+local euiAlphaHooked = setmetatable({}, { __mode = "k" })
+local euiChatLiveAlpha = 1.0
 
 ----------------------------------------------------------------------
 --  读取 EllesmereUIChat 实时配置、材质、字体与独立背景框
@@ -455,7 +457,7 @@ local function TriggerCopyChat()
             return
         end
     end
-    F.Print("当前未检测到 EllesmereUIChat 复制模块。")
+    F.Print("未检测到 EUI 聊天复制功能。")
 end
 
 local function TriggerChatSettings(mouseBtn)
@@ -1103,6 +1105,17 @@ local function TargetAlpha()
     return db.idleAlpha or 1.0
 end
 
+local euiIdleFadeHooked = false
+
+local function IsEUIFadeLockstep()
+    local db = mod:GetDB()
+    if activeDockMode == "free" or db.hoverReveal == true or db.combatFade == true then
+        return false
+    end
+    local _, _, bg1, chatNS = GetEUIChatContext()
+    return (chatNS and chatNS._chatTabStrip ~= nil) or (bg1 ~= nil)
+end
+
 local function SyncAlpha(instant)
     if not barFrame then return end
     if not mod._active or (editBoxActive and activeDockMode == "bottom") then
@@ -1111,11 +1124,68 @@ local function SyncAlpha(instant)
         return
     end
     barFrame:Show()
-    local goal = TargetAlpha()
-    local cur = F.PlainNumber(barFrame:GetAlpha(), 1)
-    F.Theme.FadeTo(barFrame, goal, instant and 0 or (goal > cur and 0.14 or 0.22))
+    local euiA = math_max(0, math_min(1, F.PlainNumber(euiChatLiveAlpha, 1) or 1))
+    if IsEUIFadeLockstep() then
+        -- 停靠且未启用独立悬停/战斗淡出时，与 EUI 聊天框保持 1:1 逐帧锁步透明度（杜绝独立渐变抢跑或亮度错层）
+        F.Theme.FadeTo(barFrame, euiA, 0)
+    else
+        local goal = TargetAlpha() * euiA
+        local cur = F.PlainNumber(barFrame:GetAlpha(), 1)
+        F.Theme.FadeTo(barFrame, goal, instant and 0 or (goal > cur and 0.14 or 0.22))
+    end
     if unifiedPanel and unifiedPanel:IsShown() then
-        unifiedPanel:SetAlpha(math_max(0.25, math_min(1.0, goal)))
+        unifiedPanel:SetAlpha(math_max(0, math_min(1.0, euiA)))
+    end
+end
+
+local function WakeEUIChatFade()
+    local _, _, _, _, echat = GetEUIChatContext()
+    if echat and type(echat.ResetIdleTimer) == "function" then
+        pcall(echat.ResetIdleTimer)
+    end
+end
+
+local function HookEUIChatFadeSync()
+    if type(_G.hooksecurefunc) ~= "function" then return end
+    local _, cf1, bg1, chatNS, echat = GetEUIChatContext()
+    local drivers = {}
+    if chatNS and chatNS._chatTabStrip then drivers[#drivers + 1] = chatNS._chatTabStrip end
+    if bg1 then drivers[#drivers + 1] = bg1 end
+    if cf1 then drivers[#drivers + 1] = cf1 end
+    for i, driver in ipairs(drivers) do
+        if i <= 2 and driver.GetAlpha then
+            local cur = F.PlainNumber(driver:GetAlpha(), nil)
+            if cur ~= nil then
+                euiChatLiveAlpha = math_max(0, math_min(1, cur))
+            end
+        end
+        if not euiAlphaHooked[driver] then
+            euiAlphaHooked[driver] = true
+            _G.hooksecurefunc(driver, "SetAlpha", function(_, a)
+                if not mod._active then return end
+                local na = F.PlainNumber(a, nil)
+                if na == nil then return end
+                na = math_max(0, math_min(1, na))
+                if math_abs(na - euiChatLiveAlpha) < 0.002 then return end
+                euiChatLiveAlpha = na
+                SyncAlpha(true)
+            end)
+        end
+    end
+    -- 鼠标停留在左侧快捷条上时，阻断 EUI 聊天闲置淡出计时器把聊天框单独淡暗
+    if not euiIdleFadeHooked and echat and type(echat.SetIdleFadeAlpha) == "function" then
+        euiIdleFadeHooked = true
+        _G.hooksecurefunc(echat, "SetIdleFadeAlpha", function(a)
+            if not mod._active then return end
+            local na = F.PlainNumber(a, 1) or 1
+            if na < 0.99 and barFrame and barFrame.IsMouseOver and barFrame:IsMouseOver() then
+                C_Timer.After(0, function()
+                    if mod._active and barFrame and barFrame:IsMouseOver() then
+                        WakeEUIChatFade()
+                    end
+                end)
+            end
+        end)
     end
 end
 
@@ -1519,7 +1589,15 @@ local function SetEUIBgMuted(bg1, chatNS, muted)
     end
 end
 
-SyncUnifiedChatPanel = function()
+local chatBarDebug = { syncCount = 0, syncChecks = 0, anchorCount = 0 }
+F._chatBarDebug = chatBarDebug
+local lastUnifiedSig = nil
+local lastAnchorSig = nil
+local lastObservedSel = nil
+local bgHideQueued = false
+
+SyncUnifiedChatPanel = function(force)
+    chatBarDebug.syncChecks = chatBarDebug.syncChecks + 1
     local ST = F.StyleTokens
     local db = mod:GetDB()
     local EUI, _, bg1, chatNS, _, ecfg, onePx = GetEUIChatContext()
@@ -1527,6 +1605,8 @@ SyncUnifiedChatPanel = function()
     local pp = EUI and EUI.PP
 
     if not want then
+        lastUnifiedSig = nil
+        chatBarDebug.syncCount = chatBarDebug.syncCount + 1
         SetEUIBgMuted(bg1, chatNS, false)
         if unifiedPanel then unifiedPanel:Hide() end
         if barFrame and ST then ST.ClearRoundedMask(barFrame) end
@@ -1539,6 +1619,8 @@ SyncUnifiedChatPanel = function()
     local mode = activeDockMode or db.dockMode or "left"
 
     if not bg1 then
+        lastUnifiedSig = nil
+        chatBarDebug.syncCount = chatBarDebug.syncCount + 1
         if unifiedPanel then unifiedPanel:Hide() end
         if barFrame and barFrame._unifiedBg then
             barFrame._unifiedBg:SetColorTexture(gc[1], gc[2], gc[3], alpha)
@@ -1549,6 +1631,22 @@ SyncUnifiedChatPanel = function()
         return
     end
 
+    local topExt = MeasureTabTopExtension and MeasureTabTopExtension(bg1, chatNS, ecfg) or 24
+    local rightExt = MeasureTabRightExtension and MeasureTabRightExtension(bg1, chatNS) or 0
+    local wantShown = IsAnyDockedChatShown() or (barFrame and barFrame:IsShown()) or false
+    local qb = _G.CombatLogQuickButtonFrame_Custom
+    local qbShown = (qb and not (qb.IsForbidden and qb:IsForbidden()) and qb.IsShown and qb:IsShown()) and true or false
+    local sig = mode .. "|" .. tostring(rad) .. "|" .. tostring(alpha) .. "|" .. tostring(topExt)
+        .. "|" .. tostring(rightExt) .. "|" .. tostring(wantShown) .. "|" .. tostring(qbShown)
+    if (not force) and unifiedPanel and lastUnifiedSig == sig then
+        if unifiedPanel:IsShown() ~= wantShown then
+            unifiedPanel:SetShown(wantShown)
+        end
+        return
+    end
+    lastUnifiedSig = sig
+    chatBarDebug.syncCount = chatBarDebug.syncCount + 1
+
     SetEUIBgMuted(bg1, chatNS, true)
 
     local p = EnsureUnifiedPanel()
@@ -1558,8 +1656,6 @@ SyncUnifiedChatPanel = function()
     p._sheen:Hide()
     ST.ApplyRoundedBorder(p, rad, 0.30, 0.34, 0.40, 0.26, 5)
 
-    local topExt = MeasureTabTopExtension and MeasureTabTopExtension(bg1, chatNS, ecfg) or 24
-    local rightExt = MeasureTabRightExtension and MeasureTabRightExtension(bg1, chatNS) or 0
     p:ClearAllPoints()
     p._vSep:Hide()
     p._hSep:Hide()
@@ -1760,7 +1856,7 @@ local function ApplyVisuals()
     end
 
     LayoutButtons()
-    SyncUnifiedChatPanel()
+    SyncUnifiedChatPanel(true)
     SyncAlpha(true)
 end
 
@@ -1866,10 +1962,9 @@ local function OnBgResize()
 end
 
 local function OnBgShow()
+    -- 切回「综合」标签时 bg1 重新显示，不盲目重设锚点；仅做当帧差分同步（几何未变则零写入）
     if DockFollowsChat() then
-        C_Timer.After(0, function()
-            if DockFollowsChat() then ApplyAnchor() end
-        end)
+        SyncUnifiedChatPanel(false)
     end
 end
 
@@ -1880,20 +1975,24 @@ local function HookBgResize(bg1)
     bg1:HookScript("OnShow", OnBgShow)
     bg1:HookScript("OnHide", function()
         -- 切换到「战斗记录 / 私聊 / 队伍 / 公会 / 世界」时 ChatFrame1 的 bg1 会暂时隐藏，
-        -- 绝不能因此藏掉统一底板！仅当所有停靠聊天框均隐藏时才收起底板。
+        -- 绝不能因此藏掉统一底板；合并去重到下一帧仅当所有停靠聊天框均隐藏时才收起。
+        if bgHideQueued then return end
+        bgHideQueued = true
         C_Timer.After(0, function()
+            bgHideQueued = false
             if not mod._active then return end
             if unifiedPanel and not IsAnyDockedChatShown() then
                 unifiedPanel:Hide()
             else
-                SyncUnifiedChatPanel()
+                SyncUnifiedChatPanel(false)
             end
         end)
     end)
 end
 
-ApplyAnchor = function()
+ApplyAnchor = function(force)
     if not barFrame then return end
+    HookEUIChatFadeSync()
     local db = mod:GetDB()
     local mode = db.dockMode or "left"
     local _, cf1, bg1, chatNS, _, ecfg, onePx = GetEUIChatContext()
@@ -1910,6 +2009,23 @@ ApplyAnchor = function()
     end
     activeDockMode = effectiveMode
 
+    if (not force) and bg1 and effectiveMode ~= "free" then
+        local topExtChk = MeasureTabTopExtension(bg1, chatNS, ecfg)
+        local rightExtChk = MeasureTabRightExtension and MeasureTabRightExtension(bg1, chatNS) or 0
+        local bgWChk = math_floor((bg1.GetWidth and F.PlainNumber(bg1:GetWidth(), 0) or 0) + 0.5)
+        local bgHChk = math_floor((bg1.GetHeight and F.PlainNumber(bg1:GetHeight(), 0) or 0) + 0.5)
+        local aSig = effectiveMode .. "|" .. tostring(topExtChk) .. "|" .. tostring(rightExtChk)
+            .. "|" .. tostring(gapPx) .. "|" .. tostring(barH) .. "|" .. tostring(bgWChk) .. "|" .. tostring(bgHChk)
+        if lastAnchorSig == aSig then
+            SyncUnifiedChatPanel(false)
+            return
+        end
+        lastAnchorSig = aSig
+    else
+        lastAnchorSig = nil
+    end
+
+    chatBarDebug.anchorCount = chatBarDebug.anchorCount + 1
     barFrame:ClearAllPoints()
 
     if effectiveMode == "left" then
@@ -2208,6 +2324,7 @@ local function HookChatFrameInteractions()
         end)
     end
 
+    HookEUIChatFadeSync()
     if echat and not euiHooksInstalled then
         euiHooksInstalled = true
         local function ResyncFromEUI()
@@ -2277,7 +2394,8 @@ local function CreateBar()
 
     barFrame:SetScript("OnEnter", function()
         isHovered = true
-        SyncAlpha(false)
+        WakeEUIChatFade()
+        if not IsEUIFadeLockstep() then SyncAlpha(false) end
         UpdateScrollIndicator()
     end)
     barFrame:SetScript("OnLeave", ScheduleHoverLeaveCheck)
@@ -2319,7 +2437,8 @@ local function CreateBar()
         ubtn:SetScript("OnEnter", function(self)
             isHovered = true
             self._isHovered = true
-            SyncAlpha(false)
+            WakeEUIChatFade()
+            if not IsEUIFadeLockstep() then SyncAlpha(false) end
             UpdateUtilButtonState(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT", 6, 0)
             GameTooltip:AddLine(udef.tip, 1, 1, 1, true)
@@ -2412,7 +2531,8 @@ local function CreateBar()
         btn:SetScript("OnEnter", function(self)
             isHovered = true
             self._isHovered = true
-            SyncAlpha(false)
+            WakeEUIChatFade()
+            if not IsEUIFadeLockstep() then SyncAlpha(false) end
             UpdateButtonState(self)
             local vert = IsVerticalMode()
             if vert then
@@ -2584,6 +2704,13 @@ function mod:OnEnable()
             db.panelAlpha = 0.24
         end
     end
+    -- 停靠模式下旧存档可能残留 idleAlpha=0.25，导致聊天框亮起时左侧快捷条仍暗一层且淡隐不同步
+    if not db.v8SyncChatFadeMigrated then
+        db.v8SyncChatFadeMigrated = true
+        if (db.dockMode or "left") ~= "free" and db.hoverReveal ~= true then
+            db.idleAlpha = 1.0
+        end
+    end
     -- 禁止 hooksecurefunc("FCFDock_SelectWindow")（实测会污染 dock.selected 与 chatFrame.isLocked）；
     -- 改挂 EUI 自身非暴雪标签刷新函数 + UPDATE_CHAT_WINDOWS 事件，零污染同步底板尺寸与显隐
     local function HookEUIChatTabSyncOnce()
@@ -2591,18 +2718,23 @@ function mod:OnEnable()
         local _, _, _, _, echat = GetEUIChatContext()
         if not echat then return end
         euiTabSyncHooked = true
-        local function queuePanelSync()
-            if mod._active then
-                C_Timer.After(0, function()
-                    if mod._active then SyncUnifiedChatPanel() end
-                end)
+        -- 当帧直接差分同步（EUI 的 TabsRefreshNow / SyncChatFrameState 均在 EUI 自身延迟上下文执行，
+        -- 零污染且消除下一帧 C_Timer.After(0) 重排抖动；未切换标签且状态未变时直接跳过）
+        local function syncPanelNow()
+            if not mod._active then return end
+            local sel = GetSelectedChatWindow()
+            if sel ~= lastObservedSel then
+                lastObservedSel = sel
+                SyncUnifiedChatPanel(false)
+            elseif unifiedPanel and unifiedPanel:IsShown() ~= (IsAnyDockedChatShown() or (barFrame and barFrame:IsShown()) or false) then
+                SyncUnifiedChatPanel(false)
             end
         end
         if type(echat.TabsRefreshNow) == "function" then
-            _G.hooksecurefunc(echat, "TabsRefreshNow", queuePanelSync)
+            _G.hooksecurefunc(echat, "TabsRefreshNow", syncPanelNow)
         end
         if type(echat.SyncChatFrameState) == "function" then
-            _G.hooksecurefunc(echat, "SyncChatFrameState", queuePanelSync)
+            _G.hooksecurefunc(echat, "SyncChatFrameState", syncPanelNow)
         end
         if type(echat.EngineFontFamily) == "function" then
             _G.hooksecurefunc(echat, "EngineFontFamily", function(id)
@@ -2617,16 +2749,16 @@ function mod:OnEnable()
     SyncChatLineSpacing(true)
     self:RegisterEvent("UPDATE_CHAT_WINDOWS", function()
         if mod._active then
-            C_Timer.After(0, function()
-                if mod._active then
-                    ApplyAnchor()
-                    SyncUnifiedChatPanel()
-                end
-            end)
+            ApplyAnchor(false)
+            SyncUnifiedChatPanel(false)
         end
     end)
     leftRoomAdjusted = false
     CreateBar()
+    HookEUIChatFadeSync()
+    C_Timer.After(1.0, function()
+        if mod._active then HookEUIChatFadeSync() end
+    end)
     SyncEUIChatSidebar()
     ApplyAnchor()
     ApplyVisuals()
@@ -2687,9 +2819,12 @@ end
 function mod:OnDisable()
     -- 基类已 UnregisterAllEvents，这里只需同步本地标志
     keywordWatching = false
+    lastUnifiedSig = nil
+    lastAnchorSig = nil
+    lastObservedSel = nil
     SyncChatLineSpacing(true)
     SyncEUIChatSidebar()
-    SyncUnifiedChatPanel()
+    SyncUnifiedChatPanel(true)
     UnskinChatOverflow()
     if barFrame then barFrame:Hide() end
 end
@@ -2706,7 +2841,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "与聊天框融合方式",
-        tooltip = "「左侧融合竖栏」将频道切换与复制/设置/回底融为一条紧贴聊框左侧的竖栏并自动收起原右侧边栏；也可切回上方/底栏横条或自由拖动。",
+        tooltip = "左侧融合竖栏自动收起重复边栏，也可切换上下横条或自由拖动。",
         values = {
             left   = "左侧融合竖栏（推荐）",
             top    = "标签栏上方横栏",
@@ -2728,8 +2863,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "聊天栏、标签与正文统一圆角一体化底板",
-        tooltip = "将左侧融合竖栏、顶部聊天标签栏与聊天正文融为同一块暗黑圆角玻璃底板，消除色差与生硬直角边框。",
+        text = "一体化圆角底板",
+        tooltip = "将聊天条、顶部标签栏与正文融为统一圆角底板，消除色差。",
         getValue = function() return db.unifiedRoundedPanel ~= false end,
         setValue = function(v)
             db.unifiedRoundedPanel = v == true
@@ -2739,142 +2874,153 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         end,
     }, {
         type = "slider",
-        text = "统一聊天底板透明度",
-        tooltip = "控制左侧栏、顶部标签区与聊天消息背景这一整块玻璃底板的不透明度（推荐 0.20~0.28：比透明略深，看得清字又不挡画面）。",
+        text = "底板透明度",
+        tooltip = "调节整块聊天底板的不透明度，推荐 0.20 至 0.28。",
         min = 0.12, max = 0.85, step = 0.04,
         disabled = function() return db.unifiedRoundedPanel == false end,
         getValue = function() return F.PlainNumber(db.panelAlpha, 0.24) or 0.24 end,
-        setValue = function(v) db.panelAlpha = v; SyncUnifiedChatPanel() end,
+        setValue = function(v) db.panelAlpha = v; SyncUnifiedChatPanel(true) end,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "高亮当前激活发言频道",
-        tooltip = "竖栏模式以左侧 2px 职业/主题色指示线标出当前发言频道；横栏模式以底线标出。",
+        text = "高亮当前频道",
+        tooltip = "竖栏以左侧色线、横栏以底线标出当前激活的发言频道。",
         getValue = function() return db.showActiveChannel ~= false end,
         setValue = function(v) db.showActiveChannel = v == true; RefreshActiveChannel() end,
     }, {
         type = "toggle",
+        text = "频道专属淡色",
+        tooltip = "开启后文字按频道着色，关闭后使用统一浅灰文字。",
+        getValue = function() return db.tintChannelText ~= false end,
+        setValue = function(v) db.tintChannelText = v == true; ApplyVisuals() end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "密语提示音",
+        tooltip = "收到新密语时播放简短提示音。",
+        getValue = function() return db.whisperSound ~= false end,
+        setValue = function(v) db.whisperSound = v == true end,
+    }, {
+        type = "toggle",
         text = "战斗中自动淡出",
-        tooltip = "默认关闭，避免进/脱战频繁淡入淡出带来动画开销；需要时可手动开启。",
+        tooltip = "默认关闭以减少频繁淡入淡出，需要时可手动开启。",
         getValue = function() return db.combatFade == true end,
         setValue = function(v) db.combatFade = v == true; SyncAlpha(false) end,
     })
     y = y - h
 
-    _, h = W:DualRow(parent, y, {
-        type = "dropdown",
-        text = "自定义排序：选择频道按钮",
-        tooltip = "选好频道后点右侧按钮调整位置；也可直接在聊天条上按住 Alt + 左键上移 / Alt + 右键下移。",
-        values = {
-            WORLD   = "世（世界频道）",
-            GENERAL = "综（综合/交易）",
-            TRADE   = "交（仅横栏）",
-            GUILD   = "会（公会/官员）",
-            RAID    = "团（团队/副本）",
-            PARTY   = "队（小队）",
-            WHISPER = "密（密语）",
-            YELL    = "喊（大喊）",
-            SAY     = "说（当前）",
-            ROLL    = "骰（掷骰子）",
-        },
-        order = { "WORLD", "GENERAL", "TRADE", "GUILD", "RAID", "PARTY", "WHISPER", "YELL", "SAY", "ROLL" },
-        getValue = function() return selectedOrderKey or "WORLD" end,
-        setValue = function(v) selectedOrderKey = v end,
-    }, {
-        type = "button",
-        text = "上移 / 左移该频道",
-        noCapture = true,
-        tooltip = "将当前选中的频道按钮向上（竖栏）或向左（横栏）移动一格。",
-        onClick = function() MoveChannelOrder(selectedOrderKey or "WORLD", -1) end,
-    })
-    y = y - h
+    local function buildAdv(w, p, curY)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "常规整体透明度",
+            tooltip = "保持 1.00 时底板透明度与聊天框协调一致。",
+            min = 0.25, max = 1.0, step = 0.05,
+            getValue = function() return db.idleAlpha or 1.0 end,
+            setValue = function(v) db.idleAlpha = v; SyncAlpha(true) end,
+        }, {
+            type = "toggle",
+            text = "美化溢出菜单",
+            tooltip = "将标签过多时的窗口列表改为暗色圆角卡片并向上弹出。",
+            getValue = function() return db.skinOverflow ~= false end,
+            setValue = function(v) db.skinOverflow = v == true; SkinChatOverflow() end,
+        })
+        curY = curY - rh
 
-    _, h = W:DualRow(parent, y, {
-        type = "button",
-        text = "下移 / 右移该频道",
-        noCapture = true,
-        tooltip = "将当前选中的频道按钮向下（竖栏）或向右（横栏）移动一格。",
-        onClick = function() MoveChannelOrder(selectedOrderKey or "WORLD", 1) end,
-    }, {
-        type = "button",
-        text = "恢复默认频道顺序",
-        noCapture = true,
-        tooltip = "重置为默认排序：世 · 综 · 会 · 团 · 队 · 密 · 喊 · 说 · 骰。",
-        onClick = ResetChannelOrder,
-    })
-    y = y - h
+        _, rh = w:DualRow(p, curY, {
+            type = "dropdown",
+            text = "选择排序频道",
+            tooltip = "选好频道后点按钮移动，也可在聊天条上按住 Alt 点击微调。",
+            values = {
+                WORLD   = "世（世界频道）",
+                GENERAL = "综（综合/交易）",
+                TRADE   = "交（仅横栏）",
+                GUILD   = "会（公会/官员）",
+                RAID    = "团（团队/副本）",
+                PARTY   = "队（小队）",
+                WHISPER = "密（密语）",
+                YELL    = "喊（大喊）",
+                SAY     = "说（当前）",
+                ROLL    = "骰（掷骰子）",
+            },
+            order = { "WORLD", "GENERAL", "TRADE", "GUILD", "RAID", "PARTY", "WHISPER", "YELL", "SAY", "ROLL" },
+            getValue = function() return selectedOrderKey or "WORLD" end,
+            setValue = function(v) selectedOrderKey = v end,
+        }, {
+            type = "button",
+            text = "上移或左移",
+            noCapture = true,
+            tooltip = "将当前选中频道按钮向上或向左移动一格。",
+            onClick = function() MoveChannelOrder(selectedOrderKey or "WORLD", -1) end,
+        })
+        curY = curY - rh
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "文字带频道专属淡色",
-        tooltip = "开启后按频道略微着色（更易辨认）；关闭后使用统一浅灰文字。",
-        getValue = function() return db.tintChannelText ~= false end,
-        setValue = function(v) db.tintChannelText = v == true; ApplyVisuals() end,
-    }, {
-        type = "slider",
-        text = "常规整体透明度",
-        tooltip = "保持 1.00 时底板透明度与聊天框协调一致。",
-        min = 0.25, max = 1.0, step = 0.05,
-        getValue = function() return db.idleAlpha or 1.0 end,
-        setValue = function(v) db.idleAlpha = v; SyncAlpha(true) end,
-    })
-    y = y - h
+        _, rh = w:DualRow(p, curY, {
+            type = "button",
+            text = "下移或右移",
+            noCapture = true,
+            tooltip = "将当前选中频道按钮向下或向右移动一格。",
+            onClick = function() MoveChannelOrder(selectedOrderKey or "WORLD", 1) end,
+        }, {
+            type = "button",
+            text = "恢复默认排序",
+            noCapture = true,
+            tooltip = "恢复默认频道排序：世、综、会、团、队、密、喊、说、骰。",
+            onClick = ResetChannelOrder,
+        })
+        curY = curY - rh
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "美化「多聊天窗口」溢出菜单并上移",
-        tooltip = "将聊天标签过多时的「N个聊天窗口」下拉改为黑曜石卡片并向上弹出。",
-        getValue = function() return db.skinOverflow ~= false end,
-        setValue = function(v) db.skinOverflow = v == true; SkinChatOverflow() end,
-    }, {
-        type = "toggle",
-        text = "收到密语播放提示音",
-        getValue = function() return db.whisperSound ~= false end,
-        setValue = function(v) db.whisperSound = v == true end,
-    })
-    y = y - h
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "隐藏登录刷屏",
+            tooltip = "登录 12 秒内隐藏第三方欢迎提示，保留报错（/kk loginlog）。",
+            getValue = function() return db.loginQuiet ~= false end,
+            setValue = function(v)
+                db.loginQuiet = v == true
+                if db.loginQuiet and F.SweepLoginChatBanners then
+                    F.SweepLoginChatBanners()
+                end
+            end,
+        }, {
+            type = "button",
+            text = "查看隐藏提示",
+            buttonText = "查看",
+            noCapture = true,
+            tooltip = "在聊天框输出本次登录被隐藏的第三方提示（/kk loginlog）。",
+            onClick = function()
+                if F.DumpSuppressedLoginMsgs then F.DumpSuppressedLoginMsgs() end
+            end,
+        })
+        curY = curY - rh
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "精简登录聊天刷屏（只留 kkowoUI 与报错）",
-        tooltip = "登录后的 12 秒内自动隐藏其它第三方插件的版本/欢迎刷屏提示，仅保留 kkowoUI、BugGrabber/BugSack 报错与正常游戏聊天（输入 /kk loginlog 可回看被隐藏的条目）。",
-        getValue = function() return db.loginQuiet ~= false end,
-        setValue = function(v)
-            db.loginQuiet = v == true
-            if db.loginQuiet and F.SweepLoginChatBanners then
-                F.SweepLoginChatBanners()
-            end
-        end,
-    }, {
-        type = "button",
-        text = "查看本次登录隐藏的提示",
-        buttonText = "查看记录",
-        noCapture = true,
-        tooltip = "在聊天框打印本次登录被精简隐藏的第三方插件提示，方便排查（等同于命令 /kk loginlog）。",
-        onClick = function()
-            if F.DumpSuppressedLoginMsgs then F.DumpSuppressedLoginMsgs() end
-        end,
-    })
-    y = y - h
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "关键词提醒",
+            tooltip = "在聊天框输入 /kk kw 关键词1,关键词2 设置监控词（5 秒冷却）。",
+            getValue = function() return db.keywordAlert == true end,
+            setValue = function(v) db.keywordAlert = v == true; mod:RefreshKeywordWatch() end,
+        }, {
+            type = "input",
+            text = "世界频道名称",
+            tooltip = "右键「世」一键加入的频道名，留空默认大脚世界频道（/kk world）。",
+            inputWidth = 140,
+            inputStyle = "popup",
+            placeholder = DEFAULT_WORLD_CHANNEL,
+            getValue = function() return GetWorldChannelName() end,
+            setValue = function(v) mod:SetWorldChannelName(v) end,
+        })
+        curY = curY - rh
+        return curY
+    end
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "公屏关键词声音提醒",
-        tooltip = "在聊天框输入 /kk kw 关键词1,关键词2 设置监控词（5 秒冷却）。",
-        getValue = function() return db.keywordAlert == true end,
-        setValue = function(v) db.keywordAlert = v == true; mod:RefreshKeywordWatch() end,
-    }, {
-        type = "input",
-        text = "世界频道名称",
-        tooltip = "「世」按钮右键一键加入/离开的自建频道。无限服通用「大脚世界频道」（不装大脚也能加入）。\n留空恢复默认；不能含空格或为纯数字。也可输入 /kk world 频道名。",
-        inputWidth = 140,
-        inputStyle = "popup",
-        placeholder = DEFAULT_WORLD_CHANNEL,
-        getValue = function() return GetWorldChannelName() end,
-        setValue = function(v) mod:SetWorldChannelName(v) end,
-    })
-    y = y - h
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("chatBar", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

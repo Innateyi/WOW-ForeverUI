@@ -20,13 +20,16 @@ local GetTime = GetTime
 local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("lootToast", {
-    title = "现代拾取与收益微播报",
-    desc = "屏幕侧边丝滑堆叠展示拾取物品、金币、经验与声望收益（同类自动合并防刷屏），完美配合无闪烁极速静默拾取。",
+    title = "拾取微播报",
+    desc = "在屏幕侧边堆叠播报拾取物品、金币、经验与声望，同类自动合并。",
     group = "utility",
     order = 18,
     defaults = {
         enabled = true,
-        euiConflictMode = "auto_yield", -- "auto_yield"（EUI 拾取播报开启时自动让位，零重复）| "takeover"（停用 EUI 拾取播报，由本模块接管）| "both"
+        euiConflictMode = "takeover", -- "takeover"（默认：停用 EUI 拾取播报，由本模块 PrettyTooltip 渐变尾淡卡片接管）| "auto_yield"（让位给 EUI）| "both"
+        v2TakeoverMigrated = false,
+        v3PrettyFadeMigrated = false,
+        v4GrowDownMigrated = false,
         showItems = true,
         showMoney = true,
         showXP = true,
@@ -34,8 +37,8 @@ local mod = F.RegisterModule("lootToast", {
         minQuality = 1,       -- 0=含灰装, 1=白装起（默认，任务物品无视此限制）, 2=绿装起
         maxVisible = 5,
         holdSeconds = 3.2,
-        width = 236,
-        growUp = true,
+        width = 204,
+        growUp = false,
     },
 })
 
@@ -46,6 +49,10 @@ local ICON_REP  = 236681
 local container = nil
 local activeToasts = {}
 local spareToasts = {}
+local pendingQueue = {}
+local queueTimerActive = false
+local queueGen = 0
+local lastPushTime = 0
 local selfLootPatterns = nil
 
 -- 将暴雪本地化格式化模板（如 "你获得了物品：%s。"）转成安全的 Lua 匹配正则
@@ -127,11 +134,21 @@ local function ParseRepGain(msg)
     return nil, nil
 end
 
+local TOAST_H = 28
+local SLIDE_OFFSET = 24
+local FADE_IN_DUR = 0.35
+local FADE_OUT_DUR = 0.52
+local STAGGER_STEP = 0.11
+
 local function EnsureContainer()
     if container then return end
+    local db = mod:GetDB()
+    local w = db.width or 204
+    local maxVis = db.maxVisible or 5
     container = CreateFrame("Frame", "kkowoUI_LootToast", _G.UIParent)
-    container:SetSize(236, 150)
+    container:SetSize(w, maxVis * (TOAST_H + 4))
     container:SetFrameStrata("MEDIUM")
+    container:SetFrameLevel(10)
 
     F.Mover.Register({
         key = "LootToast",
@@ -149,99 +166,164 @@ end
 local LayoutToasts
 local ReleaseToast
 
+local function DisableSnap(tex)
+    if not tex then return end
+    local PP = _G.EllesmereUI and _G.EllesmereUI.PP
+    if PP and PP.DisablePixelSnap then
+        pcall(PP.DisablePixelSnap, tex)
+    else
+        if tex.SetSnapToPixelGrid then pcall(tex.SetSnapToPixelGrid, tex, false) end
+        if tex.SetTexelSnappingBias then pcall(tex.SetTexelSnappingBias, tex, 0) end
+    end
+end
+
+local function ApplyHorizGrad(tex, r1, g1, b1, a1, r2, g2, b2, a2)
+    local ST = F.StyleTokens
+    if ST and ST.ApplyGradient then
+        ST.ApplyGradient(tex, "HORIZONTAL", r1, g1, b1, a1, r2, g2, b2, a2)
+    else
+        tex:SetColorTexture(r1, g1, b1, (a1 + a2) * 0.5)
+    end
+end
+
+local ArmToastFade
+
 local function AcquireToast()
     local t = table_remove(spareToasts)
     if t then return t end
 
     t = CreateFrame("Frame", nil, container)
-    t:SetSize(236, 26)
+    t:SetSize(204, TOAST_H)
+    t:SetClampedToScreen(true)
     if t.SetMouseMotionEnabled and t.SetMouseClickEnabled then
         t:SetMouseMotionEnabled(true)
         t:SetMouseClickEnabled(false)
     else
         t:EnableMouse(true)
     end
-    F.Theme.StylePanel(t, 0.80, 0.72)
 
     local ST = F.StyleTokens
-    if ST then
-        if t._fuiBg then ST.MaskTexture(t, t._fuiBg, 6) end
-        if t._fuiBorders then
-            for _, ln in ipairs(t._fuiBorders) do ln:Hide() end
-        end
-        ST.ApplyRoundedBorder(t, 6, 0.22, 0.25, 0.32, 0.78, 5)
-    end
+    -- PrettyTooltip 同款深邃黑曜石底 + 向右尾部渐淡至透明（紧凑比例、关闭像素吸附避免滑动闪烁）
+    local bg = t:CreateTexture(nil, "BACKGROUND", nil, -7)
+    bg:SetAllPoints(t)
+    bg:SetColorTexture(1, 1, 1, 1)
+    DisableSnap(bg)
+    t._bg = bg
 
-    local leftBar = t:CreateTexture(nil, "OVERLAY")
-    leftBar:SetWidth(3)
-    leftBar:SetPoint("TOPLEFT", t, "TOPLEFT", 1, -2)
-    leftBar:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 1, 2)
-    if ST then ST.MaskTexture(t, leftBar, 6) end
+    local headGlow = t:CreateTexture(nil, "BACKGROUND", nil, -5)
+    headGlow:SetPoint("TOPLEFT", t, "TOPLEFT", 2, -1)
+    headGlow:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 2, 1)
+    headGlow:SetWidth(128)
+    headGlow:SetColorTexture(1, 1, 1, 1)
+    DisableSnap(headGlow)
+    t._headGlow = headGlow
+
+    local leftBar = t:CreateTexture(nil, "OVERLAY", nil, 3)
+    leftBar:SetWidth(2)
+    leftBar:SetPoint("TOPLEFT", t, "TOPLEFT", 0, -1)
+    leftBar:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 0, 1)
+    leftBar:SetColorTexture(1, 1, 1, 1)
+    DisableSnap(leftBar)
     t._leftBar = leftBar
 
-    local glow = t:CreateTexture(nil, "BACKGROUND", nil, -4)
-    glow:SetWidth(64)
-    glow:SetPoint("TOPLEFT", t, "TOPLEFT", 1, -1)
-    glow:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 1, 1)
-    glow:SetTexture(F.Theme.FLAT_TEX)
-    if ST then ST.MaskTexture(t, glow, 6) end
-    t._glow = glow
+    local topLine = t:CreateTexture(nil, "ARTWORK", nil, 4)
+    topLine:SetPoint("TOPLEFT", t, "TOPLEFT", 0, 0)
+    topLine:SetPoint("TOPRIGHT", t, "TOPRIGHT", 0, 0)
+    topLine:SetColorTexture(1, 1, 1, 1)
+    if ST and ST.Hairline then ST.Hairline(topLine) else topLine:SetHeight(1); DisableSnap(topLine) end
+    t._topLine = topLine
 
-    local iconWrap = CreateFrame("Frame", nil, t)
-    iconWrap:SetSize(20, 20)
-    iconWrap:SetPoint("LEFT", t, "LEFT", 7, 0)
-    iconWrap:EnableMouse(false)
-    local icon = iconWrap:CreateTexture(nil, "ARTWORK")
-    icon:SetAllPoints(iconWrap)
+    local botLine = t:CreateTexture(nil, "ARTWORK", nil, 3)
+    botLine:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 0, 0)
+    botLine:SetPoint("BOTTOMRIGHT", t, "BOTTOMRIGHT", 0, 0)
+    botLine:SetColorTexture(1, 1, 1, 1)
+    if ST and ST.Hairline then ST.Hairline(botLine) else botLine:SetHeight(1); DisableSnap(botLine) end
+    t._botLine = botLine
+
+    local iconBg = t:CreateTexture(nil, "ARTWORK", nil, 0)
+    iconBg:SetSize(20, 20)
+    iconBg:SetPoint("LEFT", t, "LEFT", 7, 0)
+    iconBg:SetColorTexture(0.14, 0.16, 0.22, 0.84)
+    DisableSnap(iconBg)
+    local icon = t:CreateTexture(nil, "ARTWORK", nil, 1)
+    icon:SetSize(18, 18)
+    icon:SetPoint("CENTER", iconBg, "CENTER", 0, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    if ST then
-        ST.SetHostIconMode(iconWrap, true)
-        ST.ApplyRoundedBorder(iconWrap, 4, 0.08, 0.10, 0.14, 0.85, 3)
-        ST.MaskIcon(iconWrap, icon, 4)
-    end
-    t._iconWrap = iconWrap
+    DisableSnap(icon)
+    t._iconBg = iconBg
     t._icon = icon
 
     local rightFS = t:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(rightFS, 11, "", 0.92, 0.94, 0.96, 1)
-    rightFS:SetPoint("RIGHT", t, "RIGHT", -8, 0)
+    rightFS:SetDrawLayer("OVERLAY", 5)
+    F.Theme.ApplyFont(rightFS, 11, "OUTLINE", 0.94, 0.96, 0.98, 1)
+    rightFS:SetHeight(TOAST_H)
+    rightFS:SetPoint("RIGHT", t, "RIGHT", -10, 0)
     rightFS:SetJustifyH("RIGHT")
     rightFS:SetWordWrap(false)
     t._right = rightFS
 
     local nameFS = t:CreateFontString(nil, "OVERLAY")
-    F.Theme.ApplyFont(nameFS, 11, "", 0.95, 0.95, 0.97, 1)
-    nameFS:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+    nameFS:SetDrawLayer("OVERLAY", 5)
+    F.Theme.ApplyFont(nameFS, 12, "OUTLINE", 0.96, 0.97, 0.99, 1)
+    nameFS:SetHeight(TOAST_H)
+    nameFS:SetPoint("LEFT", iconBg, "RIGHT", 6, 0)
     nameFS:SetPoint("RIGHT", rightFS, "LEFT", -6, 0)
     nameFS:SetJustifyH("LEFT")
     nameFS:SetWordWrap(false)
     t._name = nameFS
 
-    -- 原生丝滑淡入与淡出动画（零 Lua OnUpdate、零回弹跳动）
+    -- 与 EUI LootFeed 同款零闪烁入场：播放前 SetAlpha(0) 防止 Order 1 首帧全不透明闪现，
+    -- Order 2 位移与淡入等长并启用 SetToFinalAlpha(true)，结束后自动接管停留+淡出。
     local animIn = t:CreateAnimationGroup()
+    animIn:SetToFinalAlpha(true)
+    local aJump = animIn:CreateAnimation("Translation")
+    aJump:SetOrder(1)
+    aJump:SetOffset(SLIDE_OFFSET, 0)
+    aJump:SetDuration(0)
+    local aSlide = animIn:CreateAnimation("Translation")
+    aSlide:SetOrder(2)
+    aSlide:SetOffset(-SLIDE_OFFSET, 0)
+    aSlide:SetDuration(FADE_IN_DUR)
+    aSlide:SetSmoothing("OUT")
     local aFadeIn = animIn:CreateAnimation("Alpha")
+    aFadeIn:SetOrder(2)
     aFadeIn:SetFromAlpha(0)
     aFadeIn:SetToAlpha(1)
-    aFadeIn:SetDuration(0.18)
+    aFadeIn:SetDuration(FADE_IN_DUR)
     aFadeIn:SetSmoothing("OUT")
-    animIn:SetScript("OnFinished", function() t:SetAlpha(1) end)
+    animIn:SetScript("OnFinished", function()
+        t:SetAlpha(1)
+        ArmToastFade(t)
+    end)
     t._animIn = animIn
 
     local animOut = t:CreateAnimationGroup()
+    animOut:SetToFinalAlpha(true)
+    local aOutSlide = animOut:CreateAnimation("Translation")
+    aOutSlide:SetOrder(1)
+    aOutSlide:SetOffset(14, 0)
+    aOutSlide:SetDuration(FADE_OUT_DUR)
+    aOutSlide:SetSmoothing("IN_OUT")
     local aFadeOut = animOut:CreateAnimation("Alpha")
+    aFadeOut:SetOrder(1)
     aFadeOut:SetFromAlpha(1)
     aFadeOut:SetToAlpha(0)
-    aFadeOut:SetDuration(0.40)
+    aFadeOut:SetDuration(FADE_OUT_DUR)
+    aFadeOut:SetSmoothing("IN_OUT")
     animOut:SetScript("OnFinished", function()
         ReleaseToast(t)
     end)
     t._animOut = animOut
+    t._outSlide = aOutSlide
+    t._outFade = aFadeOut
 
     t:SetScript("OnEnter", function(self)
         self._hovered = true
-        self._fadingOut = false
-        self._animOut:Stop()
-        self:SetAlpha(1)
+        self._fadeStartAt = nil
+        if not self._animIn:IsPlaying() then
+            self._animOut:Stop()
+            self:SetAlpha(1)
+        end
         if self._link and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
             GameTooltip:SetOwner(self, "ANCHOR_LEFT", -6, 0)
             pcall(GameTooltip.SetHyperlink, GameTooltip, self._link)
@@ -253,16 +335,10 @@ local function AcquireToast()
         if GameTooltip and GameTooltip.IsOwned and GameTooltip:IsOwned(self) then
             GameTooltip:Hide()
         end
-        self._gen = (self._gen or 0) + 1
-        local myGen = self._gen
-        C_Timer.After(1.0, function()
-            if self._gen == myGen and not self._hovered and self:IsShown() then
-                self._fadingOut = true
-                self._animOut:Play()
-            end
-        end)
+        ArmToastFade(self, 1.0)
     end)
 
+    t:Hide()
     return t
 end
 
@@ -274,10 +350,13 @@ ReleaseToast = function(t, skipLayout)
     t._key = nil
     t._link = nil
     t._isPreview = nil
+    t._lastColor = nil
+    t._slotPt = nil
+    t._slotY = nil
+    t._slotW = nil
     t._amount = 0
-    t._fadingOut = false
+    t._fadeStartAt = nil
     t._hovered = false
-    t._gen = (t._gen or 0) + 1
     local removed = false
     for i = #activeToasts, 1, -1 do
         if activeToasts[i] == t then
@@ -292,6 +371,12 @@ ReleaseToast = function(t, skipLayout)
 end
 
 local function ClearAllToasts()
+    queueGen = queueGen + 1
+    queueTimerActive = false
+    for i = #pendingQueue, 1, -1 do
+        pendingQueue[i] = nil
+    end
+    lastPushTime = 0
     if #activeToasts == 0 then return end
     for i = #activeToasts, 1, -1 do
         ReleaseToast(activeToasts[i], true)
@@ -302,72 +387,95 @@ end
 LayoutToasts = function()
     if not container then return end
     local db = mod:GetDB()
-    local w = db.width or 236
-    local h = 26
+    local w = db.width or 204
+    local h = TOAST_H
     local gap = 4
-    local growUp = db.growUp ~= false
+    local growUp = db.growUp == true
     local maxVis = db.maxVisible or 5
     container:SetSize(w, maxVis * (h + gap))
 
     local hasPreview = false
+    for _, t in ipairs(activeToasts) do
+        if t._isPreview then hasPreview = true; break end
+    end
+    local strata = hasPreview and "FULLSCREEN_DIALOG" or "MEDIUM"
+    local baseLvl = hasPreview and 230 or 10
+    container:SetFrameStrata(strata)
+    container:SetFrameLevel(baseLvl)
+
+    local now = GetTime()
+    local pt = growUp and "BOTTOMLEFT" or "TOPLEFT"
     for i, t in ipairs(activeToasts) do
-        if t._isPreview then hasPreview = true end
-        t:SetSize(w, h)
-        t:ClearAllPoints()
         local yOff = (i - 1) * (h + gap)
-        if growUp then
-            t:SetPoint("BOTTOMLEFT", container, "BOTTOMLEFT", 0, yOff)
-        else
-            t:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -yOff)
-        end
-    end
-    if hasPreview then
-        container:SetFrameStrata("FULLSCREEN_DIALOG")
-        container:SetFrameLevel(230)
-    else
-        container:SetFrameStrata("MEDIUM")
-    end
-end
-
-local toastGradC1 = _G.CreateColor and _G.CreateColor(0, 0, 0, 1) or nil
-local toastGradC2 = _G.CreateColor and _G.CreateColor(0, 0, 0, 0) or nil
-
-local function PaintToastVisual(t, r, g, b)
-    t._leftBar:SetColorTexture(r, g, b, 0.95)
-    if t._glow.SetGradient and toastGradC1 and toastGradC2 then
-        toastGradC1:SetRGBA(r, g, b, 0.22)
-        toastGradC2:SetRGBA(r, g, b, 0.00)
-        t._glow:SetGradient("HORIZONTAL", toastGradC1, toastGradC2)
-    else
-        t._glow:SetVertexColor(r, g, b, 0.14)
-    end
-    if F.StyleTokens then
-        F.StyleTokens.ApplyRoundedBorder(t, 6, r * 0.45 + 0.14, g * 0.45 + 0.14, b * 0.45 + 0.16, 0.76, 5)
-        if t._iconWrap then
-            F.StyleTokens.ApplyRoundedBorder(t._iconWrap, 4, r * 0.75 + 0.10, g * 0.75 + 0.10, b * 0.75 + 0.10, 0.86, 3)
-        end
-    elseif t._fuiBorders then
-        for _, ln in ipairs(t._fuiBorders) do
-            ln:SetColorTexture(r * 0.40 + 0.15, g * 0.40 + 0.15, b * 0.40 + 0.17, 0.72)
+        local newY = growUp and yOff or -yOff
+        -- 已经在右侧淡出退场中的卡片保持原位平稳消失，不因前方卡片退场而突兀跳格
+        local isFading = t._slotPt ~= nil and t._fadeStartAt ~= nil and now >= t._fadeStartAt
+        if not isFading then
+            local geomChanged = (t._slotPt ~= pt) or (t._slotY ~= newY) or (t._slotW ~= w)
+            t._slotPt = pt
+            t._slotY = newY
+            t._slotW = w
+            if geomChanged then
+                t:SetSize(w, h)
+                if t._headGlow then t._headGlow:SetWidth(math_max(96, math_floor(w * 0.64))) end
+                t:ClearAllPoints()
+                t:SetPoint(pt, container, pt, 0, newY)
+            end
         end
     end
 end
 
-local function ArmToastExpire(t, preserveFadeIn)
-    local hold = mod:GetDB().holdSeconds or 3.2
-    t._gen = (t._gen or 0) + 1
-    local myGen = t._gen
-    t._fadingOut = false
+local function PaintToastVisual(t, r, g, b, useClassGrad)
+    t._lastColor = { r = r, g = g, b = b, cls = useClassGrad == true }
+    local ST = F.StyleTokens
+    local r1, g1, b1 = r, g, b
+    local r2, g2, b2 = math_min(1, r * 0.55 + 0.45), math_min(1, g * 0.55 + 0.45), math_min(1, b * 0.55 + 0.45)
+    if useClassGrad and ST and ST.GetClassGradient then
+        r1, g1, b1, r2, g2, b2 = ST.GetClassGradient(nil, "bright")
+    end
+
+    -- 1) PrettyTooltip 深邃黑曜石底色，从左（0.88）平滑向右尾部淡化至透明（0.00）
+    local bgR = 0.028 + r1 * 0.032
+    local bgG = 0.025 + g1 * 0.032
+    local bgB = 0.036 + b1 * 0.036
+    ApplyHorizGrad(t._bg, bgR, bgG, bgB, 0.88, bgR * 0.7, bgG * 0.7, bgB * 0.7, 0.00)
+
+    -- 2) 左侧品质微光晕（仿 PrettyTooltip 顶光渐变，柔和向右消散）
+    ApplyHorizGrad(t._headGlow, r1 * 0.34, g1 * 0.34, b1 * 0.34, 0.32, r2 * 0.16, g2 * 0.16, b2 * 0.16, 0.00)
+
+    -- 3) 左侧 2px 品质竖条（上下微渐变）
+    if ST and ST.ApplyGradient then
+        ST.ApplyGradient(t._leftBar, "VERTICAL", r1, g1, b1, 0.90, r2, g2, b2, 0.98)
+    else
+        t._leftBar:SetColorTexture(r1, g1, b1, 0.92)
+    end
+
+    -- 4) 上下 1px 渐隐细线（左侧呼应 PrettyTooltip 品质亮边，向右平滑淡出至 0）
+    ApplyHorizGrad(t._topLine, r2 * 0.78, g2 * 0.78, b2 * 0.78, 0.58, r1 * 0.40, g1 * 0.40, b1 * 0.40, 0.00)
+    ApplyHorizGrad(t._botLine, r1 * 0.42, g1 * 0.42, b1 * 0.42, 0.24, r1 * 0.20, g1 * 0.20, b1 * 0.20, 0.00)
+
+    if t._iconBg then
+        t._iconBg:SetColorTexture(
+            math_min(1, r1 * 0.56 + 0.08),
+            math_min(1, g1 * 0.56 + 0.08),
+            math_min(1, b1 * 0.56 + 0.08), 0.84)
+    end
+end
+
+ArmToastFade = function(t, delayOverride)
+    if not (t and t:IsShown()) then return end
+    if t._animIn and t._animIn:IsPlaying() then return end
     t._animOut:Stop()
-    if not preserveFadeIn then
-        t:SetAlpha(1)
+    t:SetAlpha(1)
+    if t._hovered or (t.IsMouseOver and t:IsMouseOver()) then
+        t._fadeStartAt = nil
+        return
     end
-    C_Timer.After(hold, function()
-        if t._gen == myGen and not t._hovered and t:IsShown() then
-            t._fadingOut = true
-            t._animOut:Play()
-        end
-    end)
+    local hold = delayOverride or (mod:GetDB().holdSeconds or 3.2)
+    t._outSlide:SetStartDelay(hold)
+    t._outFade:SetStartDelay(hold)
+    t._fadeStartAt = GetTime() + hold
+    t._animOut:Play()
 end
 
 local function IsEUILootFeedEnabled()
@@ -389,7 +497,7 @@ local function SyncEUILootFeedPolicy()
     local euiDB = _G.EllesmereUIDB
     local hasEUI = type(euiDB) == "table" and type(euiDB.lootFeed) == "table"
     if not hasEUI then return end
-    local mode = db.euiConflictMode or "auto_yield"
+    local mode = db.euiConflictMode or "takeover"
     if mod._active and mode == "takeover" then
         if euiDB.lootFeed.enabled == true then
             if db.savedEUILootFeed == nil then
@@ -406,7 +514,7 @@ local function SyncEUILootFeedPolicy()
 end
 
 local function ShouldYieldToEUILootFeed()
-    local mode = mod:GetDB().euiConflictMode or "auto_yield"
+    local mode = mod:GetDB().euiConflictMode or "takeover"
     return mode == "auto_yield" and IsEUILootFeedEnabled()
 end
 
@@ -426,7 +534,7 @@ local function FormatMoneyRight(c) return "+" .. F.FormatMoney(c) end
 local function FormatXPRight(n) return "+" .. F.FormatShortNumber(n) .. " XP" end
 local function FormatRepRight(n) return "+" .. n .. " 声望" end
 
-local function PushToast(spec)
+local function PushToastNow(spec)
     if not (mod._active or spec.isPreview) then return end
     if not spec.isPreview and ShouldYieldToEUILootFeed() then return end
     EnsureContainer()
@@ -434,15 +542,20 @@ local function PushToast(spec)
     local db = mod:GetDB()
     local maxVis = db.maxVisible or 5
 
-    -- 同类未淡出卡片直接原地合并累加，避免刷屏
+    -- 同类未进入淡出阶段的卡片直接原地合并累加，避免刷屏（不打断入场滑入动画）
     if spec.key then
+        local now = GetTime()
         for _, existing in ipairs(activeToasts) do
-            if existing._key == spec.key and not existing._fadingOut then
+            local isFading = existing._fadeStartAt and now >= existing._fadeStartAt
+            if existing._key == spec.key and not isFading then
                 existing._amount = (existing._amount or 0) + (spec.amount or 1)
                 if spec.formatRight then
                     existing._right:SetText(spec.formatRight(existing._amount))
                 end
-                ArmToastExpire(existing, false)
+                if not spec.isPreview and F.Motion and F.Motion.PlayScalePop then
+                    F.Motion.PlayScalePop(existing._iconWrap or existing._icon, 1.18, 0.18)
+                end
+                ArmToastFade(existing)
                 return
             end
         end
@@ -453,25 +566,97 @@ local function PushToast(spec)
         ReleaseToast(activeToasts[1], true)
     end
 
+    -- 先把容器层级与尺寸同步到位，再创建/布局卡片，确保首卡与后续卡片诞生于完全相同的容器层级与尺寸
+    if spec.isPreview then
+        container:SetSize(db.width or 204, maxVis * (TOAST_H + 4))
+        container:SetFrameStrata("FULLSCREEN_DIALOG")
+        container:SetFrameLevel(230)
+    end
+
     local t = AcquireToast()
     t._key = spec.key
     t._link = spec.link
     t._isPreview = spec.isPreview == true
     t._amount = spec.amount or 1
-    t._icon:SetTexture(spec.icon or 134400)
-    t._name:SetText(spec.title or "")
-    t._name:SetTextColor(spec.tr or 0.95, spec.tg or 0.95, spec.tb or 0.97, 1)
-    t._right:SetText(spec.formatRight and spec.formatRight(t._amount) or (spec.rightText or ""))
-    t._right:SetTextColor(spec.rr or 0.92, spec.rg or 0.94, spec.rb or 0.96, 1)
-    PaintToastVisual(t, spec.r or 0.65, spec.g or 0.68, spec.b or 0.74)
 
     activeToasts[#activeToasts + 1] = t
     LayoutToasts()
+
+    t._icon:SetTexture(spec.icon or 134400)
+    t._icon:Show()
+    t._iconBg:Show()
+    -- 锚定定宽后再写右侧与左侧文字，确保首次冷创建时字体串立即获得准确矩形
+    t._right:SetText(spec.formatRight and spec.formatRight(t._amount) or (spec.rightText or ""))
+    t._right:SetTextColor(spec.rr or 0.92, spec.rg or 0.94, spec.rb or 0.96, 1)
+    t._right:Show()
+    t._name:SetText(spec.title or "")
+    t._name:SetTextColor(spec.tr or 0.95, spec.tg or 0.95, spec.tb or 0.97, 1)
+    t._name:Show()
+    local cr, cg, cb = spec.r or 0.65, spec.g or 0.68, spec.b or 0.74
+    PaintToastVisual(t, cr, cg, cb, spec.useClassGrad)
+
+    t._animOut:Stop()
     t._animIn:Stop()
+    t._fadeStartAt = nil
     t:SetAlpha(0)
     t:Show()
     t._animIn:Play()
-    ArmToastExpire(t, true)
+end
+
+local DrainQueue
+DrainQueue = function(gen)
+    if gen ~= nil and gen ~= queueGen then return end
+    queueTimerActive = false
+    local nextSpec = table_remove(pendingQueue, 1)
+    if not nextSpec then return end
+    lastPushTime = GetTime()
+    PushToastNow(nextSpec)
+    if #pendingQueue > 0 and C_Timer and C_Timer.After then
+        queueTimerActive = true
+        local myGen = queueGen
+        C_Timer.After(STAGGER_STEP, function() DrainQueue(myGen) end)
+    end
+end
+
+local function PushToast(spec)
+    if not (mod._active or spec.isPreview) then return end
+    if not spec.isPreview and ShouldYieldToEUILootFeed() then return end
+
+    -- 同类卡片直接原地合并（涵盖已显示的卡片与排队中的待播条目）
+    if spec.key then
+        local now = GetTime()
+        for _, existing in ipairs(activeToasts) do
+            local isFading = existing._fadeStartAt and now >= existing._fadeStartAt
+            if existing._key == spec.key and not isFading then
+                PushToastNow(spec)
+                return
+            end
+        end
+        for _, queued in ipairs(pendingQueue) do
+            if queued.key == spec.key then
+                queued.amount = (queued.amount or 0) + (spec.amount or 1)
+                return
+            end
+        end
+    end
+
+    -- 单次掉落立即滑入；同一帧连发多条（极速拾取 / 预览）按 0.11s 错峰依次滑入与依次滑出
+    local now = GetTime()
+    local elapsed = now - lastPushTime
+    if #pendingQueue == 0 and elapsed >= STAGGER_STEP then
+        lastPushTime = now
+        PushToastNow(spec)
+        return
+    end
+    pendingQueue[#pendingQueue + 1] = spec
+    if not queueTimerActive and C_Timer and C_Timer.After then
+        queueTimerActive = true
+        local myGen = queueGen
+        local delay = math_max(0.02, STAGGER_STEP - math_max(0, elapsed))
+        C_Timer.After(delay, function() DrainQueue(myGen) end)
+    elseif not (C_Timer and C_Timer.After) then
+        DrainQueue(queueGen)
+    end
 end
 
 function mod:OnChatLoot(_, text)
@@ -534,6 +719,8 @@ function mod:OnChatLoot(_, text)
         icon = icon or 134400,
         title = name,
         amount = count,
+        quality = quality,
+        isQuest = isQuest,
         r = r, g = g, b = b,
         tr = r, tg = g, tb = b,
         rr = 0.96, rg = 0.96, rb = 0.98,
@@ -603,12 +790,41 @@ end
 
 function mod:ShowPreview()
     EnsureContainer()
+    local db = self:GetDB()
+    container:SetSize(db.width or 204, (db.maxVisible or 5) * (TOAST_H + 4))
+    container:SetFrameStrata("FULLSCREEN_DIALOG")
+    container:SetFrameLevel(230)
+    queueGen = queueGen + 1
+    queueTimerActive = false
+    for i = #pendingQueue, 1, -1 do
+        if pendingQueue[i].isPreview then
+            table_remove(pendingQueue, i)
+        end
+    end
+    for i = #activeToasts, 1, -1 do
+        if activeToasts[i]._isPreview then
+            ReleaseToast(activeToasts[i], true)
+        end
+    end
+    lastPushTime = 0
+    PushToast({
+        isPreview = true,
+        key = "preview_epic",
+        icon = 135489,
+        title = "史诗猎人长弓",
+        amount = 1,
+        quality = 4,
+        r = 0.64, g = 0.21, b = 0.93,
+        tr = 0.78, tg = 0.44, tb = 0.98,
+        formatRight = FormatItemCount,
+    })
     PushToast({
         isPreview = true,
         key = "preview_item",
-        icon = 135489,
+        icon = 132834,
         title = "异种蝎卵（任务）",
         amount = 1,
+        isQuest = true,
         r = 0.98, g = 0.84, b = 0.34,
         tr = 0.98, tg = 0.84, tb = 0.34,
         formatRight = FormatItemCount,
@@ -636,6 +852,23 @@ function mod:ShowPreview()
 end
 
 function mod:OnEnable()
+    local db = self:GetDB()
+    if not db.v2TakeoverMigrated then
+        db.v2TakeoverMigrated = true
+        if db.euiConflictMode == nil or db.euiConflictMode == "auto_yield" then
+            db.euiConflictMode = "takeover"
+        end
+    end
+    if not db.v3PrettyFadeMigrated then
+        db.v3PrettyFadeMigrated = true
+        if db.width == nil or db.width == 236 or db.width == 248 then
+            db.width = 204
+        end
+    end
+    if not db.v4GrowDownMigrated then
+        db.v4GrowDownMigrated = true
+        db.growUp = false
+    end
     EnsureContainer()
     if container then container:Show() end
     SyncEUILootFeedPolicy()
@@ -658,9 +891,11 @@ end
 function mod:OnThemeChanged()
     local function restyle(list)
         for _, t in ipairs(list) do
-            F.Theme.StylePanel(t, 0.80, 0.72)
-            F.Theme.ApplyFont(t._name, 11, "")
-            F.Theme.ApplyFont(t._right, 11, "")
+            if t._lastColor then
+                PaintToastVisual(t, t._lastColor.r, t._lastColor.g, t._lastColor.b, t._lastColor.cls)
+            end
+            F.Theme.ApplyFont(t._name, 12, "OUTLINE")
+            F.Theme.ApplyFont(t._right, 11, "OUTLINE")
         end
     end
     restyle(activeToasts)
@@ -672,15 +907,15 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
-        text = "与 EUI 拾取播报防重复策略",
-        tooltip = "检测到 EUI 内置拾取播报已开启时，默认自动让位避免屏幕上同时出现两条拾取/经验提示；也可切换为由 kkowoUI 统一接管。",
+        text = "重复播报策略",
+        tooltip = "默认由本插件流光卡片接管拾取播报，也可切换让位给 EUI。",
         values = {
-            auto_yield = "自动让位给 EUI 拾取播报（默认，零重复）",
-            takeover   = "停用 EUI 播报，改用本模块黑曜石卡片",
+            takeover   = "本插件流光卡片接管（推荐）",
+            auto_yield = "自动让位给 EUI 拾取播报",
             both       = "两者同时显示",
         },
-        order = { "auto_yield", "takeover", "both" },
-        getValue = function() return db.euiConflictMode or "auto_yield" end,
+        order = { "takeover", "auto_yield", "both" },
+        getValue = function() return db.euiConflictMode or "takeover" end,
         setValue = function(v)
             db.euiConflictMode = v
             ClearAllToasts()
@@ -715,7 +950,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "播报击杀/探索经验 (+XP)",
+        text = "播报经验收益",
         getValue = function() return db.showXP ~= false end,
         setValue = function(v) db.showXP = v == true end,
     }, {
@@ -734,9 +969,10 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         setValue = function(v) db.holdSeconds = v end,
     }, {
         type = "toggle",
-        text = "向上堆叠（关闭为向下）",
-        getValue = function() return db.growUp ~= false end,
-        setValue = function(v) db.growUp = v == true; LayoutToasts() end,
+        text = "向下堆叠",
+        tooltip = "新拾取从上方往下依次展开，关闭则改为向上堆叠。",
+        getValue = function() return db.growUp ~= true end,
+        setValue = function(v) db.growUp = not (v == true); LayoutToasts() end,
     })
     y = y - h
 

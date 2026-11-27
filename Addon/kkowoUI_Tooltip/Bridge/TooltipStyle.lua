@@ -21,8 +21,8 @@ local C_Timer = C_Timer
 local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("tooltipStyle", {
-    title = "悬浮提示美化与字号统一（PrettyTooltip 联动）",
-    desc = "全界面悬浮提示 100% 统一为 PrettyTooltip 视觉风格（装备/技能/NPC/路牌/小地图/好友卡片/系统栏与第三方图标提示完全一致），并支持全局字号倍率与紧凑度调节。",
+    title = "提示框样式",
+    desc = "统一全界面提示框风格、圆角、字号倍率与紧凑度。",
     group = "theme",
     order = 30,
     defaults = {
@@ -989,17 +989,16 @@ end
 local roundedPrettyPanels = setmetatable({}, { __mode = "k" })
 local prettyPanelList = {}
 local prettyRoundHooksInstalled = false
-local EUI_ROUND_DIR_TT = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
-local EUI_AURA_MASK_DIR_TT = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\aura-masks\\"
+local EUI_ROUND_DIR_TT = (F.StyleTokens and F.StyleTokens.EUI_ROUND_DIR) or "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
+local EUI_AURA_MASK_DIR_TT = (F.StyleTokens and F.StyleTokens.EUI_AURA_MASK_DIR) or (EUI_ROUND_DIR_TT .. "aura-masks\\")
 
--- WoW 12.1 (D3D12) 引擎铁律：绝不对整图 MaskTexture 调用 SetTextureSliceMargins（哪怕传 0,0,0,0），
--- 否则会永久激活 9 宫格着色器路径，导致 CASC 图标（如 1850550「极速再生」）在 Tooltip 里碎成左上残片。
 local function SetWholeIconMask(obj, path)
-    if not obj then return end
-    if obj.SetBlockingLoadsRequested then
-        pcall(obj.SetBlockingLoadsRequested, obj, true)
+    local ST = F.StyleTokens
+    if ST and ST.SetWholeMask then
+        ST.SetWholeMask(obj, path)
+    elseif obj then
+        pcall(obj.SetTexture, obj, path, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
     end
-    pcall(obj.SetTexture, obj, path, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
 end
 
 -- 统一复用 StyleTokens 的安全遮罩队列（含已加载保持、未加载退避等待与 OnShow 唤醒）
@@ -1066,21 +1065,9 @@ local function GetPrettyRoundRadius()
 end
 
 local function SetSliceMask(obj, path, r, wrap)
-    if not obj then return end
-    if obj.SetBlockingLoadsRequested then
-        pcall(obj.SetBlockingLoadsRequested, obj, true)
-    end
-    if wrap then
-        pcall(obj.SetTexture, obj, path, wrap, wrap)
-    else
-        pcall(obj.SetTexture, obj, path)
-    end
-    if obj.SetTextureSliceMargins then
-        pcall(obj.SetTextureSliceMargins, obj, r, r, r, r)
-    end
-    local sm = _G.Enum and _G.Enum.UITextureSliceMode and _G.Enum.UITextureSliceMode.Stretched
-    if sm and obj.SetTextureSliceMode then
-        pcall(obj.SetTextureSliceMode, obj, sm)
+    local ST = F.StyleTokens
+    if ST and ST.SetNineSlice then
+        ST.SetNineSlice(obj, path, r, wrap)
     end
 end
 
@@ -1139,7 +1126,7 @@ local function ApplyRoundToPrettyPanel(panel)
     local ST = F.StyleTokens
     local st = roundedPrettyPanels[panel]
     local want = WantRoundedPrettyTips() and (panel.backdropMode == nil or panel.backdropMode == "flat")
-    local hasEUI = (_G.EllesmereUI ~= nil or F.IsAddOnLoaded("EllesmereUI"))
+    local hasEUI = (ST and ST.HasEUIRounded and ST.HasEUIRounded()) or (_G.EllesmereUI ~= nil or F.IsAddOnLoaded("EllesmereUI"))
 
     if not want or not hasEUI then
         if st then
@@ -1983,7 +1970,7 @@ local function OpenPrettyTooltipPanel()
             pcall(handler, "")
         end
     else
-        F.Print("未检测到 kkowoUI_Tooltip / PrettyTooltip，请在聊天框输入 /ptip 或在插件列表启用。")
+        F.Print("未启用提示框编辑器，请在插件列表启用 kkowoUI_Tooltip。")
     end
 end
 
@@ -1991,23 +1978,62 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local db = self:GetDB()
     local _, h
 
+    local function GetBackdropStyle()
+        if db.unifyEUICards ~= false then return "pretty" end
+        return (db.frostedGlass ~= false) and "frosted" or "native"
+    end
+
+    local function SetBackdropStyle(v)
+        if v == "pretty" then
+            db.unifyEUICards = true
+        elseif v == "frosted" then
+            db.unifyEUICards = false
+            db.frostedGlass = true
+        else
+            db.unifyEUICards = false
+            db.frostedGlass = false
+        end
+        RefreshAllEUICards()
+        RefreshNativeTipFrost()
+    end
+
+    local function GetHealthBarMode()
+        if db.hideHealthBar == true then return "hide" end
+        return (db.slimHealthBar ~= false) and "slim" or "default"
+    end
+
+    local function SetHealthBarMode(v)
+        if v == "hide" then
+            db.hideHealthBar = true
+        elseif v == "slim" then
+            db.hideHealthBar = false
+            db.slimHealthBar = true
+        else
+            db.hideHealthBar = false
+            db.slimHealthBar = false
+        end
+        PaintFallbackTooltip(GameTooltip)
+    end
+
     _, h = W:DualRow(parent, y, enableSlot, {
-        type = "toggle",
-        text = "全部悬浮提示 100% 复刻 PrettyTooltip 样式",
-        tooltip = "默认开启：将按钮说明、小地图好友/公会/日历卡片、系统栏与第三方图标提示全部 100% 复刻 PrettyTooltip 的黑曜石渐变、顶色带、2px 亮顶边与外柔光，全游戏悬浮提示零割裂；关闭则切回磨砂玻璃。",
-        getValue = function() return db.unifyEUICards ~= false end,
-        setValue = function(v)
-            db.unifyEUICards = v == true
-            RefreshAllEUICards()
-            RefreshNativeTipFrost()
-        end,
+        type = "dropdown",
+        text = "底板风格",
+        tooltip = "统一按钮说明、好友卡片、系统栏与第三方图标提示的样式。",
+        values = {
+            pretty  = "统一卡片样式（推荐）",
+            frosted = "磨砂玻璃",
+            native  = "原版样式",
+        },
+        order = { "pretty", "frosted", "native" },
+        getValue = GetBackdropStyle,
+        setValue = SetBackdropStyle,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "PrettyTooltip 及全部悬浮卡片启用圆角",
-        tooltip = "默认开启：通过无损 GPU 9 宫格圆角遮罩为 PrettyTooltip 及所有同源悬浮提示卡片施加柔和抗锯齿圆角（不改文字排版与对齐）。",
+        text = "提示框圆角",
+        tooltip = "为所有提示框与同类悬浮卡片施加柔和圆角，不改排版对齐。",
         getValue = function() return db.roundedPrettyTips ~= false end,
         setValue = function(v)
             db.roundedPrettyTips = v == true
@@ -2019,8 +2045,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         end,
     }, {
         type = "slider",
-        text = "悬浮卡片圆角半径（px）",
-        tooltip = "调节 PrettyTooltip 与全部复刻卡片的圆角弧度（推荐 6~8px）。",
+        text = "圆角半径 (px)",
+        tooltip = "调节提示框与悬浮卡片的圆角弧度，推荐 6 至 8px。",
         min = 3, max = 12, step = 1,
         disabled = function() return db.roundedPrettyTips == false end,
         getValue = function() return GetPrettyRoundRadius() end,
@@ -2036,35 +2062,9 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "文字提示与小地图卡片使用磨砂玻璃（备用）",
-        tooltip = "仅在关闭上方「全部悬浮提示 100% 复刻 PrettyTooltip 样式」时生效：将按钮说明、系统栏、好友/公会列表改为半透明冷灰蓝磨砂玻璃。",
-        disabled = function() return db.unifyEUICards ~= false end,
-        getValue = function() return db.frostedGlass ~= false end,
-        setValue = function(v)
-            db.frostedGlass = v == true
-            RefreshAllEUICards()
-            RefreshNativeTipFrost()
-        end,
-    }, {
         type = "slider",
-        text = "磨砂玻璃底色浓度",
-        tooltip = "仅在磨砂备用模式下生效：数值越大越不透明、越好读；默认 0.82。",
-        min = 0.50, max = 0.95, step = 0.02,
-        disabled = function() return db.unifyEUICards ~= false or db.frostedGlass == false end,
-        getValue = function() return GetGlassAlpha() end,
-        setValue = function(v)
-            db.glassOpacity = v
-            RefreshAllEUICards()
-            RefreshNativeTipFrost()
-        end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "悬浮提示字号倍率",
-        tooltip = "同步调节 PrettyTooltip 与暴雪默认提示文字大小（默认 0.96，步进 0.02 精细调节，滑动后重新悬停即刻生效）。",
+        text = "字号倍率 (倍)",
+        tooltip = "同步调节所有提示框文字大小（默认 0.96），重新悬停生效。",
         min = 0.80, max = 1.40, step = 0.02,
         getValue = function() return GetFontScale() end,
         setValue = function(v)
@@ -2074,8 +2074,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         end,
     }, {
         type = "slider",
-        text = "悬浮卡片整体缩放",
-        tooltip = "同步调节 PrettyTooltip 悬浮卡片整体尺寸（默认 0.92 更紧凑，1.00 为原比例）。",
+        text = "整体缩放 (倍)",
+        tooltip = "调节提示框整体缩放比例（默认 0.92，1.00 为原比例）。",
         min = 0.70, max = 1.30, step = 0.02,
         getValue = function() return GetCardScale() end,
         setValue = function(v)
@@ -2086,101 +2086,16 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     })
     y = y - h
 
-    if HasPrettyTooltip() then
-        _, h = W:DualRow(parent, y, {
-            type = "toggle",
-            text = "均衡卡片标题与信息正文字号比例",
-            tooltip = "PrettyTooltip 原版标题 17–19px、下方说明仅 11–12px 落差过大；开启后自动将信息正文放大至 13–14px、标题微收，卡片依然紧凑且阅读更轻松。",
-            getValue = function() return db.balancePrettyBody ~= false end,
-            setValue = function(v)
-                db.balancePrettyBody = v == true
-                RefreshAllEUICards()
-            end,
-        }, {
-            type = "toggle",
-            text = "场景物件/小地图/鸟点改用磨砂玻璃",
-            tooltip = "默认关闭：路牌、邮箱、草药/矿点、小地图图钉与飞行点全部交给 PrettyTooltip 统一绘制；开启则改回磨砂玻璃纯文字框。",
-            getValue = function() return db.plainWorldTipsFrosted == true end,
-            setValue = function(v)
-                db.plainWorldTipsFrosted = v == true
-                if type(_G.PrettyTooltipDB) == "table" then
-                    local usePretty = not db.plainWorldTipsFrosted
-                    db.ptipPanelsSynced = usePretty
-                    _G.PrettyTooltipDB.objectPanels = usePretty
-                    _G.PrettyTooltipDB.minimapPanels = usePretty
-                    _G.PrettyTooltipDB.taxiPanels = usePretty
-                end
-                RefreshAllEUICards()
-                RefreshNativeTipFrost()
-            end,
-        })
-        y = y - h
-
-        _, h = W:DualRow(parent, y, {
-            type = "slider",
-            text = "卡片内边距（留白紧凑度）",
-            tooltip = "PrettyTooltip 原版默认 19px 留白偏大，调至 10–13px 卡片显著更紧凑精致。",
-            min = 8, max = 22, step = 1,
-            getValue = function() return GetPrettyPadding() end,
-            setValue = function(v)
-                db.prettyPadding = math_floor(v + 0.5)
-                RefreshAllEUICards()
-            end,
-        }, {
-            type = "slider",
-            text = "卡片最小宽度",
-            tooltip = "PrettyTooltip 原版最小宽度 260px 对短 NPC 提示偏宽，默认收紧至 188px。",
-            min = 150, max = 280, step = 4,
-            getValue = function() return GetPrettyMinWidth() end,
-            setValue = function(v)
-                db.prettyMinWidth = math_floor(v + 0.5)
-                RefreshAllEUICards()
-            end,
-        })
-        y = y - h
-
-        _, h = W:DualRow(parent, y, {
-            type = "dropdown",
-            text = "按住快捷键临时切回原版提示",
-            tooltip = "PrettyTooltip 原版默认按住 Alt 会临时切回暴雪小框提示；关闭可彻底避免按 Alt 组合键时面板乱切。",
-            values = {
-                NONE = "关闭（推荐·防按 Alt 误切）",
-                ALT  = "按住 Alt 查看原版提示",
-                CTRL = "按住 Ctrl 查看原版提示",
-            },
-            order = { "NONE", "ALT", "CTRL" },
-            getValue = function() return db.prettyOriginalKey or "NONE" end,
-            setValue = function(v)
-                db.prettyOriginalKey = v
-                RefreshAllEUICards()
-            end,
-        }, {
-            type = "dropdown",
-            text = "NPC ID / 分解等扩展信息",
-            tooltip = "改为「按住 Shift 展开」后，平时悬停 NPC/装备卡片更短更紧凑，需要查 ID 或分解数据时按住 Shift 即可。",
-            values = {
-                SHIFT  = "按住 Shift 展开（更紧凑·推荐）",
-                ALWAYS = "始终展开",
-            },
-            order = { "SHIFT", "ALWAYS" },
-            getValue = function() return db.prettyDetailsKey or "SHIFT" end,
-            setValue = function(v)
-                db.prettyDetailsKey = v
-                RefreshAllEUICards()
-            end,
-        })
-        y = y - h
-    end
-
     _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "跟随鼠标显示",
-        tooltip = "让鼠标提示跟随光标右上方显示。",
+        tooltip = "让提示框跟随光标右上方显示。",
         getValue = function() return db.anchorCursor == true end,
         setValue = function(v) db.anchorCursor = v == true end,
     }, {
         type = "toggle",
-        text = "战斗中隐藏鼠标提示",
+        text = "战斗中隐藏提示",
+        tooltip = "进入战斗后自动隐藏提示框，脱战恢复。",
         getValue = function() return db.hideInCombat == true end,
         setValue = function(v) db.hideInCombat = v == true end,
     })
@@ -2188,41 +2103,165 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     if HasPrettyTooltip() then
         _, h = W:DualRow(parent, y, {
+            type = "toggle",
+            text = "均衡标题与正文",
+            tooltip = "适当放大信息正文、微收大标题，让卡片更易阅读。",
+            getValue = function() return db.balancePrettyBody ~= false end,
+            setValue = function(v)
+                db.balancePrettyBody = v == true
+                RefreshAllEUICards()
+            end,
+        }, {
             type = "labeledButton",
-            text = "PrettyTooltip 精细样式编辑器",
-            buttonText = "打开 /ptip",
-            width = 140,
-            tooltip = "打开 PrettyTooltip 原生可视化编辑器，可按装备/单位/技能单独微调各元素字号、边框与光晕。",
+            text = "样式编辑器",
+            buttonText = "打开",
+            width = 110,
+            tooltip = "打开提示框编辑器，按装备、单位、技能单独微调外观。",
             onClick = OpenPrettyTooltipPanel,
-        }, blank)
+        })
         y = y - h
     else
         _, h = W:DualRow(parent, y, {
             type = "toggle",
-            text = "物品卡片左上显示高清图标徽章",
+            text = "物品图标徽章",
             getValue = function() return db.showItemIcon ~= false end,
             setValue = function(v) db.showItemIcon = v == true; PaintFallbackTooltip(GameTooltip) end,
         }, {
             type = "toggle",
-            text = "显示目标的目标（含职业色）",
+            text = "显示目标的目标",
             getValue = function() return db.showTargetOfTarget ~= false end,
             setValue = function(v) db.showTargetOfTarget = v == true end,
         })
         y = y - h
 
         _, h = W:DualRow(parent, y, {
-            type = "toggle",
-            text = "极简 3px 底部血条",
-            getValue = function() return db.slimHealthBar ~= false end,
-            setValue = function(v) db.slimHealthBar = v == true; PaintFallbackTooltip(GameTooltip) end,
-        }, {
-            type = "toggle",
-            text = "隐藏单位血条",
-            getValue = function() return db.hideHealthBar == true end,
-            setValue = function(v) db.hideHealthBar = v == true; PaintFallbackTooltip(GameTooltip) end,
-        })
+            type = "dropdown",
+            text = "单位血条样式",
+            tooltip = "设置回退提示框底部单位血条样式或直接隐藏。",
+            values = {
+                slim    = "细条 (3px)",
+                default = "原版血条",
+                hide    = "隐藏血条",
+            },
+            order = { "slim", "default", "hide" },
+            getValue = GetHealthBarMode,
+            setValue = SetHealthBarMode,
+        }, blank)
         y = y - h
     end
 
+    local function buildAdv(w, p, curY, blk)
+        local _, rh
+        if HasPrettyTooltip() then
+            _, rh = w:DualRow(p, curY, {
+                type = "slider",
+                text = "内边距 (px)",
+                tooltip = "调节卡片四周留白宽度，推荐 10 至 13px 更紧凑。",
+                min = 8, max = 22, step = 1,
+                getValue = function() return GetPrettyPadding() end,
+                setValue = function(v)
+                    db.prettyPadding = math_floor(v + 0.5)
+                    RefreshAllEUICards()
+                end,
+            }, {
+                type = "slider",
+                text = "最小宽度 (px)",
+                tooltip = "调节短内容提示框的最小宽度，默认收紧至 188px。",
+                min = 150, max = 280, step = 4,
+                getValue = function() return GetPrettyMinWidth() end,
+                setValue = function(v)
+                    db.prettyMinWidth = math_floor(v + 0.5)
+                    RefreshAllEUICards()
+                end,
+            })
+            curY = curY - rh
+
+            _, rh = w:DualRow(p, curY, {
+                type = "dropdown",
+                text = "切回原版快捷键",
+                tooltip = "设置按住哪个键临时切回原版提示，关闭可防按 Alt 误切。",
+                values = {
+                    NONE = "关闭（推荐）",
+                    ALT  = "按住 Alt 切回",
+                    CTRL = "按住 Ctrl 切回",
+                },
+                order = { "NONE", "ALT", "CTRL" },
+                getValue = function() return db.prettyOriginalKey or "NONE" end,
+                setValue = function(v)
+                    db.prettyOriginalKey = v
+                    RefreshAllEUICards()
+                end,
+            }, {
+                type = "dropdown",
+                text = "扩展信息显示",
+                tooltip = "改为按住 Shift 展开可让平时卡片更短，查编号或分解时按住即可。",
+                values = {
+                    SHIFT  = "按住 Shift 展开（推荐）",
+                    ALWAYS = "始终展开",
+                },
+                order = { "SHIFT", "ALWAYS" },
+                getValue = function() return db.prettyDetailsKey or "SHIFT" end,
+                setValue = function(v)
+                    db.prettyDetailsKey = v
+                    RefreshAllEUICards()
+                end,
+            })
+            curY = curY - rh
+
+            _, rh = w:DualRow(p, curY, {
+                type = "toggle",
+                text = "世界提示用磨砂",
+                tooltip = "开启后将路牌、采集点、小地图图钉与鸟点改为纯文字磨砂框。",
+                getValue = function() return db.plainWorldTipsFrosted == true end,
+                setValue = function(v)
+                    db.plainWorldTipsFrosted = v == true
+                    if type(_G.PrettyTooltipDB) == "table" then
+                        local usePretty = not db.plainWorldTipsFrosted
+                        db.ptipPanelsSynced = usePretty
+                        _G.PrettyTooltipDB.objectPanels = usePretty
+                        _G.PrettyTooltipDB.minimapPanels = usePretty
+                        _G.PrettyTooltipDB.taxiPanels = usePretty
+                    end
+                    RefreshAllEUICards()
+                    RefreshNativeTipFrost()
+                end,
+            }, {
+                type = "slider",
+                text = "磨砂浓度",
+                tooltip = "仅在磨砂玻璃风格下生效，数值越大越不透明，默认 0.82。",
+                min = 0.50, max = 0.95, step = 0.02,
+                disabled = function() return db.unifyEUICards ~= false or db.frostedGlass == false end,
+                getValue = function() return GetGlassAlpha() end,
+                setValue = function(v)
+                    db.glassOpacity = v
+                    RefreshAllEUICards()
+                    RefreshNativeTipFrost()
+                end,
+            })
+            curY = curY - rh
+        else
+            _, rh = w:DualRow(p, curY, {
+                type = "slider",
+                text = "磨砂浓度",
+                tooltip = "仅在磨砂玻璃风格下生效，数值越大越不透明，默认 0.82。",
+                min = 0.50, max = 0.95, step = 0.02,
+                disabled = function() return db.unifyEUICards ~= false or db.frostedGlass == false end,
+                getValue = function() return GetGlassAlpha() end,
+                setValue = function(v)
+                    db.glassOpacity = v
+                    RefreshAllEUICards()
+                    RefreshNativeTipFrost()
+                end,
+            }, blk)
+            curY = curY - rh
+        end
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("tooltipStyle", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y, blank)
+    end
     return y
 end

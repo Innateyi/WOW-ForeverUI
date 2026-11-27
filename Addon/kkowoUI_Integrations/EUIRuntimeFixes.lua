@@ -15,14 +15,15 @@ local ipairs, math_abs, math_max, pairs, pcall, setmetatable, type =
 local C_Timer = C_Timer
 
 local mod = F.RegisterModule("euiRuntimeFixes", {
-    title = "EUI 零补丁运行时修复",
-    desc = "以零文件侵入钩子替代原 EllesmereUINameplates 补丁：不再强制重置友方玩家名字 CVar，并自动防止姓名板任务计数与怪物名字重叠。",
+    title = "姓名板防重叠",
+    desc = "防止登录强开友方玩家名字，并避免姓名板任务计数遮挡怪名。",
     group = "theme",
     order = 42,
     defaults = {
         enabled = true,
         guardFriendlyNameCVar = true,
         fixNameplateQuestOverlap = true,
+        fixMenuOverlap = true,
     },
 })
 
@@ -243,16 +244,26 @@ local function AdjustTopNameShift(plate)
     end
 end
 
+local function IsSafeFrame(f)
+    if not f then return false end
+    if f.IsForbidden then
+        local ok, forb = pcall(f.IsForbidden, f)
+        if not ok or forb then return false end
+    end
+    return true
+end
+
 local function FindEUIPlateFromBlizzPlate(blizzPlate)
-    if type(blizzPlate) ~= "table" then
+    if type(blizzPlate) ~= "table" or not IsSafeFrame(blizzPlate) then
         return nil
     end
     -- EUI 姓名板挂载为暴雪 nameplate 的子框体，具备 health + name + UpdateNameWidth 方法
     if blizzPlate.GetChildren then
-        local children = { blizzPlate:GetChildren() }
+        local okC, children = pcall(function() return { blizzPlate:GetChildren() } end)
+        if not (okC and type(children) == "table") then return nil end
         for i = 1, #children do
             local ch = children[i]
-            if type(ch) == "table" and ch.health and ch.name and type(ch.UpdateNameWidth) == "function" then
+            if type(ch) == "table" and IsSafeFrame(ch) and ch.health and ch.name and type(ch.UpdateNameWidth) == "function" then
                 return ch
             end
         end
@@ -261,7 +272,7 @@ local function FindEUIPlateFromBlizzPlate(blizzPlate)
 end
 
 local function HookEUIPlate(plate)
-    if not (plate and not hookedPlates[plate] and _G.hooksecurefunc) then
+    if not (plate and IsSafeFrame(plate) and not hookedPlates[plate] and _G.hooksecurefunc) then
         return
     end
     hookedPlates[plate] = true
@@ -304,7 +315,156 @@ local function ScanAllPlates()
     end
 end
 
+----------------------------------------------------------------------
+--  3) 零污染下拉菜单防穿透与右侧边缘防重叠（修复小地图子菜单叠在父菜单上）
+----------------------------------------------------------------------
+local menuHooksInstalled = false
+local menuPending = {}
+local menuFlushArmed = false
+local openMenus = {}
+
+local function GetScaledRect(f)
+    if not (f and f.GetLeft and f.GetRight and f.GetTop and f.GetBottom) then return nil end
+    local okL, l = pcall(f.GetLeft, f)
+    local okR, r = pcall(f.GetRight, f)
+    local okT, t = pcall(f.GetTop, f)
+    local okB, b = pcall(f.GetBottom, f)
+    l = okL and F.PlainNumber(l, nil) or nil
+    r = okR and F.PlainNumber(r, nil) or nil
+    t = okT and F.PlainNumber(t, nil) or nil
+    b = okB and F.PlainNumber(b, nil) or nil
+    if not (l and r and t and b) then return nil end
+    local s = (f.GetEffectiveScale and F.PlainNumber(f:GetEffectiveScale(), 1)) or 1
+    if s <= 0 then s = 1 end
+    return l * s, r * s, t * s, b * s, s
+end
+
+local function BoostMenuBackdropOpacity(menu)
+    if not (menu and menu.GetRegions) then return end
+    local okR, regs = pcall(function() return { menu:GetRegions() } end)
+    if not (okR and type(regs) == "table") then return end
+    for i = 1, #regs do
+        local reg = regs[i]
+        if reg and reg.GetObjectType and reg:GetObjectType() == "Texture" then
+            local okL, layer = pcall(reg.GetDrawLayer, reg)
+            if okL and layer == "BACKGROUND" then
+                local okT, tex = pcall(reg.GetTexture, reg)
+                local okA, a = pcall(reg.GetAlpha, reg)
+                a = okA and F.PlainNumber(a, 1) or 1
+                if a > 0.05 then
+                    local plainTex = okT and F.PlainString(tex, nil) or nil
+                    local isSolid = (tex == nil) or (plainTex and (plainTex:find("WHITE8", 1, true) or plainTex == "Color-00000000"))
+                    if isSolid and reg.SetColorTexture then
+                        pcall(reg.SetColorTexture, reg, 0.055, 0.062, 0.080, 0.96)
+                    elseif a < 0.95 and reg.SetAlpha then
+                        pcall(reg.SetAlpha, reg, 0.96)
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function TreatMenuFrame(menu)
+    if not (mod._active and mod:GetDB().fixMenuOverlap ~= false) then return end
+    if _G.InCombatLockdown and _G.InCombatLockdown() then return end
+    if not (IsSafeFrame(menu) and menu.IsShown and menu:IsShown()) then return end
+
+    BoostMenuBackdropOpacity(menu)
+
+    -- 清理已关闭的旧菜单
+    local kept = {}
+    local already = false
+    for i = 1, #openMenus do
+        local m = openMenus[i]
+        if IsSafeFrame(m) and m.IsShown and m:IsShown() then
+            kept[#kept + 1] = m
+            if m == menu then already = true end
+        end
+    end
+    if not already then
+        kept[#kept + 1] = menu
+    end
+    openMenus = kept
+
+    -- 若刚弹出的子菜单在屏幕右侧被夹回并叠在上一级菜单上，则优雅左翻紧贴父菜单左缘
+    if #openMenus < 2 then return end
+    local ml, mr, mt, mb, ms = GetScaledRect(menu)
+    if not ml then return end
+    local mw = mr - ml
+
+    local parentMenu = nil
+    for i = #openMenus, 1, -1 do
+        local cand = openMenus[i]
+        if cand ~= menu then
+            local pl, pr, pt, pb = GetScaledRect(cand)
+            if pl and ml < pr - 2 and mr > pl + 2 and mb < pt - 2 and mt > pb + 2 then
+                parentMenu = cand
+                if (pl - mw) >= 6 and menu.ClearAllPoints and menu.SetPoint then
+                    local yOff = (mt - pt) / ms
+                    pcall(menu.ClearAllPoints, menu)
+                    pcall(menu.SetPoint, menu, "TOPRIGHT", cand, "TOPLEFT", -2, yOff)
+                end
+                break
+            end
+        end
+    end
+    if parentMenu and menu.GetFrameLevel and menu.SetFrameLevel and parentMenu.GetFrameLevel then
+        local plvl = F.PlainNumber(parentMenu:GetFrameLevel(), 100) or 100
+        local mlvl = F.PlainNumber(menu:GetFrameLevel(), 100) or 100
+        if mlvl <= plvl then
+            pcall(menu.SetFrameLevel, menu, plvl + 10)
+        end
+    end
+end
+
+local function FlushMenus()
+    menuFlushArmed = false
+    local batch = {}
+    for i = 1, #menuPending do
+        batch[i] = menuPending[i]
+        menuPending[i] = nil
+    end
+    for i = 1, #batch do
+        TreatMenuFrame(batch[i])
+    end
+    -- EUI 皮肤在下一帧也会重绘底色，0.02s 后再补校一次透明度与位置
+    if #batch > 0 and C_Timer and C_Timer.After then
+        C_Timer.After(0.02, function()
+            for i = 1, #batch do
+                TreatMenuFrame(batch[i])
+            end
+        end)
+    end
+end
+
+local function OnMenuStyleGenerate(menuFrame)
+    if not (mod._active and mod:GetDB().fixMenuOverlap ~= false) then return end
+    menuPending[#menuPending + 1] = menuFrame
+    if not menuFlushArmed and C_Timer and C_Timer.After then
+        menuFlushArmed = true
+        C_Timer.After(0, FlushMenus)
+    end
+end
+
+local function EnsureMenuOverlapHooks()
+    if menuHooksInstalled or type(_G.hooksecurefunc) ~= "function" then return end
+    local hookedAny = false
+    if type(_G.MenuStyle1Mixin) == "table" and type(_G.MenuStyle1Mixin.Generate) == "function" then
+        _G.hooksecurefunc(_G.MenuStyle1Mixin, "Generate", OnMenuStyleGenerate)
+        hookedAny = true
+    end
+    if type(_G.MenuStyle2Mixin) == "table" and type(_G.MenuStyle2Mixin.Generate) == "function" then
+        _G.hooksecurefunc(_G.MenuStyle2Mixin, "Generate", OnMenuStyleGenerate)
+        hookedAny = true
+    end
+    if hookedAny then
+        menuHooksInstalled = true
+    end
+end
+
 function mod:OnEnable()
+    EnsureMenuOverlapHooks()
     self:RegisterEvent("NAME_PLATE_UNIT_ADDED", function(_, _, unit)
         local NP = _G.C_NamePlate
         if NP and NP.GetNamePlateForUnit and unit then
@@ -320,6 +480,7 @@ function mod:OnEnable()
         C_Timer.After(0, ScanAllPlates)
     end)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        EnsureMenuOverlapHooks()
         C_Timer.After(0.5, ScanAllPlates)
     end)
     C_Timer.After(0.5, ScanAllPlates)
@@ -334,22 +495,28 @@ function mod:BuildOptions(W, parent, y, enableSlot)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "禁止 EUI 每次登录强开友方玩家名字",
-        tooltip = "拦截 EllesmereUINameplates 每次登录时强制改写 UnitNameFriendlyPlayerName CVar，尊重你在暴雪界面里的勾选（零文件补丁实现）。",
+        text = "防强开友方名",
+        tooltip = "阻止 EUI 登录时强开友方玩家名字，尊重游戏界面设置。",
         getValue = function() return db.guardFriendlyNameCVar ~= false end,
         setValue = function(v) db.guardFriendlyNameCVar = v == true end,
     })
     y = y - h
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "姓名板任务计数防压字与字号同步",
-        tooltip = "自动按上方左右角任务计数/稀有标记占宽平移怪物名字并同步字号，避免压字（零文件补丁实现）。",
+        text = "任务计数防压字",
+        tooltip = "按任务计数与稀有图标宽度平移怪物名字并同步字号。",
         getValue = function() return db.fixNameplateQuestOverlap ~= false end,
         setValue = function(v)
             db.fixNameplateQuestOverlap = v == true
             if db.fixNameplateQuestOverlap then ScanAllPlates() end
         end,
-    }, nil)
+    }, {
+        type = "toggle",
+        text = "下拉菜单防重叠",
+        tooltip = "提高小地图等下拉菜单底板不透明度，贴边子菜单自动左翻。",
+        getValue = function() return db.fixMenuOverlap ~= false end,
+        setValue = function(v) db.fixMenuOverlap = v == true end,
+    })
     y = y - h
     return y
 end

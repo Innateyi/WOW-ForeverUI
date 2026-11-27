@@ -691,14 +691,16 @@ do
                 db.wmDisabledLeatrix = true
             end
             if setCV and getCV then
-                for _, cv in ipairs({ "worldMapShowPlayerCoords", "worldMapShowCursorCoords" }) do
-                    local okV, v = pcall(getCV, cv)
-                    if okV and v == "1" then
-                        pcall(setCV, cv, "0")
-                        db.wmDisabledCVars = type(db.wmDisabledCVars) == "table" and db.wmDisabledCVars or {}
-                        db.wmDisabledCVars[cv] = true
+                F.RunOutOfCombat("kkowoUI_WMCoordsDedup", function()
+                    for _, cv in ipairs({ "worldMapShowPlayerCoords", "worldMapShowCursorCoords" }) do
+                        local okV, v = pcall(getCV, cv)
+                        if okV and v == "1" then
+                            pcall(setCV, cv, "0")
+                            db.wmDisabledCVars = type(db.wmDisabledCVars) == "table" and db.wmDisabledCVars or {}
+                            db.wmDisabledCVars[cv] = true
+                        end
                     end
-                end
+                end)
             end
             HideBlizzAndLeatrixMapCoords()
             local wm = _G.WorldMapFrame
@@ -721,10 +723,13 @@ do
                 end
             end
             if type(db.wmDisabledCVars) == "table" then
-                if setCV then
-                    for cv in pairs(db.wmDisabledCVars) do pcall(setCV, cv, "1") end
-                end
+                local restoreList = db.wmDisabledCVars
                 db.wmDisabledCVars = nil
+                if setCV then
+                    F.RunOutOfCombat("kkowoUI_WMCoordsDedup", function()
+                        for cv in pairs(restoreList) do pcall(setCV, cv, "1") end
+                    end)
+                end
             end
         end
     end

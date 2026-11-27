@@ -24,8 +24,8 @@ local ST = F.StyleTokens
 local M = F.Motion
 
 local mod = F.RegisterModule("castbarMotion", {
-    title = "技能施法条圆角与动效升级",
-    desc = "在原 EUI 施法条锚点上叠加圆角胶囊、职业色渐变、高光光刃、延迟安全区、引导刻度、完成白闪上浮与打断红底抖动。",
+    title = "施法条动效",
+    desc = "为施法条叠加圆角渐变、延迟安全区、引导刻度与完成反馈。",
     group = "motion",
     order = 20,
     masterKey = "motionFX",
@@ -421,7 +421,19 @@ local function BuildCastbarOverlay()
         f._ticks[i] = tk
     end
 
-    f._spark = M.AttachEdgeSpark(sb, { width = 18, extraHeight = 6, a = 0.96, levelOffset = 4 })
+    if sb.SetSnapToPixelGrid then pcall(sb.SetSnapToPixelGrid, sb, false) end
+    if sb.SetTexelSnappingBias then pcall(sb.SetTexelSnappingBias, sb, 0) end
+    local sbFillTex = sb.GetStatusBarTexture and sb:GetStatusBarTexture()
+    if sbFillTex then
+        if sbFillTex.SetSnapToPixelGrid then pcall(sbFillTex.SetSnapToPixelGrid, sbFillTex, false) end
+        if sbFillTex.SetTexelSnappingBias then pcall(sbFillTex.SetTexelSnappingBias, sbFillTex, 0) end
+    end
+    f._spark = M.AttachEdgeSpark(sb, { width = 22, extraHeight = 6, a = 0.96, levelOffset = 4 })
+    if f._spark and f._spark._spark then
+        local sp = f._spark._spark
+        if sp.SetSnapToPixelGrid then pcall(sp.SetSnapToPixelGrid, sp, false) end
+        if sp.SetTexelSnappingBias then pcall(sp.SetTexelSnappingBias, sp, 0) end
+    end
 
     -- 文字宿置于高于 StatusBar 与圆角边框的子框体，避免“条内显示”时被血条/圆角遮挡
     local textHost = CreateFrame("Frame", nil, f)
@@ -651,13 +663,19 @@ local function OnCastUpdate(self)
         end
         return
     end
-    local prog
+    local prog, dispVal
     if castState.isChannel then
         prog = math_max(0, math_min(1, rem / dur))
-        overlay._timeFS:SetText(string_format("%.1f / %.1f", rem, dur))
+        dispVal = rem
     else
         prog = math_max(0, math_min(1, elapsed / dur))
-        overlay._timeFS:SetText(string_format("%.1f / %.1f", elapsed, dur))
+        dispVal = elapsed
+    end
+    -- 进度条与流光每帧全速推进，时间文字按 0.1s 缓存节流，消除长时间施法 120Hz 重排微卡顿
+    local tenths = math_floor(dispVal * 10 + 0.5)
+    if tenths ~= castState.lastTimeTenths then
+        castState.lastTimeTenths = tenths
+        overlay._timeFS:SetText(string_format("%.1f / %.1f", tenths * 0.1, dur))
     end
     overlay._bar:SetValue(prog)
 end
@@ -684,6 +702,7 @@ local function StartCast(isChannel)
 
     local now = GetTime()
     castState.active = true
+    castState.lastTimeTenths = -1
     castState.isChannel = isChannel == true
     castState.castGUID = (type(castID) ~= "nil" and not F.IsSecret(castID)) and castID or nil
     castState.spellName = CleanSpellName(name)
@@ -881,8 +900,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "中央技能球开启时隐藏左侧重复图标",
-        tooltip = "中央动态技能球已实时显示当前施法图标，开启本项可让施法条呈现纯粹圆角胶囊态（关闭技能球自动恢复左图标）。",
+        text = "技能球去重图标",
+        tooltip = "中央技能球开启时隐藏施法条左侧重复图标，关闭后恢复。",
         getValue = function() return db.hideIconWhenOrb ~= false end,
         setValue = function(v) db.hideIconWhenOrb = v == true; RefreshOverlayChrome() end,
     })
@@ -890,7 +909,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "技能名与计时排布在条外下方",
+        text = "文字置于条外",
         tooltip = "左下显示技能名、右下显示「当前 / 总时长」，条体本身清爽无遮挡。",
         getValue = function() return db.textOutside ~= false end,
         setValue = function(v) db.textOutside = v == true; RefreshOverlayChrome() end,
@@ -905,12 +924,12 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "延迟安全区与引导跳数刻度",
+        text = "延迟与引导刻度",
         getValue = function() return db.showLatency ~= false end,
         setValue = function(v) db.showLatency = v == true; db.showChannelTicks = v == true end,
     }, {
         type = "toggle",
-        text = "前沿高光光刃 + 目标施法条光刃",
+        text = "前沿高光光刃",
         getValue = function() return db.showSpark ~= false end,
         setValue = function(v) db.showSpark = v == true; db.enhanceTargetCast = v == true; RefreshOverlayChrome(); AttachTargetCastSpark() end,
     })
@@ -918,12 +937,12 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "施法成功白闪上浮淡出",
+        text = "施法完成闪光",
         getValue = function() return db.finishFlash ~= false end,
         setValue = function(v) db.finishFlash = v == true end,
     }, {
         type = "toggle",
-        text = "被打断红底短促水平抖动",
+        text = "打断红底抖动",
         getValue = function() return db.interruptShake ~= false end,
         setValue = function(v) db.interruptShake = v == true end,
     })

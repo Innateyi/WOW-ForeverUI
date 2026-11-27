@@ -128,7 +128,7 @@ function ModuleProto:Enable()
         if not ok then
             self._active = false
             self:UnregisterAllEvents()
-            F.Print("|cffff5555模块 [" .. self.title .. "] 启动失败：|r" .. tostring(err))
+            F.Print("|cffff5555模块「" .. self.title .. "」启动失败（可 /reload 重试）：|r" .. tostring(err))
         end
     end
 end
@@ -220,7 +220,7 @@ bootFrame:SetScript("OnEvent", function(self, event, arg1)
         modulesBooted = true
         -- 若检测到旧版哈兰德同时启用，给出一次友好提示，避免双重生效
         if F.IsAddOnLoaded("EUI_Haalandtool") then
-            F.Print("|cffffcc00提示：检测到 EUI_Haalandtool 仍在启用中。联调确认后建议在插件列表停用它，以免同类功能重复生效。|r")
+            F.Print("|cffffcc00检测到 EUI_Haalandtool 仍在启用，建议在插件列表停用以防重复。|r")
         end
         for _, mod in ipairs(Modules.All()) do
             if mod:IsEnabled() then

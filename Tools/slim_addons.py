@@ -21,7 +21,7 @@ ADDONS_TXT = os.environ.get("WOW_ADDONS_TXT", r"E:\Program Files\World of Warcra
 KKOWOUI_SV = os.environ.get("WOW_KKOWOUI_SV", r"E:\Program Files\World of Warcraft\_forever_\WTF\Account\<YourAccountID>\SavedVariables\kkowoUI.lua")
 BACKUP_ROOT = os.environ.get("WOW_BACKUP_ROOT", r"D:\code\wow\backups")
 
-# 已合并进 kkowoUI 的 7 个插件（含已吸收 MerfinMain 的 YaMedia）
+# 已合并进 kkowoUI 或被原生接管的旧重叠插件
 MERGED_INTO_KKOWOUI = [
     "QFXSystemBar",
     "QFXSystemBar_Config",
@@ -30,6 +30,12 @@ MERGED_INTO_KKOWOUI = [
     "QFXSystemBar_MeetingStone",
     "EllesmereUIDataBars",
     "YaMedia",
+    "BlizzMove",
+    "Leatrix_Maps",
+    "WaypointUI",
+    "VamoosesSlipstream",
+    "VamoosesSlipstream_kkowo",
+    "PrettyTooltip",
 ]
 
 # 确认闲置 / 正式服无用 / 调试 / 重叠重型插件
@@ -55,8 +61,13 @@ IDLE_OR_REDUNDANT = [
 ]
 
 TO_DISABLE = set(MERGED_INTO_KKOWOUI + IDLE_OR_REDUNDANT)
-# 冷却显示改用 EUI 冷却管理器（替代 ArcAuras），与游戏内无效插件守卫一致
-TO_ENABLE = {"kkowoUI", "EllesmereUICooldownManager"}
+# 冷却显示改用 EUI 冷却管理器（替代 ArcAuras），启用全部 9 个 kkowoUI v2.0 套件目录
+TO_ENABLE = {
+    "kkowoUI", "kkowoUI_Media", "kkowoUI_CoreHUD", "kkowoUI_QoL",
+    "kkowoUI_Tooltip", "kkowoUI_Integrations", "kkowoUI_ClassPack",
+    "kkowoUI_Options", "kkowoUI_KeybindBoard",
+    "EllesmereUICooldownManager",
+}
 
 
 def is_wow_running():

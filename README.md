@@ -1,174 +1,73 @@
 # kkowoUI
 
-面向《魔兽世界：无限》（WoW Forever，Interface 16001）的模块化界面增强插件套件，建立在 [EllesmereUI](https://www.curseforge.com/wow/addons/ellesmereui)（EUI）之上。9 个独立可开关子包（含 2 个 `LoadOnDemand` 按需加载子包）与 30+ 精细模块，设置页与「整合包总控台」挂在 EUI 设置面板顶部，游戏内输入 `/kk` 打开。
+面向《魔兽世界：无限》（WoW Forever，Interface `16001`）的模块化界面增强套件，基于 [EllesmereUI](https://www.curseforge.com/wow/addons/ellesmereui) 构建，游戏内输入 `/kk` 打开设置面板。
 
-当前版本：**2.0.0**。主包名为 `kkowoUI`（区分大小写），曾用名 KkowoUI、ForeverUI，旧名存档自动迁移，零配置丢失。
+当前版本：**v2.0.0**（旧版 `KkowoUI` / `ForeverUI` 存档自动迁移，设置不丢失）。
 
 ## 安装
 
-**整合包（推荐）**：解压压缩包，双击「安装.bat」，在弹出的窗口里选择 World of Warcraft 文件夹（例如 `E:\Program Files\World of Warcraft`）。
+将仓库 `Addon/` 下的全部 9 个 `kkowoUI*` 目录复制到 `_forever_\Interface\AddOns\`，并确保已安装 EllesmereUI。
 
-- 安装前会把原来的全部插件、图标、字体整夹移进 `World of Warcraft\kkowoUI安装备份_日期`，WTF 配置完整复制一份进去，全程不删除文件。
-- 插件只保留整合包这一套，避免和其他插件冲突。
-- 配置按插件合并：你配置过的插件保留你的设置和布局，没配置过的插件使用整合包布局。
-- 新账号要先进游戏登录一次再安装。
+如同时使用 EllesmereUIChat 与 Polestar，可在退出游戏后运行：
 
-**只装插件**：把 `Addon/kkowoUI*` 全部 9 个目录复制到 `_forever_\Interface\AddOns\`，并安装 EllesmereUI。
+```bash
+python Tools/apply_patches.py --apply
+```
 
-### 9 目录模块化架构（v2.0）
+仅包含 2 个极简补丁（聊天标签瞬切 + Polestar 导航优化），不新增其他第三方文件修改。
 
-| 子包目录 | 加载方式 | 职责 |
+## 模块结构
+
+| 子插件 | 加载方式 | 说明 |
 | --- | --- | --- |
-| `kkowoUI` | 常驻核心 | 命名空间、主题与 12.1 安全圆角引擎、动效、存档、Guard（PatchGuard / DeadGuard / ESC 增强 / 返回总控台）、OptionsProxy |
-| `kkowoUI_Media` | 常驻资源 | 17MB 静态共享资源库（字体、原 YaMedia `MerfinMain.tga` 状态条、图标、音效） |
-| `kkowoUI_CoreHUD` | 常驻 | 核心双翼血蓝条与动态技能球（拆分为 4 个文件）、低血量红暗角、施法/挥砍/动作条/姓名板/增益栏动效 |
-| `kkowoUI_QoL` | 常驻 | 任务自动接交/快捷条/经验条、大地图 3D 光柱联动、战斗提醒、Roll/标记/聊天/系统栏、背包拾取与耐久 |
-| `kkowoUI_Tooltip` | 常驻 | MIT 合规内嵌 PrettyTooltip v1.5.0（`/ptip`）+ 全界面悬浮卡片圆角统一与 Scales 对齐 |
-| `kkowoUI_Integrations` | 常驻 | EUI/Polestar/Auctionator/伤害统计圆角与黑曜石明细卡美化、零补丁运行时修复、ModernChrome（拆分为 5 文件）+ 姓名板主城减卡 |
-| `kkowoUI_ClassPack` | 常驻（按职业生效） | 术士灵魂石提醒、猎人技能音效、武器附魔/特效计时条、职业趣味表情喊话 |
-| `kkowoUI_Options` | **LoadOnDemand** | `/kk` 设置面板、整合包总控台与 `/kk doctor` 体检（打开时自动载入，平时 0 内存） |
-| `kkowoUI_KeybindBoard` | **LoadOnDemand** | `/kkkeys` 可视化实体键盘拖拽绑键器（打开时自动载入，平时 0 内存） |
+| `kkowoUI` | 常驻 | 核心框架、主题与安全圆角引擎、存档、守卫与 ESC 队列 |
+| `kkowoUI_Media` | 常驻 | 字体、材质、图标、光柱与音效资源 |
+| `kkowoUI_CoreHUD` | 常驻 | 双翼血蓝条与技能球、低血量提醒、施法/挥砍/动作条/姓名板/增益动效 |
+| `kkowoUI_QoL` | 常驻 | 任务接交与快捷条、经验条、3D 地图光柱、Roll 点条、拾取播报、标记条、聊天条、系统栏、耐久与装备一览 |
+| `kkowoUI_Tooltip` | 常驻 | 内嵌 PrettyTooltip（MIT）与全界面圆角提示框样式 |
+| `kkowoUI_Integrations` | 常驻 | EUI / Polestar / Auctionator / 伤害统计美化、运行时修复、常用插件运行时简体中文补全、主城减卡 |
+| `kkowoUI_ClassPack` | 常驻 | 术士灵魂石提醒、猎人技能音效、武器附魔/特效计时条、职业表情喊话 |
+| `kkowoUI_Options` | 按需加载 | `/kk` 设置面板（6 组 24 页）、总控台与 `/kk selftest` / `/kk doctor` |
+| `kkowoUI_KeybindBoard` | 按需加载 | `/kkkeys` 可视化键位图，支持拖拽绑键与多种键盘尺寸 |
 
-## 功能
+## 主要功能
 
-### 任务与练级
+- **战斗 HUD 与动效**：双翼血蓝条、职业技能球、平滑施法条与挥砍条、武器附魔/特效计时条、EUI 冷却预设条、统一脱战淡隐。
+- **地图标记与任务**：大地图/小地图 `Ctrl/Shift+左键` 落点联动 3D 光柱与北极星导航（距离显示为「米」，支持手动落点门控开关）、自动接交任务、任务等级与经验估算、经验速率条、采集提醒。
+- **拾取、Roll 与标记**：紧凑尾淡拾取微播报（支持 0.11s 依次错峰滑入/滑出与同类合并）、扁平 Roll 点条、快捷团队标记条、敌方/友方/仅名字板统一头顶标记大小及当前目标放大。
+- **聊天与面板美化**：左侧融合聊天条（与聊天框同步淡隐）、战斗记录标签瞬切、圆角聊天气泡、人物面板装备一览、拍卖行精简合并、一键 ESC 关闭主流插件窗口。
+- **零补丁运行时汉化**：为 Polestar、GTFO、Auctionator、BigWigs_Classic、EllesmereUIQoL 与提示框设置页按需补齐简体中文，官方译文优先。
 
-| 模块 | 作用 |
-| --- | --- |
-| 自动接交任务 | 自动接取、提交任务，单选项对话自动选；按住 Shift 临时跳过 |
-| 任务快捷条 | 「接 / 交 / 通告」按钮嵌入任务追踪标题栏，一键切换自动接交和小队进度通告 |
-| 任务等级与经验标注 | 任务追踪里显示难度着色的 [等级] 和预计经验 |
-| 经验与声望条 | 圆角柔光经验条，左侧职业徽印、等级和装等；可交任务预览、双倍经验、经验速率（右键重置） |
-| 采集与拾取闪光提醒 | 草药、矿脉、任务物件和钓鱼浮漂上方显示提醒，联动 Questie |
-| 地图区域等级 | 大陆地图上标注各区域等级区间，兼容 Leatrix_Maps |
-| 游戏物件英文名汉化 | 传送门等只有英文名的物件，名牌改显示中文 |
-
-### 战斗与音效
-
-| 模块 | 作用 |
-| --- | --- |
-| 职业预设冷却条 | 在 EUI 冷却管理器里为当前职业加一组常用技能冷却条，冷却中才显示，学会新技能自动补上 |
-| 武器附魔与特效计时条 | 十字军「神圣力量」等武器触发效果的持续时间条（引擎光环容器驱动，战斗中也能显示）；毒药 / 磨刀石 / 武器油 / 职业灌注的剩余时间条；每项可单独设颜色，可自定义添加 |
-| 进/脱战警报 | 进战、脱战的剑盾提示 |
-| Roll 点增强 | 扁平风装备 Roll 点条；开启 EUI「拾取掷点框」时自动让位 |
-| 快捷标记条 | 8 个团队标记加清除、就位确认、倒数 |
-| 灵魂石到期提醒 | 监控术士绑在队友或自己身上的灵魂石，快到期时提醒，可语音播报 |
-| 猎人技能音效 | 射击、陷阱等技能的自定义音效，自动区分枪械和弓弩 |
-
-### 社交与工具
-
-| 模块 | 作用 |
-| --- | --- |
-| 融合聊天条与窗口美化 | 频道切换和复制、设置、回到底部按钮合成一条，贴在聊天框左侧 |
-| 头顶聊天气泡统一 | 所有头顶气泡统一为圆角卡片，淡入淡出（副本内气泡受暴雪保护，保持原样） |
-| 右键菜单与邮件联系人 | 右键玩家可复制「名字-服务器」、公会邀请；寄信时一键填入小号和收藏联系人 |
-| 趣味职业表情喊话 | 按职业的表情和喊话（坐下喝水报法力、复活、拉人、开门等），可自定义文案 |
-| 背包清理与拾取增强 | 无闪烁快速拾取、包满时的低价值物品清单、背包金币对齐、宏界面放大 |
-| 现代拾取与收益微播报 | 屏幕侧边堆叠显示拾取物品、金币、经验、声望，同类自动合并 |
-| 核心属性与装备耐久面板 | 核心属性和装备耐久合在一个面板，悬停看各部位耐久和修理费 |
-
-### 现代视觉与性能
-
-| 模块 | 作用 |
-| --- | --- |
-| 现代视觉统一与修复 | 职业主题色、角色面板重设计、鸿蒙字体防顶切、静音攻击喊声、地图坐标去重、施法条统一等 |
-| 拍卖行合并与界面统一 | 以暴雪原版「购买 / 出售 / 拍卖」为主，只保留 Auctionator 的「压价扫描」作为第 4 页 |
-| 姓名板与主城减卡优化 | 主城或全局隐藏友方玩家名字，缓解主城卡顿 |
-| 场景性能自动档位 | 主城人多或大型团本时自动换稳帧设置，离开后还原 |
-| 脱战淡隐（统一开关） | 一个开关管理脱战淡隐：动作条、冷却条、核心双翼、属性卡片、伤害统计、计时条、任务栏、系统栏一起淡化，进战 / 选目标 / 鼠标移上立刻恢复；聊天框鼠标移开后很快淡隐 |
-| 一体化系统微菜单栏 | 微菜单、好友和公会在线数、炉石、时钟、帧率、延迟合成一条；装了 QFXSystemBar 时自动让位 |
-| 悬浮提示美化与字号统一 | 全部悬浮提示统一为 PrettyTooltip 风格，可调整字号和紧凑度 |
-
-## 游戏内命令
+## 常用命令
 
 | 命令 | 作用 |
 | --- | --- |
-| `/kk` | 打开设置（别名 `/kkowoui`、`/fui`、`/foreverui`） |
-| `/kk status` | 显示版本和各模块运行状态 |
+| `/kk` | 打开设置面板（别名 `/kkowoui`、`/fui`） |
+| `/kk keys` | 打开可视化键位图 |
 | `/kk unlock` | 进入 EUI 解锁模式调整框体位置 |
-| `/kk slim` / `/kk restore` | 一键停用闲置和重复的插件 / 还原 |
-| `/kk deadguard on\|off` | 登录时自动停用 DD 反复装回来的无效插件（ArcUI、QuestieTrace 等） |
-| `/kk deadguard arc on\|off` | 是否用 EUI 冷却管理器替代 ArcAuras（默认不碰 ArcAuras） |
-| `/kk emote ...` | 趣味喊话：`preview` 只在自己聊天框预览，`drink` / `utility` / `combat` 可绑进宏 |
-| `/kk kw 词1,词2` / `/kk kw clear` | 聊天关键词提醒 |
-| `/kk world 频道名` | 设置世界频道名 |
-| `/kk hud` / `/kk perf` / `/kk friendly` | 开关脱战淡隐 / 强制稳帧 / 友方名字显示方式 |
-| `/kk toast` / `/kk ss` | 预览拾取播报 / 预览灵魂石提醒 |
-| `/kk wp` | 显示 / 关闭武器附魔与特效计时条示例（配合 `/kk unlock` 摆位置） |
+| `/kk status` | 查看版本与各模块运行状态 |
+| `/kk doctor` / `/kk selftest` | 插件环境体检 / 自动化自检 |
+| `/kk slim` / `/kk restore` | 停用冗余插件 / 还原 |
+| `/kk hud` / `/kk perf` / `/kk friendly` | 切换脱战淡隐 / 场景稳帧 / 友方姓名板模式 |
+| `/kk toast` / `/kk ss` / `/kk wp` | 预览拾取播报 / 灵魂石提醒 / 武器特效条 |
 
-## 第三方插件与极简本地补丁
+## 更新日志
 
-kkowoUI v2.0 保留 10 个高频更新的独立上游引擎（原名保留、尊重版权，由 `Tools/update_upstream.py` 与网易 DD 顺畅升级）：EllesmereUI、Polestar、Questie、DungeonsForever、BigWigs/LittleWigs、Auctionator、SpellActivationOverlay、GTFO、Scales、BugSack/+!BugGrabber；并已将原 7 个补丁零补丁化至仅剩 **3 个极简补丁**（带运行时 `PatchGuard` 自动守卫）：
+### v2.0.0
+- **架构重构**：拆分为 9 个独立子插件（资源分离至 `kkowoUI_Media`，设置页与键位图改为 `LoadOnDemand` 按需加载；内嵌 MIT 版 `kkowoUI_Tooltip`）；拆分 `CoreHUD` 与 `ModernChrome` 大文件。
+- **设置面板与文案**：重组为 6 组 24 页，统一开关与折叠「高级」区，全面精简 897 条界面文案并通过自动化规则校验。
+- **聊天与战斗记录**：升级 `eui_chat_tab_fast` 至 v5，战斗记录统一走 EUI 渲染与细滚动条，标签瞬切无重排；左侧聊天条与 EUI 聊天框 1:1 同步淡隐与悬停唤醒。
+- **头顶标记统一**：单一滑块同步敌方、友方与友方仅名字板标记大小，支持当前目标额外放大与呼吸箭头避让，关闭后无损还原。
+- **视觉与动效升级**：新增 3D 地图渐变光柱（支持 5 色主题、任务追踪音效、小地图快捷插旗与手动标记门控）；升级拾取微播报为紧凑尾淡风格并支持依次错峰滑入/滑出；优化施法条、冷却条、武器特效条与 Roll 点条平滑度。
+- **运行态零补丁汉化**：退役旧 `polestar_zhcn_fill` 补丁（总补丁数缩减至 2 个），改由 `kkowoUI_Integrations` 运行时注入 Polestar（含实体名与指南正文）、GTFO、Auctionator、BigWigs_Classic、EllesmereUIQoL 与提示框简体中文。
+- **12.1 引擎合规与稳定**：总控台改用安全路径指引避免 `Settings.OpenToCategory` 触发界面保护；完善键位图与三方插件窗口层级及 ESC 返回；补齐离线 Lua 5.1 回归测试套件（13 项全通过）。
 
-| 补丁 | 改的插件 | 作用 |
-| --- | --- | --- |
-| `eui_chat_tab_fast.py` | EllesmereUIChat | 聊天标签点击即时切换（附 `_kkowoFastTab` 探针） |
-| `polestar_nav_optimize.py` | Polestar | 寻路与怪区路线优化（附 `_kkowoNavOpt` 探针） |
-| `polestar_zhcn_fill.py` | Polestar_zhCN | 补齐 Polestar 未翻译的界面和指南文字（附 `_kkowoZhFilled` 探针） |
-
-网易 DD 更新 EllesmereUI 或 Polestar 后，登录时 `PatchGuard` 会自动检测并在需要时发一条金色提醒；退出游戏双击 `Tools\DD更新后重打补丁.bat` 即可一键恢复。
-
-## 版本
-
-- **2.0.0**：全面架构升级为 **9 目录模块化套件**（含 `kkowoUI_Media` 资源分离 + `kkowoUI_Options` / `kkowoUI_KeybindBoard` 双 `LoadOnDemand` 按需加载 + MIT 合规内嵌 `kkowoUI_Tooltip`），并将原 `ModernChrome.lua`（6,910 行）拆分为 5 文件 + 独立 `NameplateSmart.lua`、`CoreHUD.lua`（4,450 行）拆分为 4 文件；新增 `/kk` 顶层「整合包总控台」与 `PatchGuard` 补丁守卫，支持子界面按 `ESC` 关闭并自动返回总控台（零补丁接管 BigWigs / BugSack / SettingsPanel ESC 关闭）；新增 `DamageMeterSkin` 零补丁美化 EUI 伤害统计圆角条与黑曜石明细悬停卡；修复 `Scales` 提示卡折行/对齐、登录聊天刷屏零污染静默收纳、大地图 3D 光柱双向联动与单图钉去重；上游升级至 `EllesmereUI v9.9.6` + `LittleWigs v12.1.24`，清理 68MB+ 正式服死目录与重叠插件。
-
-## 开发
-
-### 目录
-
-- `Addon/kkowoUI/`：插件本体（`Core/` 框架与设置面板，`Modules/` 各模块，`Data/` 数据，`Media/` 图标、贴图、字体、音效）
-- `Patches/`：第三方插件补丁
-- `Tools/`：检查、部署、补丁、打包和素材生成脚本；`Tools/friend_pack/` 是整合包的安装脚本模板
-- `Profiles/`：网易 DD 分享说明和各版本更新公告
-
-### 修改流程
-
-1. 改代码后运行 `node Tools\check.js`，必须 0 错误 0 警告（检查语法、未声明的全局写入、先用后声明）。
-2. 退出游戏，运行 `powershell -ExecutionPolicy Bypass -File Tools\deploy.ps1`，把插件复制成游戏 AddOns 里的真实文件夹。
-3. 进游戏，`/kk status` 确认版本和模块状态。
-
-约定：
-- 游戏里的 `kkowoUI` 必须是真实文件夹，不用目录链接（网易 DD 会顺着链接监视、占用仓库文件）。
-- 脚本只移动和复制，旧文件一律移进备份，不删除；唯一的删除是确认是目录链接后、非递归地移除链接本身。
-- 12.x 的保密值一律经过 `F.PlainNumber` / `F.PlainString` / `F.IsSecret` 再使用；不往暴雪核心框体和全局表上写自定义字段；只用 EUI 公开接口。
-
-### 脚本
-
-| 脚本 | 作用 |
-| --- | --- |
-| `node Tools\check.js` | 静态检查 |
-| `Tools\deploy.ps1` | 部署插件（需退出游戏）；顺带把旧名 KkowoUI / ForeverUI 的文件夹、存档和 AddOns.txt 迁移成 kkowoUI |
-| `python -I Tools\apply_patches.py --check` / `--apply` | 查看 / 应用全部补丁（`--apply` 需退出游戏）；`Tools\DD更新后重打补丁.bat` 等同于 `--apply` |
-| `python -I Tools\make_friend_pack.py` | 生成整合包压缩包到仓库同级的 `share\`（游戏开着也能打包，配置先脱敏并做隐私扫描） |
-| `Tools\网易DD分享上传.bat` | 网易 DD 配置分享上传助手（脱敏副本换入、上传后换回，需退出游戏） |
-| `python -I Tools\compare_update.py <新版.zip>` | 对比第三方插件新版与当前安装（只读） |
-| `python -I Tools\slim_addons.py` | 游戏外批量停用闲置插件（先备份 AddOns.txt） |
-| `python -I Tools\archive_disabled_addons.py` | 把已停用的插件移到备份目录归档（附还原清单） |
-| `python -I Tools\install_mmo_fonts.py --src <字体目录>` / `--rollback` | 安装 / 回滚界面字体 |
-| `python -I Tools\deploy_raid_markers.py --install` / `--uninstall` | 部署 / 卸载 3D 团队标记图集 |
-| `gen_*.py` / `gen_hd_icons.js` | 重新生成图标、贴图、冷却预设数据和猎人音效 |
-
-### 路径环境变量（游戏不在默认位置时设置）
-
-| 变量 | 含义 | 默认 |
-| --- | --- | --- |
-| `WOW_FOREVER_DIR` | 客户端目录（含 `Interface`、`Fonts`、`WTF`） | `E:\Program Files\World of Warcraft\_forever_` |
-| `WOW_BACKUP_ROOT` | 备份总目录 | 仓库同级的 `backups` |
-| `WOW_ACCOUNT_DIR` | `WTF\Account\<账号目录>` | 分享上传和整合包脚本在只有一个账号时自动识别；`pack_share.py`、`apply_live_config.py` 需手动设置 |
-| `WOW_ADDONS_TXT` | 角色的 `AddOns.txt`（瘦身、归档脚本用） | 无 |
-| `WOW_SHARE_DIR` | 网易 DD 分享的脱敏副本目录 | 仓库同级的 `share-kkowo` |
-| `LUAPARSE_PATH` | `check.js` 用的 luaparse | `Tools/node_modules/luaparse` |
-
-## 版本
-
-- **1.5.1**：彻底修复动作条/冷却条/悬浮提示/武器特效/核心双翼/Roll 条/经验条等圆角图标与卡片偶尔整格变空或被未挖空描边遮挡（正方形图标统一改用 64×64 整图遮罩 `aura-masks/round-*.tga` 避开 12.1 引擎 9 宫格切片遮罩缺陷、取消对游戏图标强设阻塞加载、新增可见态 2 帧稳态等待与 `OnShow`/`Show` 唤醒、修复受限读取误判与原生 `IconMask` 残余，并将 `Theme`/`TooltipStyle`/`WeaponProcs`/`CoreHUD`/`XPBar` 等全部独立遮罩与描边孔洞并入统一安全引擎）；修复 EUI CDM 增益条与追踪冷却条位置自动漂移及 CDM 增益图标显示不完整；全面提升预设冷却条（EUI 追踪条）与武器附魔/特效计时条流畅度（关闭主填充/渐变/光刃像素网格吸附、启用追踪冷却条平滑插值、为武器特效条补充同款羽化光刃与 0.1 秒精度倒计时及高帧率刷新）；快捷标记条新增「头顶 / 姓名板标记大小」滑块（默认 36px 贴近自身头顶暴雪默认 3D 标记，范围 16~64px），并以 1024×1024 解析 SDF 重绘 8 枚超高清抗锯齿团队标记（全级 Mipmap 边缘扩色无白黑杂边）；修复副本内暴雪原生聊天气泡过大（按界面缩放自动调整 `ChatBubbleFont`，支持微调倍率与无损还原）；修复多件装备掉落时 Roll 点条向下压入核心 HUD / 常驻图标区被吞点击（提升 Roll 条至 `HIGH` 层、固定单条锚框并默认向上堆叠、彻底隐藏全部原生 `GroupLootFrame`）；修复动作条圆角被 EUI 重绘边框覆盖与脱战淡隐若干边界问题。
-- **1.5.0**：新增武器附魔与攻击特效计时条（设置页「战斗与音效 → 武器特效」）；脱战淡隐改为统一开关，覆盖全部动作条、冷却条、核心双翼等，聊天框鼠标移开后快速淡隐。
-- **1.4.0**：圆角与战斗动效整体改版（核心双翼、施法 / 挥砍 / 动作条 / 姓名板动效、键位图），人物面板装备一览。
-- **1.3.1**：插件正式定名为 kkowoUI，设置自动迁移；整合包安装改为先完整备份再干净安装。
-- **1.3.0**：悬浮提示、聊天气泡、拍卖行、角色面板、经验条统一风格；新增职业预设冷却条、静音攻击喊声、地图坐标去重、物件名汉化；极速导航改名防 DD 覆盖。
-
-各版本的详细说明见 `Profiles/网易DD更新公告_*.md`。
+### 历史版本
+- **v1.5.1**：修复 12.1 引擎 9 宫格圆角遮罩空图问题，新增 1024×1024 SDF 高清团队标记与 Roll 点条层级优化。
+- **v1.5.0**：新增武器附魔/特效计时条，脱战淡隐合并为统一开关。
+- **v1.4.0**：圆角与战斗动效改版，新增人物面板装备一览与可视化键位图。
+- **v1.3.x**：正式定名 `kkowoUI`，统一提示框、气泡、拍卖行、角色面板与经验条风格。
 
 ## 许可
 
-kkowoUI 本身以 MIT 许可发布（见 `LICENSE`）。EllesmereUI、Polestar、极速导航等第三方插件的版权归各自作者所有。
+kkowoUI 以 MIT 协议开源（见 [LICENSE](LICENSE)）。EllesmereUI、Polestar 等第三方插件版权归原作者所有。

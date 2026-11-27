@@ -24,8 +24,8 @@ local MC = {}
 F._MC = MC
 
 local mod = F.RegisterModule("modernChrome", {
-    title = "现代视觉统一与修复",
-    desc = "统一职业主题色、角色面板声望/技能/PvP 精致美化、高清宠物快乐度图标、施法条风格统一。",
+    title = "外观与界面统一",
+    desc = "统一主题色、战斗伤害字体、人物面板、地图去重与弓箭静音。",
     group = "theme",
     order = 10,
     defaults = {

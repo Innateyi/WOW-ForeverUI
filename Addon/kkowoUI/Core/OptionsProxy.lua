@@ -1,14 +1,14 @@
 ----------------------------------------------------------------------
 --  kkowoUI — Core/OptionsProxy.lua
---  极轻量配置入口代理（常驻仅 ~100 行）：
---    • 启动时向 EllesmereUI 注册 6 个顶层侧边栏菜单，保证打开 /eui 即见
+--  极轻量配置入口代理（常驻）：
+--    • 启动时向 EllesmereUI 注册 6 个顶层侧边栏菜单（24 页，44 模块全覆盖）
 --    • 真正点击菜单页或输入 /kk 时按需加载 kkowoUI_Options (LoadOnDemand: 1)
 --    • 输入 /kkkeys 时按需加载 kkowoUI_KeybindBoard (LoadOnDemand: 1)
 ----------------------------------------------------------------------
 local _, F = ...
 
 local _G = _G
-local ipairs, pcall, type = ipairs, pcall, type
+local ipairs, pcall, tostring, type = ipairs, pcall, tostring, type
 
 local function LoadLoD(addonName)
     if F.IsAddOnLoaded(addonName) then
@@ -22,7 +22,7 @@ local function LoadLoD(addonName)
     if ok and loaded then
         return true
     end
-    F.Print("|cffff5555无法按需加载 " .. addonName .. "：|r" .. tostring(reason or loaded or "未知原因") .. "（请在插件列表确认已启用）。")
+    F.Print("|cffff5555无法加载 " .. addonName .. "：|r" .. tostring(reason or loaded or "未知原因") .. "，请在插件列表确认已启用。")
     return false
 end
 
@@ -48,64 +48,70 @@ end
 F.OPTION_GROUPS = {
     {
         key   = "ControlHub",
-        title = "整合包总控",
-        desc  = "一键打开 kkowoUI_Tooltip 与保留上游核心引擎（按 ESC 自动返回），并提供补丁守卫与重叠开关体检。",
-        pages = { "插件总控台", "重叠体检与补丁守卫" },
+        title = "总控",
+        desc  = "快捷入口、综合体检、一键瘦身与诊断工具。",
+        pages = { "快捷入口", "体检与守卫", "瘦身与高级" },
         isHub = true,
     },
     {
-        key   = "QuestLeveling",
-        title = "任务与练级",
-        desc  = "自动接交任务、任务快捷条、任务经验、经验/声望条、采集与拾取闪光、地图区域等级。",
-        pages = { "任务增强", "经验与地图" },
+        key   = "Appearance",
+        title = "界面外观",
+        desc  = "主题圆角、提示框、系统栏、伤害统计、人物拍卖与窗口沉浸。",
+        pages = { "主题与圆角", "提示框", "系统栏与统计", "人物与拍卖", "窗口与沉浸" },
         pageMap = {
-            ["任务增强"]   = { "questAuto", "questBar", "questXP" },
-            ["经验与地图"] = { "xpBar", "nodeReminder", "zoneLabels", "waypointAutoTrack", "polestarNav", "worldNames" },
+            ["主题与圆角"]   = { "modernChrome:theme", "motionFX", "auraBarSkin" },
+            ["提示框"]       = { "tooltipStyle" },
+            ["系统栏与统计"] = { "systemBar", "damageMeterSkin" },
+            ["人物与拍卖"]   = { "modernChrome:character", "gearList", "auctionSkin" },
+            ["窗口与沉浸"]   = { "immersiveHUD", "perfAutoTier", "extraFrameMover", "keybindBoard" },
         },
     },
     {
-        key   = "CombatAudio",
-        title = "战斗与音效",
-        desc  = "职业预设冷却条、武器附魔与攻击特效计时条、进/脱战剑盾提醒、术士灵魂石到期提醒、猎人技能音效、Roll 点条、快捷标记条。",
-        pages = { "战斗增强", "武器特效", "灵魂石提醒", "猎人音效" },
+        key   = "CombatHUD",
+        title = "战斗 HUD",
+        desc  = "双翼与目标、施法与挥砍、动作条、姓名板、标记与冷却预设。",
+        pages = { "双翼与目标", "施法与挥砍", "动作条与提醒", "姓名板", "标记与标记条" },
         pageMap = {
-            ["战斗增强"]   = { "cdPresets", "combatAlert", "rollBars", "markBar" },
-            ["武器特效"]   = { "weaponProcs" },
-            ["灵魂石提醒"] = { "soulstoneAlert" },
-            ["猎人音效"]   = { "spellSounds" },
+            ["双翼与目标"]   = { "coreHUD", "lowHealthAlert" },
+            ["施法与挥砍"]   = { "castbarMotion", "swingTimerMotion" },
+            ["动作条与提醒"] = { "actionBarMotion", "combatAlert", "cdPresets" },
+            ["姓名板"]       = { "nameplateMotion", "nameplateSmart", "euiRuntimeFixes" },
+            ["标记与标记条"] = { "markBar" },
         },
     },
     {
-        key   = "SocialUtility",
-        title = "社交与工具",
-        desc  = "融合聊天条、右键菜单与邮件联系人、趣味职业表情喊话、极速静默拾取、现代拾取微播报、装备耐久度。",
-        pages = { "聊天与社交", "趣味表情喊话", "拾取与工具" },
+        key   = "QuestMap",
+        title = "任务与地图",
+        desc  = "自动任务、任务条、经验与声望、大地图、导航与采集提醒。",
+        pages = { "自动任务与任务条", "经验与声望", "大地图与导航", "采集提醒" },
         pageMap = {
-            ["聊天与社交"]   = { "chatBar", "chatBubbles", "socialTools" },
-            ["趣味表情喊话"] = { "classEmote" },
-            ["拾取与工具"]   = { "bagUtility", "lootToast", "durability" },
+            ["自动任务与任务条"] = { "questAuto", "questBar", "questXP" },
+            ["经验与声望"]       = { "xpBar" },
+            ["大地图与导航"]     = { "zoneLabels", "waypointAutoTrack", "polestarNav", "modernChrome:map", "worldNames" },
+            ["采集提醒"]         = { "nodeReminder" },
         },
     },
     {
-        key   = "ModernUI",
-        title = "现代视觉与性能",
-        desc  = "全局视觉统一、伤害统计圆角与黑曜石明细卡、人物面板装备一览、姓名板主城减卡、场景性能自动档位、脱战淡隐、一体化系统栏与极简鼠标提示。",
-        pages = { "视觉与性能", "沉浸与系统栏" },
+        key   = "ChatSocial",
+        title = "聊天与社交",
+        desc  = "聊天条、气泡、社交与邮件、拾取播报、掷点条与耐久。",
+        pages = { "聊天条", "气泡与社交", "拾取与耐久" },
         pageMap = {
-            ["视觉与性能"]   = { "modernChrome", "damageMeterSkin", "euiRuntimeFixes", "extraFrameMover", "gearList", "auctionSkin", "nameplateSmart", "perfAutoTier" },
-            ["沉浸与系统栏"] = { "immersiveHUD", "systemBar", "tooltipStyle" },
+            ["聊天条"]     = { "chatBar" },
+            ["气泡与社交"] = { "chatBubbles", "socialTools" },
+            ["拾取与耐久"] = { "bagUtility", "lootToast", "rollBars", "durability" },
         },
     },
     {
-        key   = "MotionFX",
-        title = "动效与视觉增强",
-        desc  = "全局圆角渐变、核心双翼血蓝条与动态旋转技能球、独立宠物与顶部目标条、低血量红暗角、施法/挥砍/动作条/姓名板动效及可视化键位图。",
-        pages = { "总控与圆角", "核心双翼与预警", "施法挥砍与技能条", "姓名板与键位图" },
+        key   = "ClassPack",
+        title = "职业专属",
+        desc  = "术士灵魂石、猎人音效、武器特效与职业表情喊话。",
+        pages = { "灵魂石", "猎人音效", "武器特效", "职业表情" },
         pageMap = {
-            ["总控与圆角"]       = { "motionFX", "auraBarSkin" },
-            ["核心双翼与预警"]   = { "coreHUD", "lowHealthAlert" },
-            ["施法挥砍与技能条"] = { "castbarMotion", "swingTimerMotion", "actionBarMotion" },
-            ["姓名板与键位图"]   = { "nameplateMotion", "keybindBoard" },
+            ["灵魂石"]   = { "soulstoneAlert" },
+            ["猎人音效"] = { "spellSounds", "modernChrome:audio" },
+            ["武器特效"] = { "weaponProcs" },
+            ["职业表情"] = { "classEmote" },
         },
     },
 }

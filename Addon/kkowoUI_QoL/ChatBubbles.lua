@@ -18,7 +18,7 @@ local C_Timer = C_Timer
 
 local mod = F.RegisterModule("chatBubbles", {
     title = "头顶聊天气泡统一",
-    desc = "野外头顶气泡统一为 PrettyTooltip 同源黑曜石圆角卡片与适中字号（淡入/渐隐），自动接管 EUI 旧气泡皮肤；副本内受暴雪保护无法换肤，但会自动按界面缩放调小系统 ChatBubbleFont，避免副本气泡大得挡视野。",
+    desc = "野外气泡采用圆角卡片与淡隐，副本内受暴雪限制仅按比例缩小。",
     group = "social",
     order = 15,
     defaults = {
@@ -788,7 +788,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
         text = "沿用频道颜色",
-        tooltip = "开启：说话白色、大喊红色、NPC 与表情保持游戏原本的颜色。关闭：全部白字。",
+        tooltip = "开启后按说话、大喊与 NPC 频道着色，关闭则统一白色。",
         getValue = function() return db.followColor ~= false end,
         setValue = function(v) db.followColor = v == true; RestyleAll() end,
     })
@@ -796,15 +796,15 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "slider",
-        text = "气泡字号",
-        tooltip = "默认 14：比 EUI 旧皮肤的 12 号小框大，比暴雪原版气泡小。副本内原生气泡也会随之联动缩放。",
+        text = "气泡字号 (px)",
+        tooltip = "默认 14，副本内原生气泡也会随此字号联动缩放。",
         min = 11, max = 20, step = 1,
         getValue = function() return Clamp(db.fontSize, 10, 22, 14) end,
         setValue = function(v) db.fontSize = math_floor(v + 0.5); RestyleAll(); ApplyInstanceBubbleFont() end,
     }, {
         type = "slider",
-        text = "气泡最大宽度",
-        tooltip = "超过此宽度自动换行，长喊话不会横穿半个屏幕。",
+        text = "最大宽度 (px)",
+        tooltip = "超过此宽度自动换行，避免长喊话横穿半个屏幕。",
         min = 180, max = 420, step = 10,
         getValue = function() return Clamp(db.maxWidth, 160, 480, 300) end,
         setValue = function(v) db.maxWidth = math_floor(v + 0.5); RestyleAll() end,
@@ -812,52 +812,63 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "底色浓度",
-        tooltip = "PrettyTooltip 圆角气泡的黑曜石底色不透明度，越大越好读，越小越通透。",
-        min = 0.40, max = 0.95, step = 0.05,
-        getValue = function() return Clamp(db.bgAlpha, 0.40, 0.95, 0.84) end,
-        setValue = function(v) db.bgAlpha = v; RestyleAll() end,
+        type = "toggle",
+        text = "强制队伍气泡",
+        tooltip = "开启后强制显示队伍头顶气泡，关闭则沿用游戏社交设置。",
+        getValue = function() return db.partyBubbles ~= false end,
+        setValue = function(v) db.partyBubbles = v == true; ApplyCVars() end,
     }, {
-        type = "slider",
-        text = "圆角半径",
-        tooltip = "现代 MMO 聊天气泡圆角弧度（默认 8px，拖动实时生效）。",
-        min = 4, max = 12, step = 1,
-        getValue = function() return Clamp(db.cornerRadius, 4, 12, 8) end,
-        setValue = function(v) db.cornerRadius = math_floor(v + 0.5); RestyleAll() end,
+        type = "toggle",
+        text = "副本缩小气泡",
+        tooltip = "副本内气泡受暴雪保护无法换肤，开启后按界面缩放自动调小字号。",
+        getValue = function() return db.scaleInstanceBubble ~= false end,
+        setValue = function(v) db.scaleInstanceBubble = v == true; ApplyInstanceBubbleFont() end,
     })
     y = y - h
 
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "消失渐隐时长（秒）",
-        tooltip = "气泡停留时长由游戏决定；时间到后在原位置用这段时间慢慢淡出。",
-        min = 0.2, max = 2.0, step = 0.1,
-        getValue = function() return Clamp(db.fadeOut, 0, 3, 0.8) end,
-        setValue = function(v) db.fadeOut = v end,
-    }, {
-        type = "toggle",
-        text = "强制显示队伍频道气泡",
-        tooltip = "开启：强制打开队伍 / 副本队伍发言的头顶气泡。关闭：不再强制，沿用你在游戏「界面 → 社交」里的设置（团队频道始终沿用游戏设置）。",
-        getValue = function() return db.partyBubbles ~= false end,
-        setValue = function(v) db.partyBubbles = v == true; ApplyCVars() end,
-    })
-    y = y - h
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "副本内自动缩小原生气泡",
-        tooltip = "副本内气泡受暴雪保护无法换肤，且渲染在世界缩放 1.0 上显得过大；开启后自动按界面缩放调整系统 ChatBubbleFont 字号，使其与野外气泡和姓名板协调一致。",
-        getValue = function() return db.scaleInstanceBubble ~= false end,
-        setValue = function(v) db.scaleInstanceBubble = v == true; ApplyInstanceBubbleFont() end,
-    }, {
-        type = "slider",
-        text = "副本内气泡缩放倍率",
-        tooltip = "在自动匹配界面缩放的基础上微调副本内原生气泡大小（默认 0.90，拖动即时生效）。",
-        min = 0.60, max = 1.30, step = 0.05,
-        disabled = function() return db.scaleInstanceBubble == false end,
-        getValue = function() return Clamp(db.instanceBubbleScale, 0.60, 1.30, 0.90) end,
-        setValue = function(v) db.instanceBubbleScale = v; ApplyInstanceBubbleFont() end,
-    })
-    y = y - h
+    local function buildAdv(w, p, curY)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "底色浓度",
+            tooltip = "调节野外圆角气泡的背景不透明度，越高越清晰。",
+            min = 0.40, max = 0.95, step = 0.05,
+            getValue = function() return Clamp(db.bgAlpha, 0.40, 0.95, 0.84) end,
+            setValue = function(v) db.bgAlpha = v; RestyleAll() end,
+        }, {
+            type = "slider",
+            text = "圆角半径 (px)",
+            tooltip = "调整野外气泡圆角弧度，默认 8px，拖动立即生效。",
+            min = 4, max = 12, step = 1,
+            getValue = function() return Clamp(db.cornerRadius, 4, 12, 8) end,
+            setValue = function(v) db.cornerRadius = math_floor(v + 0.5); RestyleAll() end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "渐隐时长 (秒)",
+            tooltip = "气泡到达停留时间后慢慢淡出所需时长。",
+            min = 0.2, max = 2.0, step = 0.1,
+            getValue = function() return Clamp(db.fadeOut, 0, 3, 0.8) end,
+            setValue = function(v) db.fadeOut = v end,
+        }, {
+            type = "slider",
+            text = "副本缩放 (倍)",
+            tooltip = "在自动适配界面缩放的基础上微调副本内原生气泡大小。",
+            min = 0.60, max = 1.30, step = 0.05,
+            disabled = function() return db.scaleInstanceBubble == false end,
+            getValue = function() return Clamp(db.instanceBubbleScale, 0.60, 1.30, 0.90) end,
+            setValue = function(v) db.instanceBubbleScale = v; ApplyInstanceBubbleFont() end,
+        })
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("chatBubbles", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

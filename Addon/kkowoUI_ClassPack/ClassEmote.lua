@@ -19,7 +19,7 @@ local C_Timer = C_Timer
 
 local mod = F.RegisterModule("classEmote", {
     title = "趣味职业表情喊话",
-    desc = "按职业区分的 /e 橙色自定义表情与趣味喊话（支持坐下回蓝精准法力%、复活/拉人/开门、招牌技能、自定义文案编辑与 /kk emote 宏触发）。",
+    desc = "按职业发送坐下喝水、复活、传送门与招牌技能表情喊话。",
     group = "social",
     order = 30,
     defaults = {
@@ -561,7 +561,7 @@ function mod:TriggerCommand(arg)
         local lines = GetCategoryLines("drink")
         local tpl = PickRandomLine("preview", lines) or FALLBACK_PRESET.drink[1]
         PreviewLocalEmote(FormatTemplate(tpl, { mana = GetManaPct() or 31 }))
-        F.Print("以上为本地预览效果（未发送给他人）。绑定宏用法：/kk emote drink 或 /kk emote 1 或 /kk emote 你的文案")
+        F.Print("以上为本地预览；宏用法：/kk emote drink 或 /kk emote 1。")
         return
     end
 
@@ -581,7 +581,7 @@ function mod:TriggerCommand(arg)
         local lines = GetCategoryLines(catKey)
         local tpl = PickRandomLine("cmd:" .. catKey, lines)
         if not tpl then
-            F.Print("该分类暂无可用文案，请在 /kk → 趣味表情喊话 里编辑。")
+            F.Print("该分类暂无文案，请在「职业专属 → 职业表情」中编辑。")
             return
         end
         msg = FormatTemplate(tpl, { mana = GetManaPct() })
@@ -717,7 +717,7 @@ local function OpenTextEditor(catKey)
                 local defText = Trim(table_concat(defList, "\n"))
                 db.customLines[cls][key] = (txt ~= "" and txt ~= defText) and txt or nil
             end
-            F.Print("已保存趣味表情文案（留空或与职业默认一致时自动使用职业默认与招牌技能专属文案）。")
+            F.Print("已保存自定义表情文案，留空时恢复职业默认。")
             f:Hide()
         end)
 
@@ -787,11 +787,11 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "频道与触发策略",
-        tooltip = "副本内直接发 /e 橙色自定义表情（配合 EUI 聊天框自动显示职业色角色名 + 橙色文案）；野外组队自动切换小队/团队频道以避免暴雪拦截自动 /e。\n点击 /kk emote 宏始终发 /e。",
+        tooltip = "副本内发自定义表情，野外组队自动切小队或团队频道。",
         values = {
-            smart          = "仅组队/副本：副本 /e，野外小队（推荐）",
-            instance_emote = "仅副本/团本内发 /e 橙色表情",
-            emote_only     = "所有组队场景优先发 /e",
+            smart          = "组队/副本智能切换（推荐）",
+            instance_emote = "仅副本内发自定义表情",
+            emote_only     = "组队优先发自定义表情",
         },
         order = { "smart", "instance_emote", "emote_only" },
         getValue = function() return db.channelMode or "smart" end,
@@ -801,14 +801,14 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "坐下喝水回蓝喊话（精准蓝量%）",
-        tooltip = "脱战坐下喝水且法力低于阈值时自动发一条本职业趣味回蓝表情，带入实时法力百分比（如 31%）。",
+        text = "喝水回蓝喊话",
+        tooltip = "脱战坐下喝水且法力低于阈值时发送回蓝表情并带当前百分比。",
         getValue = function() return db.enableDrink ~= false end,
         setValue = function(v) db.enableDrink = v == true end,
     }, {
         type = "slider",
-        text = "喝水触发法力上限（%）",
-        tooltip = "仅当当前法力百分比不高于此值时，坐下喝水才会触发喊话。",
+        text = "喝水法力上限 (%)",
+        tooltip = "当前法力不高于此值时，坐下喝水才会触发喊话。",
         min = 20, max = 95, step = 5,
         getValue = function() return db.drinkManaMax or 85 end,
         setValue = function(v) db.drinkManaMax = v end,
@@ -817,14 +817,14 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "复活 / 拉人 / 开门 / 灵魂石喊话",
-        tooltip = "施放复活队友、战复、灵魂石、召唤仪式、灵魂之井、传送门或造餐时自动发出职业趣味表情。",
+        text = "复活与功能喊话",
+        tooltip = "施放复活、灵魂石、召唤仪式、传送门或造餐时发出职业表情。",
         getValue = function() return db.enableUtility ~= false end,
         setValue = function(v) db.enableUtility = v == true end,
     }, {
         type = "toggle",
-        text = "职业招牌技能通告（假死/误导/嗜血/圣疗等）",
-        tooltip = "施放当前职业招牌技能时自动发出趣味表情（12.x 战斗聊天锁定时自动静默跳过，零报错）。",
+        text = "招牌技能通告",
+        tooltip = "施放本职业招牌技能时发出表情，战斗限制期间自动跳过。",
         getValue = function() return db.enableCombat ~= false end,
         setValue = function(v) db.enableCombat = v == true end,
     })
@@ -832,40 +832,49 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "slider",
-        text = "同类事件防刷屏冷却（秒）",
+        text = "防刷屏冷却 (秒)",
         min = 5, max = 60, step = 5,
         getValue = function() return db.cooldown or 20 end,
         setValue = function(v) db.cooldown = v end,
     }, {
         type = "button",
-        text = "本地预览当前职业效果",
+        text = "本地预览效果",
         noCapture = true,
-        tooltip = "仅在自己聊天框预览「职业色名字 + 橙色表情」效果，不会发给其他玩家。",
+        tooltip = "仅在自己聊天框预览职业表情效果，不发给他人。",
         onClick = function() mod:TriggerCommand("preview") end,
     })
     y = y - h
 
-    local catVals, catOrd = {}, {}
-    for _, c in ipairs(EDIT_CATEGORIES) do
-        catVals[c.key] = c.label
-        catOrd[#catOrd + 1] = c.key
+    local function buildAdv(w, p, curY)
+        local _, rh
+        local catVals, catOrd = {}, {}
+        for _, c in ipairs(EDIT_CATEGORIES) do
+            catVals[c.key] = c.label
+            catOrd[#catOrd + 1] = c.key
+        end
+        _, rh = w:DualRow(p, curY, {
+            type = "dropdown",
+            text = "自定义文案分类",
+            tooltip = "按当前职业独立保存，每行一条随机轮换并支持占位符。",
+            values = catVals,
+            order = catOrd,
+            getValue = function() return selectedEditCat end,
+            setValue = function(v) selectedEditCat = v end,
+        }, {
+            type = "button",
+            text = "编辑分类文案",
+            noCapture = true,
+            tooltip = "打开编辑器修改当前分类文案，也可用 /kk emote 宏触发。",
+            onClick = function() OpenTextEditor(selectedEditCat) end,
+        })
+        curY = curY - rh
+        return curY
     end
-    _, h = W:DualRow(parent, y, {
-        type = "dropdown",
-        text = "选择要自定义的文案分类",
-        tooltip = "按当前角色职业独立保存自定义文案；支持每行一条随机轮换与 {mana}/{target}/{spell} 占位符。",
-        values = catVals,
-        order = catOrd,
-        getValue = function() return selectedEditCat end,
-        setValue = function(v) selectedEditCat = v end,
-    }, {
-        type = "button",
-        text = "编辑所选分类文案",
-        noCapture = true,
-        tooltip = "打开多行编辑器修改当前选中分类的文案。也可在宏里使用 /kk emote 1、/kk emote drink 或 /kk emote 任意文字。",
-        onClick = function() OpenTextEditor(selectedEditCat) end,
-    })
-    y = y - h
 
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("classEmote", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

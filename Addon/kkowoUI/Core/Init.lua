@@ -18,7 +18,7 @@ do
     F.MEDIA = hasMedia and "Interface\\AddOns\\kkowoUI_Media\\Media\\"
         or ("Interface\\AddOns\\" .. ADDON_NAME .. "\\Media\\")
 end
-F.PREFIX = "|cffdca77f[kkowoUI]|r "
+F.PREFIX = "|cffdca77fkkowoUI:|r "
 local math_floor, math_abs = math.floor, math.abs
 local string_format = string.format
 local CreateFrame = CreateFrame
@@ -618,10 +618,10 @@ do
 
     function F.DumpSuppressedLoginMsgs()
         if #suppressed == 0 then
-            F.Print("本次登录没有隐藏任何第三方插件刷屏提示。")
+            F.Print("本次登录未隐藏任何插件提示。")
             return
         end
-        F.Print("本次登录共隐藏 " .. tostring(#suppressed) .. " 条第三方插件提示：")
+        F.Print("本次登录隐藏 " .. tostring(#suppressed) .. " 条插件提示：")
         for i = 1, #suppressed do
             _G.print("  |cff888888" .. tostring(i) .. ".|r " .. suppressed[i])
         end

@@ -8,4 +8,6 @@
 ## LoadOnDemand: 1
 
 ControlHubUI.lua
+HarvestTargets.lua
+Diagnostics.lua
 Options.lua

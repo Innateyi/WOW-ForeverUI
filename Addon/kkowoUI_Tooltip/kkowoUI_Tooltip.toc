@@ -6,7 +6,7 @@
 ## Version: 1.5.0-kkowo
 ## X-License: MIT
 ## X-Upstream: https://github.com/FallenShard/PrettyTooltip
-## IconTexture: Interface\AddOns\kkowoUI_Tooltip\Vendor\art\logo
+## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
 ## SavedVariables: PrettyTooltipDB, PrettyTooltipCaptures
 ## OptionalDeps: kkowoUI, Questie, Auctionator, DialogueUI, EllesmereUI, LibSharedMedia-3.0
 
@@ -69,4 +69,5 @@ Vendor\UI\Debug.lua
 Vendor\UI\Commands.lua
 Vendor\PrettyTooltip.lua
 
+Bridge\TooltipLocaleZh.lua
 Bridge\TooltipStyle.lua

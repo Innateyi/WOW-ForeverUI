@@ -19,8 +19,8 @@ local ipairs, math_abs, pcall, setmetatable, type =
 local C_Timer = C_Timer
 
 local mod = F.RegisterModule("auctionSkin", {
-    title = "拍卖行合并与界面统一",
-    desc = "保留功能完整的暴雪原版「购买（含分类列表）/ 出售（右键放入与放回）/ 拍卖」三大页签，隐藏 Auctionator 重复页签，仅将互补的「压价检查 + 全服市价扫描」合并为第 4 页签「压价扫描」。",
+    title = "拍卖行精简",
+    desc = "保留原版购买、出售与拍卖页，将拍卖助手整合为压价扫描页。",
     group = "theme",
     order = 35,
     defaults = {
@@ -870,8 +870,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local db = self:GetDB()
     local _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "精简重复页签（以暴雪原版为主 + 保留压价扫描）",
-        tooltip = "保留暴雪原版完整好用的「购买（含分类列表）/ 出售（支持右键放入与放回）/ 拍卖」，隐藏 Auctionator 重复的购物/出售与英文介绍页，仅在末尾保留第 4 页「压价扫描」（内置全服市价扫描按钮）。",
+        text = "精简重复页签",
+        tooltip = "隐藏拍卖助手重复页签，仅保留原版三页与末尾压价扫描页。",
         getValue = function() return db.mergeTabs ~= false end,
         setValue = function(v)
             db.mergeTabs = v == true

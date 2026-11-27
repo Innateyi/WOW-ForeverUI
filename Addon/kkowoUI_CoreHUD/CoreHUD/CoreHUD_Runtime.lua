@@ -1221,239 +1221,224 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local db = self:GetDB()
     local _, h
 
-    -- 第一行：一键总开关 + 快捷一键切换新版/原版 EUI 框体按钮
-    _, h = W:DualRow(parent, y, enableSlot, {
-        type = "labeledButton",
-        text = "整套新版 / EUI 原版框体一键切换",
-        buttonText = mod:IsEnabled() and "一键切回原版 EUI" or "一键启用新版 HUD",
-        width = 148,
-        tooltip = "启用新版整套 HUD 时会自动隐藏 EUI 原玩家/宠物/目标框并去重右上角增益；切回原版时即刻 100% 无损恢复全部 EUI 原生框体与右上角状态栏。",
-        onClick = function()
-            local nextOn = not mod:IsEnabled()
-            mod:SetEnabled(nextOn)
-            local EUI = _G.EllesmereUI
-            if EUI and EUI.RefreshPage then pcall(EUI.RefreshPage, EUI, true) end
-            F.Print(nextOn and "已一键启用新版核心双翼、宠物与圆角目标整套 HUD（已自动收起原 EUI 框体）。"
-                or "已一键关闭新版 HUD，并无损恢复 EUI 原生玩家/宠物/目标框体与右上角状态栏。")
-        end,
-    })
-    y = y - h
+    local function GetTopRightMode()
+        if db.hideTopRightBlizzAuras ~= false then
+            return (db.showTopRightMicroToggle ~= false) and "hide_with_toggle" or "hide_all"
+        end
+        return (db.dedupeTopRightAuras ~= false) and "dedupe" or "keep"
+    end
 
-    _, h = W:DualRow(parent, y, {
+    local function SetTopRightMode(v)
+        if v == "hide_with_toggle" then
+            db.hideTopRightBlizzAuras = true
+            db.showTopRightMicroToggle = true
+        elseif v == "hide_all" then
+            db.hideTopRightBlizzAuras = true
+            db.showTopRightMicroToggle = false
+        elseif v == "dedupe" then
+            db.hideTopRightBlizzAuras = false
+            db.dedupeTopRightAuras = true
+        else
+            db.hideTopRightBlizzAuras = false
+            db.dedupeTopRightAuras = false
+        end
+        trState.tempExpanded = false
+        UpdateCombatAuras()
+        SyncTopRightAuraDedupe()
+    end
+
+    _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "居中双翼血蓝条（自动替代 EUI 原玩家框）",
-        tooltip = "开启后显示镜像圆角双翼血蓝条并自动隐藏 EUI 原玩家框；关闭即刻还原 EUI 原玩家框。",
+        text = "显示双翼血蓝条",
+        tooltip = "显示双翼血蓝条并隐藏 EUI 玩家头像，关闭即还原。",
         getValue = function() return db.showCoreHUD ~= false end,
         setValue = function(v) db.showCoreHUD = v == true; ApplyLayoutAndTheme() end,
-    }, {
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "独立宠物圆角框体（自动替代 EUI 原宠物框）",
-        tooltip = "开启后显示独立宠物圆角框并自动隐藏 EUI 原宠物框；关闭即刻还原 EUI 原宠物框。",
+        text = "显示独立宠物条",
+        tooltip = "显示圆角宠物条并隐藏 EUI 宠物头像，关闭即还原。",
         getValue = function() return db.showPetFrame ~= false end,
         setValue = function(v) db.showPetFrame = v == true; ApplyLayoutAndTheme() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
+    }, {
         type = "toggle",
-        text = "统一圆角渐变目标条（自动替代 EUI 原目标框）",
-        tooltip = "开启后显示顶部统一圆角目标条 + 圆形头像 + 目标的目标，并自动隐藏 EUI 原目标与目标的目标框；关闭即刻还原。",
+        text = "显示顶部目标条",
+        tooltip = "显示顶部目标与目标的目标条，并隐藏 EUI 原目标头像。",
         getValue = function() return db.enableTopTarget ~= false end,
         setValue = function(v) db.enableTopTarget = v == true; ApplyLayoutAndTheme() end,
-    }, {
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "中央炫光动态技能球（双环流光+爆发光波）",
-        tooltip = "施法/释放主动技能时丝滑弹性切入并绽放职业色光波（自动排除守护/姿态/炉石），外围双环反向流光+弧形计时。",
+        text = "中央技能球",
+        tooltip = "施放主动技能时在中央显示图标、计时环与职业色光波。",
         getValue = function() return db.showOrb ~= false end,
         setValue = function(v) db.showOrb = v == true; ApplyLayoutAndTheme() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
+    }, {
         type = "toggle",
-        text = "血量 / 蓝量 / 宠物名内嵌至条内（推荐）",
-        tooltip = "将双翼血蓝数值、宠物名与百分比、目标名与血量直接精致内嵌至圆角条内部，让条上方极度清爽且与上方常驻 BUFF 零遮挡。",
+        text = "数值内嵌至条内",
+        tooltip = "将血蓝、宠物名与目标信息放入条内，减少上方遮挡。",
         getValue = function() return db.textInsideBars ~= false end,
         setValue = function(v) db.textInsideBars = v == true; ApplyLayoutAndTheme() end,
-    }, {
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "圆球正上方显示常驻 BUFF（方案 A·守护/姿态）",
-        tooltip = "在中央能量球正上方居中显示猎人守护、姿态、光环、追踪等常驻状态（超 6 个自动 +N 折叠，脱战右键可取消）。",
+        text = "上方显示常驻增益",
+        tooltip = "在圆球上方显示守护、姿态、光环与追踪，超 6 个折叠。",
         getValue = function() return db.showPermanentBuffs ~= false end,
         setValue = function(v) db.showPermanentBuffs = v == true; UpdateCombatAuras() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "dropdown",
-        text = "双翼血 / 蓝数值格式",
-        tooltip = "控制双翼血条、蓝条的数值与百分比顺序（默认镜像靠内：左「血量百分比 | 血量」、右「蓝量 | 蓝量百分比」，让数字贴近中央图标两侧）；怒气/能量/集中等自动仅显示数值。",
-        values = {
-            mirror       = "镜像靠内（左 % | 血量，右 蓝量 | %，推荐）",
-            num_pct      = "数字 | 百分比",
-            pct_num      = "百分比 | 数字",
-            mirror_outer = "镜像靠外（左 血量 | %，右 % | 蓝量）",
-            num          = "仅显示数字",
-            pct          = "仅显示百分比",
-        },
-        order = { "mirror", "num_pct", "pct_num", "mirror_outer", "num", "pct" },
-        getValue = function() return db.wingTextFormat or "mirror" end,
-        setValue = function(v) db.wingTextFormat = v; ApplyLayoutAndTheme() end,
     }, {
-        type = "dropdown",
-        text = "双翼血 / 蓝数值对齐位置",
-        tooltip = "默认紧贴中央图标两侧显示（左血右蓝），也可切换为双翼条内居中或外侧两端。",
-        values = {
-            inner  = "紧贴中央图标两侧（推荐）",
-            center = "双翼条内居中",
-            outer  = "双翼外侧两端",
-        },
-        order = { "inner", "center", "outer" },
-        getValue = function() return db.wingTextAnchor or "inner" end,
-        setValue = function(v) db.wingTextAnchor = v; ApplyLayoutAndTheme() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "圆球下方第一排：限时增益（含 +N 折叠）",
-        tooltip = "紧贴中央能量球正下方居中显示战斗增益图标（超 8 个自动折叠为 +N 悬停全览，脱战右键可取消）。",
+        text = "下方显示限时增益",
+        tooltip = "在圆球下方显示限时增益，超 8 个自动折叠，脱战右键可取消。",
         getValue = function() return db.showCombatBuffs ~= false end,
         setValue = function(v) db.showCombatBuffs = v == true; UpdateCombatAuras() end,
-    }, {
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "圆球下方第二排：自身减益（含 +N 折叠）",
-        tooltip = "在增益排正下方居中显示自身 Debuff（按魔法/诅咒/中毒/疾病语义色描边，无减益零占位）。",
+        text = "下方显示自身减益",
+        tooltip = "在增益排下方按类型着色显示自身减益，无减益时不占位。",
         getValue = function() return db.showCombatDebuffs ~= false end,
         setValue = function(v) db.showCombatDebuffs = v == true; UpdateCombatAuras() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "彻底收起右上角暴雪原生增益/减益栏",
-        tooltip = "默认开启：右上角小地图左侧彻底清空清爽，全部状态统一在双翼上下居中管理；关闭本模块即刻 100% 还原。",
-        getValue = function() return db.hideTopRightBlizzAuras ~= false end,
-        setValue = function(v)
-            db.hideTopRightBlizzAuras = v == true
-            trState.tempExpanded = false
-            UpdateCombatAuras()
-        end,
     }, {
-        type = "toggle",
-        text = "右上角保留极简 [B] 悬停展开微开关",
-        tooltip = "平时低调透明（24%），打团本需要在战斗中右键取消暴雪原生 Buff 时可点一下临时展开原生栏。",
-        disabled = function() return db.hideTopRightBlizzAuras == false end,
-        getValue = function() return db.showTopRightMicroToggle ~= false end,
-        setValue = function(v) db.showTopRightMicroToggle = v == true; SyncTopRightAuraDedupe() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
         type = "dropdown",
-        text = "双翼下方增益（Buff）过滤类别",
-        tooltip = "控制下方第一排显示的增益范围；守护/姿态/光环等常驻状态会自动归类到圆球正上方。",
+        text = "右上角增益栏",
+        tooltip = "控制小地图左侧原版增益栏收起、保留 [B] 按钮或仅去重。",
         values = {
-            non_permanent = "除常驻/守护外全部增益（推荐）",
-            short_2m      = "仅战斗短期触发/爆发（≤2分钟）",
-            short_5m      = "中短期战斗增益（≤5分钟）",
-            all           = "全部限时增益",
+            hide_with_toggle = "收起并保留 [B] 开关",
+            hide_all         = "完全收起",
+            dedupe           = "保留并隐藏已显示项",
+            keep             = "保持原样",
         },
-        order = { "non_permanent", "short_2m", "short_5m", "all" },
-        disabled = function() return db.showCombatBuffs == false end,
-        getValue = function() return db.buffFilter or "non_permanent" end,
-        setValue = function(v) db.buffFilter = v; UpdateCombatAuras() end,
-    }, {
-        type = "toggle",
-        text = "未全收起时自动去重右上角已显示增益",
-        tooltip = "当关闭「彻底收起右上角」时生效：已显示在双翼下方的限时增益不会在右上角重复出现。",
-        disabled = function() return db.hideTopRightBlizzAuras ~= false end,
-        getValue = function() return db.dedupeTopRightAuras ~= false end,
-        setValue = function(v) db.dedupeTopRightAuras = v == true; UpdateCombatAuras() end,
+        order = { "hide_with_toggle", "hide_all", "dedupe", "keep" },
+        getValue = GetTopRightMode,
+        setValue = SetTopRightMode,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "脱战时淡隐核心双翼与宠物条",
-        tooltip = "已并入「现代视觉与性能 → 沉浸与系统栏 → 脱战淡隐（统一开关）」：透明度、触发条件与其它框体一致，总开关关掉时这里也不淡隐。",
-        disabled = function()
-            local um = F.Modules.Get("immersiveHUD")
-            return not (um and um:IsEnabled())
-        end,
-        getValue = function()
-            local um = F.Modules.Get("immersiveHUD")
-            return um ~= nil and um:GetDB().fadeCoreHUD ~= false
-        end,
-        setValue = function(v)
-            local um = F.Modules.Get("immersiveHUD")
-            if not um then return end
-            um:GetDB().fadeCoreHUD = v == true
-            um:Refresh()
-            UpdateIdleFade(false)
-        end,
-    }, blank)
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "上方左翼：武器挥砍 / 猎人自动射击条",
-        tooltip = "采用无限服原生挥砍接口，猎人自动射击自动区分绿色可移动段与金色读瞄段（防卡平射）。",
+        text = "左翼挥砍射击条",
+        tooltip = "在左翼上方显示挥砍条，猎人自动射击区分可移动与读瞄段。",
         getValue = function() return db.showUpperSwing ~= false end,
         setValue = function(v) db.showUpperSwing = v == true; ApplyLayoutAndTheme() end,
     }, {
         type = "toggle",
-        text = "上方右翼：连击点 / 双持副手自适应条",
+        text = "右翼资源副手条",
+        tooltip = "在右翼上方显示连击点或双持副手挥砍条。",
         getValue = function() return db.showUpperClassPower ~= false end,
         setValue = function(v) db.showUpperClassPower = v == true; ApplyLayoutAndTheme() end,
     })
     y = y - h
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "启用受击掉血延迟残影条",
-        tooltip = "受击时血量瞬间下降，底层半透明残影滞留后平滑追赶（兼容 12.x 保密值战斗，不遮挡护盾与治疗预测）。",
-        getValue = function() return db.showTrail ~= false end,
-        setValue = function(v) db.showTrail = v == true; ApplyLayoutAndTheme() end,
-    }, {
-        type = "slider",
-        text = "残影滞留延迟（秒）",
-        min = 0.08, max = 0.35, step = 0.02,
-        disabled = function() return db.showTrail == false end,
-        getValue = function() return F.PlainNumber(db.trailDelay, 0.16) or 0.16 end,
-        setValue = function(v) db.trailDelay = v; ApplyLayoutAndTheme() end,
-    })
-    y = y - h
+    local function buildAdv(w, p, curY)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "dropdown",
+            text = "双翼数值格式",
+            tooltip = "设置双翼血蓝的数值与百分比排布，怒气和能量仅显示数值。",
+            values = {
+                mirror       = "镜像靠内（左 % | 血，右 蓝 | %）",
+                num_pct      = "数字 | 百分比",
+                pct_num      = "百分比 | 数字",
+                mirror_outer = "镜像靠外（左 血 | %，右 % | 蓝）",
+                num          = "仅显示数字",
+                pct          = "仅显示百分比",
+            },
+            order = { "mirror", "num_pct", "pct_num", "mirror_outer", "num", "pct" },
+            getValue = function() return db.wingTextFormat or "mirror" end,
+            setValue = function(v) db.wingTextFormat = v; ApplyLayoutAndTheme() end,
+        }, {
+            type = "dropdown",
+            text = "双翼数值位置",
+            tooltip = "选择双翼数值靠中央图标、条内居中或外侧两端显示。",
+            values = {
+                inner  = "紧贴中央图标两侧",
+                center = "双翼条内居中",
+                outer  = "双翼外侧两端",
+            },
+            order = { "inner", "center", "outer" },
+            getValue = function() return db.wingTextAnchor or "inner" end,
+            setValue = function(v) db.wingTextAnchor = v; ApplyLayoutAndTheme() end,
+        })
+        curY = curY - rh
 
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "单翼宽度（px）",
-        min = 100, max = 180, step = 4,
-        getValue = function() return F.PlainNumber(db.wingWidth, 136) or 136 end,
-        setValue = function(v) db.wingWidth = math_floor(v + 0.5); ApplyLayoutAndTheme() end,
-    }, {
-        type = "slider",
-        text = "核心 HUD 整体缩放",
-        min = 0.75, max = 1.35, step = 0.05,
-        getValue = function() return F.PlainNumber(db.scale, 1.0) or 1.0 end,
-        setValue = function(v) db.scale = v; ApplyLayoutAndTheme() end,
-    })
-    y = y - h
+        _, rh = w:DualRow(p, curY, {
+            type = "dropdown",
+            text = "下方增益过滤",
+            tooltip = "按持续时间过滤下方增益，守护与姿态仍归类到圆球上方。",
+            values = {
+                non_permanent = "除常驻外全部增益",
+                short_2m      = "短期触发（≤2分钟）",
+                short_5m      = "中短期增益（≤5分钟）",
+                all           = "全部限时增益",
+            },
+            order = { "non_permanent", "short_2m", "short_5m", "all" },
+            disabled = function() return db.showCombatBuffs == false end,
+            getValue = function() return db.buffFilter or "non_permanent" end,
+            setValue = function(v) db.buffFilter = v; UpdateCombatAuras() end,
+        }, {
+            type = "toggle",
+            text = "掉血延迟残影",
+            tooltip = "受击掉血时在底层留出半透明残影并平滑追赶，不遮挡护盾。",
+            getValue = function() return db.showTrail ~= false end,
+            setValue = function(v) db.showTrail = v == true; ApplyLayoutAndTheme() end,
+        })
+        curY = curY - rh
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "高级：同时保留 EUI 原生框体（仅对比布局用）",
-        tooltip = "默认关闭（开启新版即自动收起 EUI 原玩家/宠物/目标框体）；若想同时显示两套框体做对比或右键原框体菜单，可临时开启。",
-        getValue = function() return db.keepOriginalEUI == true end,
-        setValue = function(v) db.keepOriginalEUI = v == true; SyncHiddenEUIFrames() end,
-    }, {
-        type = "toggle",
-        text = "双翼 / 宠物 / 目标条可点击（左键选中、右键菜单）",
-        tooltip = "原 EUI 框体收起后，用安全按钮让新版血条、宠物条、目标条与目标的目标都能左键选中、右键打开单位菜单（战斗中同样可用）。关闭后这些条完全鼠标穿透。",
-        getValue = function() return db.clickableHUD ~= false end,
-        setValue = function(v) db.clickableHUD = v == true; CH.SyncClickLayers() end,
-    })
-    y = y - h
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "残影延迟 (秒)",
+            min = 0.08, max = 0.35, step = 0.02,
+            disabled = function() return db.showTrail == false end,
+            getValue = function() return F.PlainNumber(db.trailDelay, 0.16) or 0.16 end,
+            setValue = function(v) db.trailDelay = v; ApplyLayoutAndTheme() end,
+        }, {
+            type = "slider",
+            text = "单翼宽度 (px)",
+            min = 100, max = 180, step = 4,
+            getValue = function() return F.PlainNumber(db.wingWidth, 136) or 136 end,
+            setValue = function(v) db.wingWidth = math_floor(v + 0.5); ApplyLayoutAndTheme() end,
+        })
+        curY = curY - rh
 
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "整体缩放 (倍)",
+            min = 0.75, max = 1.35, step = 0.05,
+            getValue = function() return F.PlainNumber(db.scale, 1.0) or 1.0 end,
+            setValue = function(v) db.scale = v; ApplyLayoutAndTheme() end,
+        }, {
+            type = "toggle",
+            text = "双翼与目标可点击",
+            tooltip = "开启后支持左键选中与右键单位菜单，关闭后完全鼠标穿透。",
+            getValue = function() return db.clickableHUD ~= false end,
+            setValue = function(v) db.clickableHUD = v == true; CH.SyncClickLayers() end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "保留原版头像对比",
+            tooltip = "开启新版双翼时同时保留 EUI 原头像，仅用于布局对比。",
+            getValue = function() return db.keepOriginalEUI == true end,
+            setValue = function(v) db.keepOriginalEUI = v == true; SyncHiddenEUIFrames() end,
+        }, blank)
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("coreHUD", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

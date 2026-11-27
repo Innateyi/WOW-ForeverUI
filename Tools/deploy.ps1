@@ -99,6 +99,22 @@ if (Test-Path -LiteralPath $wtfAccount) {
         [System.IO.File]::WriteAllText($newPath, $newText, $utf8NoBom)   # 再写新文件（文件名大小写也一并改正）
         Write-Host "已迁移存档：$rel -> $newName" -ForegroundColor Green
     }
+    # 9 目录拆包后字体路径已迁至 kkowoUI_Media：同步修正 EllesmereUI.lua 缓存的 fctFontPath，
+    # 避免升级后首次登录时 EllesmereUI_Startup 早于 kkowoUI 加载导致伤害字体回退为系统默认。
+    $euiSvFiles = @(Get-ChildItem -LiteralPath $accRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Name -eq 'SavedVariables' -and $_.Name -match '^EllesmereUI\.lua(\.bak)?$' })
+    foreach ($ef in $euiSvFiles) {
+        $eText = [System.IO.File]::ReadAllText($ef.FullName, [System.Text.Encoding]::UTF8)
+        $eNew = [regex]::Replace($eText, '(?i)Interface(\\\\|\\)AddOns(\\\\|\\)(?:kkowoUI|ForeverUI)(\\\\|\\)Media(\\\\|\\)Fonts(\\\\|\\)', 'Interface$1AddOns$2kkowoUI_Media$3Media$4Fonts$5')
+        if ($eNew -cne $eText) {
+            $rel = $ef.FullName.Substring($accRoot.Length).TrimStart('\')
+            $bakPath = Join-Path $bk ('WTF\' + $rel)
+            Ensure-Dir (Split-Path -Parent $bakPath)
+            Copy-Item -LiteralPath $ef.FullName -Destination $bakPath
+            [System.IO.File]::WriteAllText($ef.FullName, $eNew, $utf8NoBom)
+            Write-Host "已更新伤害字体路径：$rel（kkowoUI -> kkowoUI_Media）" -ForegroundColor Green
+        }
+    }
     $txts = @(Get-ChildItem -LiteralPath $accRoot -Recurse -File -Filter 'AddOns.txt' -Force -ErrorAction SilentlyContinue)
     $pkgNames = @($pkgDirs | ForEach-Object { $_.Name })
     foreach ($t in $txts) {

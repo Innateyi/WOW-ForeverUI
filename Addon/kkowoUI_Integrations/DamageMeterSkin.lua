@@ -19,8 +19,8 @@ local C_Timer = C_Timer
 local ST = F.StyleTokens
 
 local mod = F.RegisterModule("damageMeterSkin", {
-    title = "伤害统计圆角与明细卡美化",
-    desc = "将 EllesmereUI 伤害统计主进度条与悬停伤害明细卡片统一为 kkowoUI 圆角进度条与类 PrettyTooltip 黑曜石柔光背景板（零补丁，关闭即还原）。",
+    title = "伤害统计美化",
+    desc = "为伤害统计主进度条与悬停明细卡应用统一圆角与卡片样式。",
     group = "theme",
     order = 12,
     defaults = {
@@ -447,8 +447,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "明细悬停卡使用圆角 PrettyTooltip 背景板",
-        tooltip = "将伤害统计鼠标悬停明细（技能/目标排行）统一为 kkowoUI 圆角黑曜石渐变 + 顶色带 + 外柔光背景板，并同步圆角技能图标与条。",
+        text = "明细卡统一样式",
+        tooltip = "为伤害统计悬停明细卡应用圆角暗色底板与统一技能图标。",
         getValue = function() return db.skinTooltip ~= false end,
         setValue = function(v) db.skinTooltip = v == true; RefreshAll() end,
     })
@@ -456,8 +456,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "主伤害统计进度条启用圆角",
-        tooltip = "采用 12.1 保密值安全 C++ 锚点遮罩，为伤害/治疗统计主列表进度条添加柔和圆角。",
+        text = "主进度条圆角",
+        tooltip = "为伤害与治疗统计主列表进度条添加柔和圆角。",
         getValue = function() return db.roundMainBars ~= false end,
         setValue = function(v) db.roundMainBars = v == true; RefreshAll() end,
     }, {

@@ -15,8 +15,8 @@ local string_lower, string_match, string_find = string.lower, string.match, stri
 local C_Timer = C_Timer
 
 local mod = F.RegisterModule("worldNames", {
-    title = "游戏物件英文名汉化",
-    desc = "无限服新增的传送门等物件只有英文名（例如 PORTAL TO GROM'GOL），在它们的头顶名牌上改显示中文（传送门：格罗姆高）。",
+    title = "物件名汉化",
+    desc = "将无限服新增传送门等英文世界物件的头顶名牌替换为中文。",
     group = "quest",
     order = 70,
     defaults = {

@@ -31,8 +31,8 @@ local CH = {}
 F._CoreHUD = CH
 
 local mod = F.RegisterModule("coreHUD", {
-    title = "核心双翼、宠物与圆角目标整套 HUD",
-    desc = "开启即自动接管 EUI 玩家/宠物/目标框并自动去重右上角增益减益；关闭或一键切换即刻 100% 无损恢复 EUI 原版框体与右上角状态栏。",
+    title = "双翼与目标",
+    desc = "启用双翼血蓝条、宠物条与顶部目标条，关闭即恢复 EUI 头像。",
     group = "motion",
     order = 10,
     masterKey = "motionFX",

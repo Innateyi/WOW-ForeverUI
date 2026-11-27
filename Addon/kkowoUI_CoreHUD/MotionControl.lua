@@ -21,8 +21,8 @@ local MOTION_SUBMODULES = {
 }
 
 local mod = F.RegisterModule("motionFX", {
-    title = "动效与视觉增强总控",
-    desc = "统一控制 kkowoUI 全套圆角渐变、核心双翼 HUD、动态旋转技能球、施法/挥砍/动作条/姓名板动效与可视化键位图；关闭总开关可一键无损还原。",
+    title = "圆角与动效",
+    desc = "统一设置全局圆角半径与职业色渐变风格，关闭即恢复原样。",
     group = "motion",
     order = 1,
     defaults = {
@@ -127,7 +127,7 @@ local function ResetAllMotionDefaults()
     RefreshAllMotion()
     local EUI = _G.EllesmereUI
     if EUI and EUI.RefreshPage then pcall(EUI.RefreshPage, EUI, true) end
-    F.Print("已将「动效与视觉增强」全部参数恢复为默认值。")
+    F.Print("已恢复动效与圆角默认设置。")
 end
 
 function mod:OnEnable()
@@ -170,7 +170,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
     _, h = W:DualRow(parent, y, {
         type = "slider",
         text = "全局圆角半径（px）",
-        tooltip = "统一调整核心血蓝条、施法条、动作条、增益图标与悬浮提示的圆角弧度（0 = 直角，推荐 6）。",
+        tooltip = "统一调整双翼、施法条、动作条、增益与提示框的圆角弧度。",
         min = 0, max = 10, step = 1,
         getValue = function() return F.PlainNumber(db.cornerRadius, 6) or 6 end,
         setValue = function(v)
@@ -182,12 +182,12 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         text = "恢复动效默认设置",
         buttonText = "一键重置",
         width = 110,
-        tooltip = "将所有动效开关、圆角与坐标恢复默认（绝不影响你现有的 EllesmereUI 配置与其它模块）。",
+        tooltip = "将动效开关、圆角与位置恢复默认，不影响 EUI 自身配置。",
         onClick = function()
             local EUI = _G.EllesmereUI
             if EUI and EUI.ShowConfirmPopup then
                 EUI:ShowConfirmPopup({
-                    title = "恢复动效增强默认设置",
+                    title = "重置动效默认",
                     message = "仅重置 kkowoUI「动效与视觉增强」分区的参数与坐标，不会改动你的 EllesmereUI 原有布局与其它模块。确定继续？",
                     confirmText = "确认恢复",
                     cancelText = "取消",

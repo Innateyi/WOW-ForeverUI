@@ -18,8 +18,8 @@ local C_Timer = C_Timer
 local ST = F.StyleTokens
 
 local mod = F.RegisterModule("gearList", {
-    title = "人物面板右侧装备一览",
-    desc = "打开人物面板（C）时在右侧贴边显示全部当前装备：圆角图标、品质色名称、装等、附魔标记与低耐久提示，悬停看详情。",
+    title = "右侧装备一览",
+    desc = "打开人物面板时在右侧列出全部装备、装等、附魔与低耐久提示。",
     group = "visual",
     order = 22,
     defaults = {
@@ -74,11 +74,50 @@ local SLOT_GROUPS = {
 
 local panel = nil
 local rows = {}
+local gearListRows = setmetatable({}, { __mode = "k" })
+local compareHookInstalled = false
 local separators = {}
 local equippedItemIDs = {}
 local hookedPanels = false
 local refreshQueued = false
 local UpdateAnchor -- 前向声明（刷新时先对齐右缘）
+
+local function HideCompareTooltips()
+    for _, name in ipairs({ "ShoppingTooltip1", "ShoppingTooltip2" }) do
+        local st = _G[name]
+        if st and not (st.IsForbidden and st:IsForbidden()) and st.IsShown and st:IsShown() then
+            pcall(st.Hide, st)
+        end
+    end
+end
+
+local function IsGearListOwnedTooltip(tt)
+    tt = tt or _G.GameTooltip
+    if not (tt and tt.GetOwner) then return false end
+    local ok, owner = pcall(tt.GetOwner, tt)
+    return ok and owner ~= nil and gearListRows[owner] == true
+end
+
+local function EnsureNoSelfCompareHooks()
+    if compareHookInstalled or type(_G.hooksecurefunc) ~= "function" then return end
+    compareHookInstalled = true
+    if type(_G.GameTooltip_ShowCompareItem) == "function" then
+        _G.hooksecurefunc("GameTooltip_ShowCompareItem", function(tt)
+            if IsGearListOwnedTooltip(tt) then
+                HideCompareTooltips()
+            end
+        end)
+    end
+    local mgr = _G.TooltipComparisonManager
+    if type(mgr) == "table" and type(mgr.CompareItem) == "function" then
+        _G.hooksecurefunc(mgr, "CompareItem", function(self)
+            local tt = (type(self) == "table" and self.tooltip) or _G.GameTooltip
+            if IsGearListOwnedTooltip(tt) then
+                HideCompareTooltips()
+            end
+        end)
+    end
+end
 
 ----------------------------------------------------------------------
 --  物品信息读取（全部 pcall + 保密值安全）
@@ -156,6 +195,7 @@ end
 
 local function CreateRow(parent)
     local row = CreateFrame("Button", nil, parent)
+    gearListRows[row] = true
     row:SetHeight(ROW_H)
     row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 
@@ -240,6 +280,14 @@ local function CreateRow(parent)
                 _G.GameTooltip:AddLine("此部位当前未装备物品", 0.62, 0.66, 0.72)
             end
             _G.GameTooltip:Show()
+            HideCompareTooltips()
+            if C_Timer and C_Timer.After then
+                C_Timer.After(0, function()
+                    if IsGearListOwnedTooltip(_G.GameTooltip) then
+                        HideCompareTooltips()
+                    end
+                end)
+            end
         end
     end)
     row:SetScript("OnLeave", function(self)
@@ -284,7 +332,13 @@ local function BuildPanel()
     ST.Hairline(headLine)
     headLine:SetPoint("TOPLEFT", p, "TOPLEFT", PAD_X, -HEADER_H + 4)
     headLine:SetPoint("TOPRIGHT", p, "TOPRIGHT", -PAD_X, -HEADER_H + 4)
-    headLine:SetColorTexture(ACCENT_R, ACCENT_G, ACCENT_B, 0.30)
+    headLine:SetColorTexture(1, 1, 1, 1)
+    if ST.GetClassGradient and ST.ApplyGradient then
+        local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient(nil, "bright")
+        ST.ApplyGradient(headLine, "HORIZONTAL", r2, g2, b2, 0.56, r1, g1, b1, 0.12)
+    else
+        headLine:SetColorTexture(ACCENT_R, ACCENT_G, ACCENT_B, 0.34)
+    end
     p._headLine = headLine
 
     p:SetScript("OnShow", function()
@@ -303,10 +357,17 @@ local function BuildPanel()
     end
     if cf.HookScript then cf:HookScript("OnShow", onHostShow) end
     if host ~= cf and host.HookScript then host:HookScript("OnShow", onHostShow) end
-    -- 先按大致高度画一次卡片底，避免首帧没有背景；真实高度在首次刷新时按行数重算并重画
+    -- 先按大致高度画一次职业渐变流光卡片底，真实高度在首次刷新时按行数重算并重画
     p:SetHeight(HEADER_H + ROW_H * 19 + GROUP_GAP * 2 + 8)
-    F.Theme.PaintPrettyCardOverlay(p, ACCENT_R, ACCENT_G, ACCENT_B, HEADER_H, {
-        alpha = 0.82, haloAlpha = 0.12, haloSpread = 10, headerTopAlpha = 0.22, headerBottomAlpha = 0.00,
+    F.Theme.StyleLuminousCard(p, {
+        palette = "class",
+        radius = 8,
+        bgAlpha = 0.82,
+        tintMix = 0.14,
+        glowAlpha = 0.18,
+        glowWidth = 124,
+        borderAlpha = 0.72,
+        leftBar = false,
     })
     p:Hide()
     panel = p
@@ -447,14 +508,21 @@ RefreshNow = function()
 
     panel:SetHeight(math_max(80, -y + 8))
 
-    -- 每次刷新都按当前尺寸重画卡片（高度随衬衣/战袍开关变化；圆角半径跟随悬浮提示统一设置）
-    F.Theme.PaintPrettyCardOverlay(panel, ACCENT_R, ACCENT_G, ACCENT_B, HEADER_H, {
-        alpha = 0.82,
-        haloAlpha = 0.12,
-        haloSpread = 10,
-        headerTopAlpha = 0.22,
-        headerBottomAlpha = 0.00,
+    -- 每次刷新按当前尺寸重画职业渐变流光卡片（高度随衬衣/战袍开关动态变化）
+    F.Theme.PaintLuminousCard(panel, {
+        palette = "class",
+        radius = 8,
+        bgAlpha = 0.82,
+        tintMix = 0.14,
+        glowAlpha = 0.18,
+        glowWidth = 124,
+        borderAlpha = 0.72,
+        leftBar = false,
     })
+    if panel._headLine and ST.GetClassGradient and ST.ApplyGradient then
+        local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient(nil, "bright")
+        ST.ApplyGradient(panel._headLine, "HORIZONTAL", r2, g2, b2, 0.56, r1, g1, b1, 0.12)
+    end
 end
 
 function mod:QueueRefresh()
@@ -609,6 +677,7 @@ end
 --  生命周期
 ----------------------------------------------------------------------
 function mod:OnEnable()
+    EnsureNoSelfCompareHooks()
     local function onItemEvent()
         if panel and panel:IsVisible() then mod:QueueRefresh() end
     end
@@ -668,13 +737,13 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "已附魔装备显示绿点",
+        text = "已附魔显绿点",
         tooltip = "图标右下角的小绿点表示该装备已经附魔。",
         getValue = function() return db.showEnchantDot ~= false end,
         setValue = function(v) db.showEnchantDot = v == true; mod:OnRefresh() end,
     }, {
         type = "toggle",
-        text = "耐久低于 60% 时提示",
+        text = "低耐久度提示",
         tooltip = "在装等左侧显示该件装备的剩余耐久百分比（已损坏显示红字）。",
         getValue = function() return db.showLowDurability ~= false end,
         setValue = function(v) db.showLowDurability = v == true; mod:OnRefresh() end,

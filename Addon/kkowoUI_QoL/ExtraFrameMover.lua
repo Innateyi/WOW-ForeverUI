@@ -26,8 +26,8 @@ local TARGET_FRAMES = {
 }
 
 local mod = F.RegisterModule("extraFrameMover", {
-    title = "补充窗口拖动与缩放（衔接 EUI Shifter）",
-    desc = "为 EUI Shifter 未覆盖的 ESC 菜单、经典飞行路线图与交易窗口补充 Shift+左键拖动与 Ctrl+滚轮缩放，配合 EUI Shifter 彻底替代 BlizzMove。",
+    title = "补充窗口拖动",
+    desc = "为系统菜单、飞行路线图与交易窗口补充 Shift 拖动与滚轮缩放。",
     group = "theme",
     order = 44,
     defaults = {
@@ -97,11 +97,14 @@ local function HookOneFrame(spec)
     end
     hookedFrames[frame] = true
 
-    pcall(frame.SetMovable, frame, true)
-    pcall(frame.SetClampedToScreen, frame, true)
-    pcall(frame.EnableMouse, frame, true)
-    pcall(frame.EnableMouseWheel, frame, true)
-    pcall(frame.RegisterForDrag, frame, "LeftButton")
+    F.RunOutOfCombat("kkowoUI_EFM_" .. key, function()
+        if frame.IsForbidden and frame:IsForbidden() then return end
+        pcall(frame.SetMovable, frame, true)
+        pcall(frame.SetClampedToScreen, frame, true)
+        pcall(frame.EnableMouse, frame, true)
+        pcall(frame.EnableMouseWheel, frame, true)
+        pcall(frame.RegisterForDrag, frame, "LeftButton")
+    end)
 
     frame:HookScript("OnDragStart", function(self)
         if not mod._active then return end
@@ -168,7 +171,7 @@ local function ResetAll()
             end
         end
     end
-    F.Print("已重置补充窗口位置与缩放（ESC 菜单保持 0.80，重载后完全复位）。")
+    F.Print("已重置补充窗口位置与缩放，重载后生效。")
 end
 
 function mod:OnEnable()
@@ -202,8 +205,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "slider",
-        text = "ESC 系统菜单缩放",
-        tooltip = "独立调整 ESC 系统菜单（GameMenuFrame）大小，默认 0.80（与原 BlizzMove 习惯一致）；也可在窗口上按住 Ctrl+滚轮实时调节。",
+        text = "系统菜单缩放",
+        tooltip = "调节 ESC 菜单大小（默认 0.80），也可按住 Ctrl+滚轮缩放。",
         min = 0.60, max = 1.25, step = 0.05,
         getValue = function()
             local sc = type(db.scales) == "table" and db.scales.GameMenuFrame
@@ -221,7 +224,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "button",
-        text = "重置补充窗口位置与缩放",
+        text = "重置窗口位置",
         buttonText = "恢复默认",
         noCapture = true,
         tooltip = "重置 ESC 菜单、经典飞行路线图与交易窗口的拖动位置与缩放。",

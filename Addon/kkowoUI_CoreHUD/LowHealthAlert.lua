@@ -17,8 +17,8 @@ local ST = F.StyleTokens
 local M = F.Motion
 
 local mod = F.RegisterModule("lowHealthAlert", {
-    title = "低血量全屏呼吸暗角预警",
-    desc = "玩家生命值低于阈值时，屏幕四周浮现柔和深红渐变呼吸暗角并触发血条微频警报（兼容 12.x 保密值，支持自定义音效路径）。",
+    title = "低血量预警",
+    desc = "血量低于阈值时在屏幕四周显示深红脉冲暗角，可选提示音。",
     group = "motion",
     order = 15,
     masterKey = "motionFX",
@@ -31,7 +31,7 @@ local mod = F.RegisterModule("lowHealthAlert", {
         pulseBar = true,      -- 联动核心血条微频呼吸闪烁
         playSound = false,    -- 可选低血量音效提醒
         soundKit = 8959,      -- 默认暴雪团队警告音（自定义路径留空时使用）
-        customSoundPath = "", -- 可选自定义 mp3/ogg/wav 路径，如 Interface\AddOns\kkowoUI\Media\SpellSounds\lowhp.mp3
+        customSoundPath = "", -- 可选自定义 mp3/ogg/wav 路径，如 Interface\AddOns\kkowoUI_Media\Media\SpellSounds\lowhp.mp3
     },
 })
 
@@ -293,13 +293,13 @@ function mod:OnRefresh()
     EvaluateHealth()
 end
 
-function mod:BuildOptions(W, parent, y, enableSlot)
+function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local db = self:GetDB()
     local _, h
 
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "slider",
-        text = "触发血量阈值（%）",
+        text = "触发阈值 (%)",
         tooltip = "玩家生命值低于该百分比时触发全屏红暗角预警（默认 30%）。",
         min = 10, max = 60, step = 5,
         getValue = function() return F.PlainNumber(db.threshold, 30) or 30 end,
@@ -312,21 +312,6 @@ function mod:BuildOptions(W, parent, y, enableSlot)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "暗角最大透明度",
-        min = 0.25, max = 1.0, step = 0.05,
-        getValue = function() return F.PlainNumber(db.maxAlpha, 0.78) or 0.78 end,
-        setValue = function(v) db.maxAlpha = v; ApplyVignetteGeom() end,
-    }, {
-        type = "slider",
-        text = "暗角边缘宽度（px）",
-        min = 80, max = 260, step = 10,
-        getValue = function() return F.PlainNumber(db.edgeDepth, 150) or 150 end,
-        setValue = function(v) db.edgeDepth = v; ApplyVignetteGeom() end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "仅战斗中触发",
         getValue = function() return db.combatOnly == true end,
@@ -334,7 +319,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
     }, {
         type = "toggle",
         text = "低血量音效提醒",
-        tooltip = "低血量触发预警时播放警报音效（可在存档 customSoundPath 填自定义语音路径）。",
+        tooltip = "低于血量阈值时播放警报音效，支持在存档中指定音效路径。",
         getValue = function() return db.playSound == true end,
         setValue = function(v) db.playSound = v == true end,
     })
@@ -345,21 +330,48 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         text = "预览低血量红暗角",
         buttonText = "预览 3 秒",
         width = 110,
-        tooltip = "立即预览 3 秒全屏四边深红呼吸暗角与血条脉动效果。",
+        tooltip = "立即预览 3 秒屏幕四周红暗角与血条脉冲效果。",
         onClick = function() mod:PreviewVignette() end,
-    }, {
-        type = "toggle",
-        text = "联动血条呼吸闪烁",
-        getValue = function() return db.pulseBar ~= false end,
-        setValue = function(v)
-            db.pulseBar = v == true
-            local core = F.Modules.Get("coreHUD")
-            if core and core.SetLowHealthPulse then
-                core:SetLowHealthPulse(db.pulseBar and (isLowNow or previewing))
-            end
-        end,
-    })
+    }, blank)
     y = y - h
 
+    local function buildAdv(w, p, curY, blk)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "暗角最大透明度",
+            min = 0.25, max = 1.0, step = 0.05,
+            getValue = function() return F.PlainNumber(db.maxAlpha, 0.78) or 0.78 end,
+            setValue = function(v) db.maxAlpha = v; ApplyVignetteGeom() end,
+        }, {
+            type = "slider",
+            text = "暗角宽度 (px)",
+            min = 80, max = 260, step = 10,
+            getValue = function() return F.PlainNumber(db.edgeDepth, 150) or 150 end,
+            setValue = function(v) db.edgeDepth = v; ApplyVignetteGeom() end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "血条脉冲闪烁",
+            getValue = function() return db.pulseBar ~= false end,
+            setValue = function(v)
+                db.pulseBar = v == true
+                local core = F.Modules.Get("coreHUD")
+                if core and core.SetLowHealthPulse then
+                    core:SetLowHealthPulse(db.pulseBar and (isLowNow or previewing))
+                end
+            end,
+        }, blk)
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("lowHealthAlert", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y, blank)
+    end
     return y
 end

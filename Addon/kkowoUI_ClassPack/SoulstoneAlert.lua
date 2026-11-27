@@ -26,7 +26,7 @@ local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("soulstoneAlert", {
     title = "灵魂石到期提醒",
-    desc = "监控术士绑在队友或自己身上的灵魂石（含 16896 特效灵魂石及全阶），快到期时高亮提醒并支持系统语音播报。",
+    desc = "监控灵魂石剩余时间，快到期时高亮提示并支持语音播报。",
     group = "combat",
     order = 15,
     defaults = {
@@ -122,9 +122,6 @@ local lastVoiceKind = nil
 local bagInfoCache = { at = 0, data = nil }
 local eventsBound = false
 local scanGeneration = 0
-
-local gradC1 = _G.CreateColor and _G.CreateColor(0, 0, 0, 1) or nil
-local gradC2 = _G.CreateColor and _G.CreateColor(0, 0, 0, 0) or nil
 
 -- 前向声明（严格满足 check.js 零先用后声明规则）
 local ScanGroup
@@ -1374,29 +1371,16 @@ local function CreateCard()
     -- 常态卡片只接收悬停（看详情），点击穿透到游戏画面；预览 / 已过期卡片由 RenderAll 开启点击（右键关闭、Shift 拖动）
     if card.SetMouseClickEnabled then card:SetMouseClickEnabled(false) end
     card._clicksOn = false
-    F.Theme.StylePanel(card, 0.90, 0.84)
-
-    -- 顶部 1px 柔和镜面高光（与 kkowoUI 黑曜石卡片一致）
-    local topSpec = card:CreateTexture(nil, "BORDER", nil, 1)
-    topSpec:SetHeight(1)
-    topSpec:SetPoint("TOPLEFT", card, "TOPLEFT", 1, -1)
-    topSpec:SetPoint("TOPRIGHT", card, "TOPRIGHT", -1, -1)
-    topSpec:SetColorTexture(1, 1, 1, 0.12)
-    card._topSpec = topSpec
-
-    -- 左侧 2px 状态竖条 + 柔和横向光晕
-    local leftBar = card:CreateTexture(nil, "OVERLAY", nil, 2)
-    leftBar:SetWidth(2)
-    leftBar:SetPoint("TOPLEFT", card, "TOPLEFT", 1, -1)
-    leftBar:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 1, 3)
-    card._leftBar = leftBar
-
-    local glow = card:CreateTexture(nil, "BACKGROUND", nil, -4)
-    glow:SetWidth(92)
-    glow:SetPoint("TOPLEFT", card, "TOPLEFT", 1, -1)
-    glow:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 1, 3)
-    glow:SetTexture(F.Theme.FLAT_TEX)
-    card._glow = glow
+    F.Theme.StyleLuminousCard(card, {
+        r = COLOR_WARLOCK[1], g = COLOR_WARLOCK[2], b = COLOR_WARLOCK[3],
+        radius = 7,
+        bgAlpha = 0.82,
+        tintMix = 0.18,
+        glowAlpha = 0.26,
+        glowWidth = 104,
+        borderAlpha = 0.80,
+        leftBar = true,
+    })
 
     -- 预警呼吸描边层（原生 AnimationGroup 驱动，零 Lua OnUpdate 开销）
     local pulseHost = CreateFrame("Frame", nil, card)
@@ -1572,21 +1556,27 @@ local function PaintCardTone(card, tone, r, g, b, pulsing)
     if card._lastTone == tone then
         return
     end
+    local prevTone = card._lastTone
     card._lastTone = tone
-    card._leftBar:SetColorTexture(r, g, b, 0.96)
-    card._bar:SetStatusBarColor(r, g, b, 0.92)
-    if card._glow.SetGradient and gradC1 and gradC2 then
-        gradC1:SetRGBA(r, g, b, pulsing and 0.28 or 0.16)
-        gradC2:SetRGBA(r, g, b, 0.00)
-        pcall(card._glow.SetGradient, card._glow, "HORIZONTAL", gradC1, gradC2)
+    F.Theme.PaintLuminousCard(card, {
+        r = r, g = g, b = b,
+        radius = 7,
+        bgAlpha = 0.82,
+        tintMix = pulsing and 0.24 or 0.18,
+        glowAlpha = pulsing and 0.34 or 0.24,
+        glowWidth = 104,
+        borderAlpha = pulsing and 0.90 or 0.78,
+        leftBar = true,
+    })
+    if F.StyleTokens and F.StyleTokens.ApplyBarGradient then
+        card._bar:SetStatusBarColor(1, 1, 1, 1)
+        F.StyleTokens.ApplyBarGradient(card._bar, r, g, b,
+            math_min(1, r * 0.45 + 0.55), math_min(1, g * 0.45 + 0.55), math_min(1, b * 0.45 + 0.55), 0.96)
     else
-        card._glow:SetVertexColor(r, g, b, pulsing and 0.20 or 0.12)
+        card._bar:SetStatusBarColor(r, g, b, 0.92)
     end
-    if card._fuiBorders then
-        local mix = pulsing and 0.65 or 0.34
-        for _, ln in ipairs(card._fuiBorders) do
-            ln:SetColorTexture(r * mix + 0.14, g * mix + 0.14, b * mix + 0.16, pulsing and 0.88 or 0.76)
-        end
+    if prevTone and prevTone ~= tone and pulsing and F.Theme.PlayLuminousShimmer then
+        F.Theme.PlayLuminousShimmer(card)
     end
     if pulsing then
         for _, ln in ipairs(card._pulseEdges) do
@@ -2153,7 +2143,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
         text = "仅术士角色生效",
-        tooltip = "默认仅术士角色挂载事件监控（其他职业零开销）；非术士角色关闭此项时会自动切换为监控「全队任意灵魂石」，方便团长或治疗查看。",
+        tooltip = "默认仅术士生效；非术士关闭本项后自动监控全队灵魂石。",
         getValue = function() return db.warlockOnly ~= false end,
         setValue = function(v)
             db.warlockOnly = v == true
@@ -2172,7 +2162,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, {
         type = "dropdown",
         text = "提醒显示模式",
-        tooltip = "「常驻紧凑计时卡」只要灵魂石生效就会显示小巧倒计时条，快到期自动高亮闪烁；「仅快到期弹出」平时完全隐藏，到达预警时间才滑出提醒。",
+        tooltip = "常驻卡持续显示倒计时，仅快到期弹出平时隐藏。",
         values = {
             always   = "常驻紧凑计时卡（推荐）",
             expiring = "仅快到期时弹出提醒",
@@ -2185,8 +2175,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         end,
     }, {
         type = "slider",
-        text = "提前预警时间（秒）",
-        tooltip = "灵魂石剩余时间低于该秒数时切换高亮预警并触发语音提醒（默认 180 秒 = 3 分钟）。",
+        text = "提前预警 (秒)",
+        tooltip = "剩余时间低于该值时高亮预警并触发语音，默认 180 秒。",
         min = 30, max = 300, step = 30,
         getValue = function() return db.warnSeconds or 180 end,
         setValue = function(v)
@@ -2208,7 +2198,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, {
         type = "dropdown",
         text = "灵魂石监控范围",
-        tooltip = "「仅我绑定的灵魂石」只追踪你自己施放的灵魂石；「全队任意灵魂石」可同时监控团本中多位术士的灵魂石。",
+        tooltip = "可只追踪自己施放的灵魂石，或同时监控全队多位术士。",
         values = {
             mine = "仅我绑定的灵魂石（推荐）",
             any  = "全队任意术士的灵魂石",
@@ -2234,8 +2224,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         end,
     }, {
         type = "toggle",
-        text = "同时追踪绑给自己的灵魂石",
-        tooltip = "关闭后仅追踪绑在队友身上的灵魂石；开启后绑在自己身上也会计时与预警。",
+        text = "追踪自身灵魂石",
+        tooltip = "关闭后仅追踪队友，开启后绑给自己也会计时与预警。",
         getValue = function() return db.includeSelf ~= false end,
         setValue = function(v)
             db.includeSelf = v == true
@@ -2260,114 +2250,23 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "启用语音提醒（系统 TTS）",
-        tooltip = "灵魂石快到期时通过游戏内置文字转语音（TTS）播报中文提醒，可随时关闭静音。",
+        text = "启用语音提醒",
+        tooltip = "灵魂石快到期时通过系统语音播报中文提醒，可随时静音。",
         getValue = function() return db.voiceAlert ~= false end,
         setValue = function(v)
             db.voiceAlert = v == true
             if not v then StopTTS() end
         end,
     }, {
-        type = "toggle",
-        text = "语音播报包含队友名字",
-        tooltip = "开启后播报「某某的灵魂石即将到期，请及时补绑」；关闭则播报简洁通用提示，避免生僻字符读音怪异。",
-        getValue = function() return db.voiceIncludeName == true end,
-        setValue = function(v) db.voiceIncludeName = v == true end,
-    })
-    y = y - h
-
-    local voiceVals, voiceOrd = BuildVoiceDropdown()
-    _, h = W:DualRow(parent, y, {
-        type = "dropdown",
-        text = "语音音色",
-        tooltip = "列表实时读取当前 Windows/系统可用语音包；建议选带中文标识的音色或保持自动。",
-        values = voiceVals,
-        order = voiceOrd,
-        getValue = function()
-            local cur = db.voiceID or "auto"
-            return voiceVals[cur] and cur or "auto"
-        end,
-        setValue = function(v) db.voiceID = v end,
-    }, {
-        type = "dropdown",
-        text = "辅助提示音效",
-        tooltip = "可额外叠加一段简短游戏内置提示音；若系统未安装 TTS 语音包，触发语音提醒时会自动用团队警报音兜底。",
-        values = {
-            none     = "无（仅语音 / 静音）",
-            ready    = "就位确认（8960）",
-            raidwarn = "团队警报（8959）",
-        },
-        order = { "none", "ready", "raidwarn" },
-        getValue = function() return db.soundCue or "none" end,
-        setValue = function(v) db.soundCue = v end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "语音音量",
-        min = 20, max = 100, step = 10,
-        getValue = function() return db.voiceVolume or 100 end,
-        setValue = function(v) db.voiceVolume = v end,
-    }, {
-        type = "slider",
-        text = "语音语速",
-        tooltip = "0 为正常语速，正数加快，负数放慢。",
-        min = -3, max = 3, step = 1,
-        getValue = function() return db.voiceRate or 0 end,
-        setValue = function(v) db.voiceRate = v end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "剩余 30 秒二次语音催促",
-        tooltip = "除首次提前预警外，在剩余不足 30 秒时再进行一次紧急语音提醒（需预警时间 ≥ 60 秒）。",
-        getValue = function() return db.voiceSecondAlert == true end,
-        setValue = function(v) db.voiceSecondAlert = v == true end,
-    }, {
-        type = "toggle",
-        text = "自然到期显示「已过期」提醒",
-        tooltip = "灵魂石倒计时归零后短暂显示 8 秒红色补绑提示；队友死亡消耗灵魂石时不会误报。",
-        getValue = function() return db.alertOnExpire ~= false end,
-        setValue = function(v) db.alertOnExpire = v == true end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "自然到期时也语音播报",
-        tooltip = "灵魂石自然过期消失瞬间额外播报「灵魂石已过期，请重新绑定」。",
-        getValue = function() return db.voiceOnExpire == true end,
-        setValue = function(v) db.voiceOnExpire = v == true end,
-    }, {
-        type = "toggle",
-        text = "同步本地聊天框文字提醒",
-        tooltip = "快到期或过期时在自己聊天框输出一条带颜色的本地提示（仅自己可见，绝不刷队聊）。",
-        getValue = function() return db.chatAlert == true end,
-        setValue = function(v) db.chatAlert = v == true end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "slider",
-        text = "卡片宽度",
-        min = 210, max = 320, step = 10,
-        getValue = function() return db.cardWidth or 248 end,
-        setValue = function(v)
-            db.cardWidth = v
-            RenderAll()
-        end,
-    }, {
         type = "button",
         text = "试听语音提醒",
         noCapture = true,
-        tooltip = "立即按当前音色、音量与语速试听中文语音提醒（非术士角色也可测试）。",
+        tooltip = "按当前音色、音量与语速试听语音提醒，非术士也可测试。",
         onClick = function() self:TestVoice() end,
     })
     y = y - h
 
-    _, h = W:WideDualButton(parent, "预览：正常计时卡（无语音）", "预览：即将到期 + 语音", y,
+    _, h = W:WideDualButton(parent, "预览：正常计时卡", "预览：快到期 + 语音", y,
         function() self:ShowPreview("normal") end,
         function() self:ShowPreview("expiring") end)
     y = y - h
@@ -2377,5 +2276,105 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         function() DismissPreview() end)
     y = y - h
 
+    local function buildAdv(w, p, curY)
+        local _, rh
+        local voiceVals, voiceOrd = BuildVoiceDropdown()
+        _, rh = w:DualRow(p, curY, {
+            type = "dropdown",
+            text = "语音音色",
+            tooltip = "读取系统可用语音包，建议选择中文音色或保持自动。",
+            values = voiceVals,
+            order = voiceOrd,
+            getValue = function()
+                local cur = db.voiceID or "auto"
+                return voiceVals[cur] and cur or "auto"
+            end,
+            setValue = function(v) db.voiceID = v end,
+        }, {
+            type = "dropdown",
+            text = "辅助提示音效",
+            tooltip = "可叠加内置提示音；无语音包时自动改用团队警报音。",
+            values = {
+                none     = "无（仅语音 / 静音）",
+                ready    = "就位确认（8960）",
+                raidwarn = "团队警报（8959）",
+            },
+            order = { "none", "ready", "raidwarn" },
+            getValue = function() return db.soundCue or "none" end,
+            setValue = function(v) db.soundCue = v end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "slider",
+            text = "语音音量 (%)",
+            min = 20, max = 100, step = 10,
+            getValue = function() return db.voiceVolume or 100 end,
+            setValue = function(v) db.voiceVolume = v end,
+        }, {
+            type = "slider",
+            text = "语音语速",
+            tooltip = "0 为正常语速，正数加快，负数放慢。",
+            min = -3, max = 3, step = 1,
+            getValue = function() return db.voiceRate or 0 end,
+            setValue = function(v) db.voiceRate = v end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "播报队友名字",
+            tooltip = "开启后播报具体队友名，关闭则播报简洁通用提醒。",
+            getValue = function() return db.voiceIncludeName == true end,
+            setValue = function(v) db.voiceIncludeName = v == true end,
+        }, {
+            type = "toggle",
+            text = "剩30秒二次催促",
+            tooltip = "剩余不足 30 秒时再播报一次，需提前预警至少 60 秒。",
+            getValue = function() return db.voiceSecondAlert == true end,
+            setValue = function(v) db.voiceSecondAlert = v == true end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "显示已过期提醒",
+            tooltip = "倒计时归零后显示 8 秒补绑提示，队友阵亡消耗时不误报。",
+            getValue = function() return db.alertOnExpire ~= false end,
+            setValue = function(v) db.alertOnExpire = v == true end,
+        }, {
+            type = "toggle",
+            text = "过期时语音播报",
+            tooltip = "自然过期消失瞬间额外播报重新绑定提醒。",
+            getValue = function() return db.voiceOnExpire == true end,
+            setValue = function(v) db.voiceOnExpire = v == true end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "聊天框文字提醒",
+            tooltip = "快到期或过期时仅在自己聊天框输出一条本地提示。",
+            getValue = function() return db.chatAlert == true end,
+            setValue = function(v) db.chatAlert = v == true end,
+        }, {
+            type = "slider",
+            text = "卡片宽度 (px)",
+            min = 210, max = 320, step = 10,
+            getValue = function() return db.cardWidth or 248 end,
+            setValue = function(v)
+                db.cardWidth = v
+                RenderAll()
+            end,
+        })
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("soulstoneAlert", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

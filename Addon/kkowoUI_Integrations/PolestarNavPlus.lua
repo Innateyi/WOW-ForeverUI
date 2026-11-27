@@ -22,8 +22,8 @@ local GetTime = GetTime
 local ST = F.StyleTokens
 
 local mod = F.RegisterModule("polestarNav", {
-    title = "Polestar 导航与任务怪优化",
-    desc = "自动启用 Polestar 道路优先寻路、视野检测到当前任务怪时就近锁定防赶人并轻提示，并在 /kk 统一配置 Polestar 原生进入副本所在地图提醒。",
+    title = "北极星导航优化",
+    desc = "优先沿道路寻路，附近有任务怪时就近锁定并提醒本图副本。",
     group = "quest",
     order = 65,
     defaults = {
@@ -110,7 +110,7 @@ end
 local function ForceReplanNow()
     local P = GetPolestar()
     if not (P and type(P.Nav) == "table") then
-        F.Print("未检测到 Polestar 插件。")
+        F.Print("未检测到北极星指南插件。")
         return false
     end
     local walk = P.Nav.walk
@@ -120,7 +120,7 @@ local function ForceReplanNow()
     if type(P.Nav.Refresh) == "function" then
         pcall(P.Nav.Refresh)
     end
-    F.Print("已强制重算当前 Polestar 导航路线。")
+    F.Print("已重算北极星指南路线。")
     return true
 end
 
@@ -262,7 +262,7 @@ local function DetectNearbyQuestMob(goal)
         if okL and type(plates) == "table" then
             for i = 1, #plates do
                 local plate = plates[i]
-                if type(plate) == "table" then
+                if type(plate) == "table" and not (plate.IsForbidden and plate:IsForbidden()) then
                     local u = plate.namePlateUnitToken or (plate.UnitFrame and plate.UnitFrame.unit)
                     if u then
                         hit, name = UnitMatchesGoal(u, info)
@@ -841,13 +841,13 @@ function mod:OnDisable()
     SyncRouteStyle(false)
 end
 
-function mod:BuildOptions(W, parent, y, enableSlot)
+function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local db = self:GetDB()
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "优先沿大路与山路寻路（Roads 模式）",
-        tooltip = "自动将 Polestar 路线风格设为「道路优先」（大幅提高陡坡惩罚、优先走盘山公路），关闭或停用模块时无损恢复原设置。",
+        text = "优先沿大路寻路",
+        tooltip = "让北极星指南优先走大路与山路，停用后自动恢复原设置。",
         getValue = function() return db.preferRoads ~= false end,
         setValue = function(v)
             db.preferRoads = v == true
@@ -858,8 +858,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "视野任务怪就近防赶人",
-        tooltip = "扫描目标/悬停/周围姓名板：发现附近仍有当前任务的存活任务怪时，阻止 Polestar 误把你赶去其它区域；若目标在附近存在备选怪区则自动切回就近点。",
+        text = "附近任务怪锁定",
+        tooltip = "视野内仍有当前任务怪时阻止切去远处，附近有备选点自动切回。",
         getValue = function() return db.nearbyQuestMob ~= false end,
         setValue = function(v)
             db.nearbyQuestMob = v == true
@@ -867,8 +867,8 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         end,
     }, {
         type = "toggle",
-        text = "附近已有任务怪时弹出顶部轻提示",
-        tooltip = "当 Polestar 导航指向 65 码外其它区域但你身边已经出现存活任务怪时，在顶部显示轻提示胶囊提醒可直接就近击杀。",
+        text = "附近任务怪横幅",
+        tooltip = "导航指向远处而身边已有存活任务怪时，顶部弹出简短提示。",
         getValue = function() return db.nearbyMobBanner ~= false end,
         setValue = function(v)
             db.nearbyMobBanner = v == true
@@ -879,49 +879,59 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "进入副本所在地图时用 Polestar 原生卡片提醒",
-        tooltip = "跨入包含地下城的地图时，零补丁复用 Polestar 原生卡片提醒本图副本、可接任务数，并提供「接取任务 / 导航至入口」一键按钮（飞行路线路过不误报）。",
+        text = "入图副本提醒",
+        tooltip = "进入含地下城的地图时弹出卡片，显示可接任务与导航入口。",
         getValue = function() return db.zoneDungeonAlert ~= false end,
         setValue = function(v) db.zoneDungeonAlert = v == true end,
     }, {
         type = "toggle",
-        text = "仅提醒适合当前等级的副本",
-        tooltip = "开启时仅提醒适合当前等级区间的地下城（避免满级路过新手城/低级图反复弹窗）；关闭则提醒当前地图全部地下城。",
+        text = "仅提示适级副本",
+        tooltip = "只提醒适合当前等级的地下城，避免路过低级地图反复弹窗。",
         getValue = function() return db.zoneDungeonLevelOnly ~= false end,
         setValue = function(v) db.zoneDungeonLevelOnly = v == true end,
     })
     y = y - h
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "地图副本提醒包含团队副本",
-        tooltip = "开启后进入熔火之心、黑翼之巢、祖尔格拉布、安其拉、纳克萨玛斯等团本所在地图时也会一并提醒。",
-        getValue = function() return db.zoneDungeonIncludeRaids == true end,
-        setValue = function(v) db.zoneDungeonIncludeRaids = v == true end,
-    }, {
-        type = "toggle",
-        text = "自动切回附近备选刷怪点",
-        tooltip = "附近出现任务怪且 Polestar 列表里有 55 码内的备选怪区时，自动切换箭头到脚下这个怪区。",
-        getValue = function() return db.autoSnapSpot ~= false end,
-        setValue = function(v) db.autoSnapSpot = v == true end,
-    })
-    y = y - h
+    local function buildAdv(w, p, curY)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "包含团队副本",
+            tooltip = "进入熔火之心、黑翼之巢等团队副本所在地图时一并提醒。",
+            getValue = function() return db.zoneDungeonIncludeRaids == true end,
+            setValue = function(v) db.zoneDungeonIncludeRaids = v == true end,
+        }, {
+            type = "toggle",
+            text = "自动切近刷怪点",
+            tooltip = "附近发现任务怪且 55 码内有备选怪区时自动切换导航点。",
+            getValue = function() return db.autoSnapSpot ~= false end,
+            setValue = function(v) db.autoSnapSpot = v == true end,
+        })
+        curY = curY - rh
 
-    _, h = W:DualRow(parent, y, {
-        type = "button",
-        text = "立即重算 Polestar 路线",
-        buttonText = "立即重算",
-        tooltip = "清空当前寻路缓存并立刻按当前位置重新规划 Polestar 路线与箭头。",
-        onClick = ForceReplanNow,
-    }, {
-        type = "button",
-        text = "测试当前地图副本提醒",
-        buttonText = "立即预览",
-        tooltip = "立刻用 Polestar 原生卡片预览当前所在地图的地下城提醒（零文件补丁直接驱动）。",
-        onClick = function()
-            mod:PreviewZoneDungeon()
-        end,
-    })
-    y = y - h
+        _, rh = w:DualRow(p, curY, {
+            type = "button",
+            text = "重算导航路线",
+            buttonText = "立即重算",
+            tooltip = "清空寻路缓存并按当前位置重新规划北极星路线与箭头。",
+            onClick = ForceReplanNow,
+        }, {
+            type = "button",
+            text = "预览副本提醒",
+            buttonText = "立即预览",
+            tooltip = "立即预览当前所在地图的地下城提醒卡片。",
+            onClick = function()
+                mod:PreviewZoneDungeon()
+            end,
+        })
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("polestarNav", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

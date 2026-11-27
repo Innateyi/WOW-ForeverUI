@@ -24,9 +24,8 @@ local C_Timer = C_Timer
 ----------------------------------------------------------------------
 do
     local mod = F.RegisterModule("immersiveHUD", {
-        title = "脱战淡隐（统一开关）",
-        desc = "一个开关统一管理脱战淡隐：非战斗、无目标且血蓝健康时，动作条、冷却条、核心双翼、属性卡片、伤害统计、计时条、任务栏、系统栏一起柔和淡化；"
-            .. "进战、选目标、施法或鼠标移上瞬间清晰。聊天框鼠标移开后也会很快淡隐。",
+        title = "脱战淡隐",
+        desc = "脱战、无目标且血蓝健康时统一淡化各框体，进战或悬停即恢复。",
         group = "visual",
         order = 20,
         defaults = {
@@ -58,10 +57,36 @@ do
 
     local managed = setmetatable({}, { __mode = "k" })   -- frame -> true（本模块已接管过透明度）
     local restAlpha = setmetatable({}, { __mode = "k" }) -- frame -> 恢复时的透明度（EUI 动作条按其自身设置，其余 1.0）
+    local desiredAlpha = setmetatable({}, { __mode = "k" }) -- frame -> 本模块期望维持的淡隐透明度（用于拦住外部瞬闪）
+    local alphaHooked = setmetatable({}, { __mode = "k" })
+    local alphaGuardBusy = false
     local animTargets = {}                                -- frame -> targetAlpha
     local hoverTicker = nil
     local isImmersiveNow = false
     local unlockHooked = false
+
+    local function SafeSetManagedAlpha(frame, val)
+        alphaGuardBusy = true
+        pcall(frame.SetAlpha, frame, val)
+        alphaGuardBusy = false
+    end
+
+    -- 零污染防瞬闪护栏：过图/切换子区域时 EUI 任务追踪器等框体会在 ZONE_CHANGED 里调用 SetAlpha(1)，
+    -- 钩住全部已接管框体的 SetAlpha，脱战淡隐态且未悬停时当帧立即压回目标淡隐值（0 闪屏、覆盖全框体）
+    local function EnsureAlphaGuard(frame)
+        if not (frame and _G.hooksecurefunc and not alphaHooked[frame]) then return end
+        if frame.IsForbidden and frame:IsForbidden() then return end
+        alphaHooked[frame] = true
+        _G.hooksecurefunc(frame, "SetAlpha", function(self, a)
+            if alphaGuardBusy or not (mod._active and isImmersiveNow and managed[self]) then return end
+            local want = desiredAlpha[self]
+            if not want then return end
+            local numA = F.PlainNumber(a, nil)
+            if numA and numA > want + 0.03 and not (self.IsMouseOver and self:IsMouseOver()) then
+                SafeSetManagedAlpha(self, want)
+            end
+        end)
+    end
 
     -- 独立零污染 Alpha 过渡帧：仅在有过渡任务时 Show，完成后立刻 Hide（平时 0 CPU）
     local animFrame = CreateFrame("Frame")
@@ -74,10 +99,10 @@ do
                 local cur = F.PlainNumber(frame:GetAlpha(), goal)
                 local diff = goal - cur
                 if math_abs(diff) <= 0.015 then
-                    frame:SetAlpha(goal)
+                    SafeSetManagedAlpha(frame, goal)
                     animTargets[frame] = nil
                 else
-                    frame:SetAlpha(cur + diff * step)
+                    SafeSetManagedAlpha(frame, cur + diff * step)
                     anyActive = true
                 end
             else
@@ -91,17 +116,21 @@ do
 
     local function FadeFrameTo(frame, goal, instant)
         if not (frame and frame.SetAlpha) then return end
+        if managed[frame] then
+            desiredAlpha[frame] = goal
+            EnsureAlphaGuard(frame)
+        end
         local cur = F.PlainNumber(frame.GetAlpha and frame:GetAlpha(), goal)
         if instant then
             animTargets[frame] = nil
             if math_abs(cur - goal) > 0.005 then
-                frame:SetAlpha(goal)
+                SafeSetManagedAlpha(frame, goal)
             end
         else
             if math_abs(cur - goal) <= 0.015 then
                 animTargets[frame] = nil
                 if math_abs(cur - goal) > 0.002 then
-                    frame:SetAlpha(goal)
+                    SafeSetManagedAlpha(frame, goal)
                 end
                 return
             end
@@ -300,6 +329,7 @@ do
 
     local function ReleaseManagedFrame(f, instant)
         if not f then return end
+        desiredAlpha[f] = nil
         if IsYieldedToCombatFade(f) or IsExternalHiddenOrGated(f) then
             animTargets[f] = nil
             return
@@ -313,6 +343,7 @@ do
         for frame in pairs(managed) do
             toRestore[frame] = true
             managed[frame] = nil
+            desiredAlpha[frame] = nil
         end
         for frame in pairs(animTargets) do
             toRestore[frame] = true
@@ -421,13 +452,16 @@ do
         QueueRefresh()
     end
 
-    -- 统一开关：其它模块（核心双翼）问这里自己是否已被接管，被接管就不再自行淡化
+    -- 统一开关：其它模块（核心双翼 / 任务快捷条）问这里自己是否已被接管
     F.UnifiedFade = {
         Owns = function(what)
             if not mod._active then return false end
             local db = mod:GetDB()
             if what == "coreHUD" then return db.fadeCoreHUD ~= false end
             return false
+        end,
+        IsFading = function(frame)
+            return mod._active == true and isImmersiveNow == true and frame ~= nil and managed[frame] == true
         end,
     }
 
@@ -530,7 +564,7 @@ do
     function mod:ToggleImmersive()
         local db = self:GetDB()
         self:SetEnabled(not (db.enabled ~= false))
-        F.Print("脱战淡隐（统一开关）已" .. (self:IsEnabled() and "|cff5fd3a6开启|r" or "|cff888888关闭|r") .. "。")
+        F.Print("脱战淡隐已" .. (self:IsEnabled() and "|cff5fd3a6开启|r" or "|cff888888关闭|r") .. "。")
     end
 
     function mod:OnEnable()
@@ -618,12 +652,12 @@ do
                 setValue = function(v) db[key] = v == true; RefreshAlphas(false) end,
             }
         end
-        enableSlot.text = "启用脱战淡隐（总开关）"
-        enableSlot.tooltip = "一个开关管理下面所有框体的脱战淡隐。关闭后全部恢复 100% 清晰（也可输入 /kk hud 切换）。"
+        enableSlot.text = "启用"
+        enableSlot.tooltip = "统一控制动作条、双翼、伤害统计与系统栏的脱战淡隐（/kk hud）。"
         _, h = W:DualRow(parent, y, enableSlot, {
             type = "slider",
-            text = "淡隐后的透明度",
-            tooltip = "非战斗、无目标、血蓝健康时的可见度；鼠标移到对应框体上瞬间恢复。",
+            text = "淡隐透明度",
+            tooltip = "脱战无目标时的可见度，鼠标移到框体上立即恢复清晰。",
             min = 0.0, max = 0.75, step = 0.05,
             disabled = function() return not mod:IsEnabled() end,
             getValue = function() return db.idleAlpha or 0.28 end,
@@ -631,34 +665,21 @@ do
         })
         y = y - h
 
-        _, h = W:DualRow(parent, y,
-            Toggle("fadeActionBars", "动作条（全部 EUI 动作条）",
-                "含主动作条、姿态条、宠物条。EUI 里设为「鼠标悬停才显示」的条仍由 EUI 管理；调过不透明度的条恢复到你在 EUI 里设的值。"),
-            Toggle("fadeCooldowns", "冷却管理器（冷却 / 增益 / 追踪条）"))
+        _, h = W:DualRow(parent, y, {
+            type = "toggle",
+            text = "副本内禁用淡隐",
+            tooltip = "进入地下城、团队副本或战场时保持全部界面清晰显示。",
+            getValue = function() return db.disableInInstance ~= false end,
+            setValue = function(v) db.disableInInstance = v == true; RefreshAlphas(false) end,
+        }, Toggle("fadeCoreHUD", "淡隐双翼与宠物",
+            "按统一透明度与条件淡化核心双翼与宠物条。"))
         y = y - h
 
         _, h = W:DualRow(parent, y,
-            Toggle("fadeCoreHUD", "核心双翼血蓝条与宠物条",
-                "原先核心 HUD 自带的「脱战满状态淡隐」已并入这里，统一用上面的透明度。"),
-            Toggle("fadeStats", "人物属性 / 耐久卡片"))
-        y = y - h
-
-        _, h = W:DualRow(parent, y,
-            Toggle("fadeDamageMeter", "伤害统计窗口"),
-            Toggle("fadeTimers", "武器附魔 / 攻击特效计时条"))
-        y = y - h
-
-        _, h = W:DualRow(parent, y,
-            Toggle("fadeQuestTracker", "任务追踪栏"),
-            Toggle("fadeSystemBar", "底部系统栏"))
-        y = y - h
-
-        _, h = W:DualRow(parent, y,
-            Toggle("chatQuickFade", "聊天框：鼠标移开后快速淡隐",
-                "EUI 聊天框的「闲置淡隐」在鼠标划过后要重新等满闲置时间（默认 15 秒）才淡出。开启后鼠标移开（且没在输入）"
-                .. "一小会儿就淡出；收到新消息时仍按 EUI 的闲置时间显示。需要 EUI 聊天设置里的「闲置淡隐」开着。"), {
+            Toggle("chatQuickFade", "聊天框快速淡隐",
+                "鼠标移开聊天框且未输入时快速淡出，需开启 EUI 聊天闲置淡隐。"), {
             type = "slider",
-            text = "移开后多久淡隐（秒）",
+            text = "移开延迟 (秒)",
             min = 0.5, max = 5, step = 0.5,
             disabled = function() return not mod:IsEnabled() or db.chatQuickFade == false end,
             getValue = function() return F.PlainNumber(db.chatLeaveDelay, 1.5) or 1.5 end,
@@ -666,30 +687,51 @@ do
         })
         y = y - h
 
-        _, h = W:DualRow(parent, y, {
-            type = "toggle",
-            text = "副本 / 战场内禁用淡隐",
-            tooltip = "进入地下城、团本或战场时保持全部 HUD 100% 清晰。",
-            getValue = function() return db.disableInInstance ~= false end,
-            setValue = function(v) db.disableInInstance = v == true; RefreshAlphas(false) end,
-        }, {
-            type = "toggle",
-            text = "同时淡化经验条 / 小地图",
-            getValue = function() return db.fadeXPBar == true end,
-            setValue = function(v) db.fadeXPBar = v == true; db.fadeMinimap = v == true; RefreshAlphas(false) end,
-        })
-        y = y - h
+        local function buildAdv(w, p, curY, blk)
+            local _, rh
+            _, rh = w:DualRow(p, curY,
+                Toggle("fadeActionBars", "淡隐动作条",
+                    "包含主动作条、姿态条与宠物条，尊重 EUI 自身的悬停设置。"),
+                Toggle("fadeCooldowns", "淡隐冷却管理器"))
+            curY = curY - rh
+
+            _, rh = w:DualRow(p, curY,
+                Toggle("fadeStats", "淡隐属性耐久"),
+                Toggle("fadeDamageMeter", "淡隐伤害统计"))
+            curY = curY - rh
+
+            _, rh = w:DualRow(p, curY,
+                Toggle("fadeTimers", "淡隐武器计时条"),
+                Toggle("fadeQuestTracker", "淡隐任务追踪栏"))
+            curY = curY - rh
+
+            _, rh = w:DualRow(p, curY,
+                Toggle("fadeSystemBar", "淡隐系统栏"),
+                {
+                    type = "toggle",
+                    text = "淡化经验与小图",
+                    getValue = function() return db.fadeXPBar == true end,
+                    setValue = function(v) db.fadeXPBar = v == true; db.fadeMinimap = v == true; RefreshAlphas(false) end,
+                })
+            curY = curY - rh
+            return curY
+        end
+        if type(F.BuildAdvancedSection) == "function" then
+            y = F.BuildAdvancedSection("immersiveHUD", W, parent, y, buildAdv, blank)
+        else
+            y = buildAdv(W, parent, y, blank)
+        end
         return y
     end
 end
 
 ----------------------------------------------------------------------
---  模块 2：perfAutoTier — 场景性能自动档位 + 副本战斗安静模式
+--  模块 2：perfAutoTier — 场景稳帧 + 副本战斗安静模式
 ----------------------------------------------------------------------
 do
     local pMod = F.RegisterModule("perfAutoTier", {
-        title = "场景性能自动档位",
-        desc = "主城人群密集或大型团本自动应用零卡顿稳帧预设（仅调即时 CVar，离开自动还原），并支持副本战斗屏蔽公屏刷屏。",
+        title = "场景稳帧",
+        desc = "主城或大型团本自动调低非必要特效稳帧，离开后自动还原。",
         group = "visual",
         order = 25,
         defaults = {
@@ -887,7 +929,7 @@ do
                     SnapshotCVars(db)
                     SafeSetCVar("weatherDensity", "0")
                     SafeSetCVar("spellClutter", "100")
-                    F.PrintOnce("perf_fps_guard", "|cff5fd3a6帧率保护已触发|r：已自动轻度收紧天气与法术冗余特效以稳帧（离开拥挤区自动恢复）。")
+                    F.PrintOnce("perf_fps_guard", "|cff5fd3a6已触发低帧保护|r：临时调低部分特效，离开拥挤区自动恢复。")
                 end
             else
                 lowFpsStreak = 0
@@ -921,8 +963,8 @@ do
         local _, h
         _, h = W:DualRow(parent, y, enableSlot, {
             type = "toggle",
-            text = "副本战斗自动过滤综合/交易刷屏",
-            tooltip = "地下城/团本进入战斗期间临时过滤 /1 综合与 /2 交易频道，不影响小队、团队、公会与密语，脱战即恢复。",
+            text = "副本战屏蔽公屏",
+            tooltip = "副本战斗中临时隐藏综合与交易频道，不影响小队与团队聊天。",
             getValue = function() return db.quietInstanceChat ~= false end,
             setValue = function(v) db.quietInstanceChat = v == true end,
         })
@@ -930,14 +972,14 @@ do
 
         _, h = W:DualRow(parent, y, {
             type = "toggle",
-            text = "主城自动轻度稳帧",
-            tooltip = "进入主城/休整区自动收紧天气与冗余法术粒子，离开自动还原原设置。",
+            text = "主城自动稳帧",
+            tooltip = "进入主城或休整区自动调低天气与冗余法术粒子，离开自动恢复。",
             getValue = function() return db.autoCityTier ~= false end,
             setValue = function(v) db.autoCityTier = v == true; ApplyTier() end,
         }, {
             type = "toggle",
-            text = "团本 / 15人以上自动稳帧",
-            tooltip = "进入团队副本或大型团队自动启用团本级零卡顿预设（绝不触发重载黑屏）。",
+            text = "大型团本稳帧",
+            tooltip = "进入团本或大型团队时自动调低非必要特效，不触发黑屏重载。",
             getValue = function() return db.autoRaidTier ~= false end,
             setValue = function(v) db.autoRaidTier = v == true; ApplyTier() end,
         })
@@ -945,8 +987,8 @@ do
 
         _, h = W:DualRow(parent, y, {
             type = "toggle",
-            text = "持续低帧自动介入保护",
-            tooltip = "脱战检测到帧率连续低于阈值时自动收紧天气与杂项粒子。",
+            text = "持续低帧保护",
+            tooltip = "脱战检测到帧率持续偏低时自动调低天气与杂项粒子。",
             getValue = function() return db.fpsGuard ~= false end,
             setValue = function(v)
                 db.fpsGuard = v == true
@@ -957,7 +999,8 @@ do
             end,
         }, {
             type = "toggle",
-            text = "手动锁定强力稳帧（/kk boost）",
+            text = "锁定强力稳帧",
+            tooltip = "手动保持团本级特效精简（/kk boost 切换）。",
             getValue = function() return db.forceBoost == true end,
             setValue = function(v) db.forceBoost = v == true; ApplyTier() end,
         })

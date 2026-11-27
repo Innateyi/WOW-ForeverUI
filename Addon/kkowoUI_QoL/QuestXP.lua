@@ -13,8 +13,8 @@ local pcall, setmetatable, tonumber, type = pcall, setmetatable, tonumber, type
 local string_format = string.format
 
 local mod = F.RegisterModule("questXP", {
-    title = "任务等级与经验标注",
-    desc = "在任务追踪列表标题前显示难度着色 [等级]，并在最右侧统一对齐显示预计经验值（任务道具图标自动居左让位）。",
+    title = "任务等级与经验",
+    desc = "在任务追踪栏显示难度着色等级，并在右侧对齐标注预计经验。",
     group = "quest",
     order = 30,
     defaults = {
@@ -384,7 +384,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "追踪栏显示 [任务等级]",
+        text = "显示任务等级",
         tooltip = "在任务追踪栏标题前显示按难度着色的任务等级（如 [22]）。",
         getValue = function() return db.showQuestLevel ~= false end,
         setValue = function(v) db.showQuestLevel = v == true; RefreshRows() end,
@@ -393,12 +393,12 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "显示预计经验值 (+XP)",
+        text = "显示预计经验",
         getValue = function() return db.showQuestXP ~= false end,
         setValue = function(v) db.showQuestXP = v == true; RefreshRows() end,
     }, {
         type = "toggle",
-        text = "经验文字跟随职业主题色",
+        text = "经验用主题色",
         tooltip = "关闭时使用柔和经验紫，开启后跟随当前主题色。",
         getValue = function() return db.useAccentColor == true end,
         setValue = function(v) db.useAccentColor = v == true; RefreshRows() end,

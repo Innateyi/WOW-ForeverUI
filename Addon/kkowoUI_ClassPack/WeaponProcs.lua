@@ -23,9 +23,8 @@ local GetTime = GetTime
 local ST = F.StyleTokens
 
 local mod = F.RegisterModule("weaponProcs", {
-    title = "武器附魔与特效计时条",
-    desc = "武器攻击特效（十字军「神圣力量」等触发 Buff）触发后显示圆角持续时间条，战斗中由引擎光环容器驱动；"
-        .. "武器临时附魔 / 职业灌注显示剩余时间。每项可单独设颜色，可在 EUI 解锁模式中移动。",
+    title = "武器特效",
+    desc = "追踪武器触发增益与临时附魔剩余时间，以圆角计时条显示。",
     group = "combat",
     order = 12,
     defaults = {
@@ -527,6 +526,20 @@ end
 
 local function PaintRow(row, r, g, b)
     if not row then return end
+    if not row._snapOff and row.bar then
+        row._snapOff = true
+        if row.bar.SetSnapToPixelGrid then pcall(row.bar.SetSnapToPixelGrid, row.bar, false) end
+        if row.bar.SetTexelSnappingBias then pcall(row.bar.SetTexelSnappingBias, row.bar, 0) end
+        local ft = row.bar.GetStatusBarTexture and row.bar:GetStatusBarTexture()
+        if ft then
+            if ft.SetSnapToPixelGrid then pcall(ft.SetSnapToPixelGrid, ft, false) end
+            if ft.SetTexelSnappingBias then pcall(ft.SetTexelSnappingBias, ft, 0) end
+        end
+        if row.spark then
+            if row.spark.SetSnapToPixelGrid then pcall(row.spark.SetSnapToPixelGrid, row.spark, false) end
+            if row.spark.SetTexelSnappingBias then pcall(row.spark.SetTexelSnappingBias, row.spark, 0) end
+        end
+    end
     local lr, lg, lb = r * 0.70, g * 0.70, b * 0.70
     ST.ApplyBarGradient(row.bar, lr, lg, lb, math_min(1, r * 1.04), math_min(1, g * 1.04), math_min(1, b * 1.04), 0.96, false)
     if row.spark then
@@ -1082,9 +1095,9 @@ local function BuildEngine()
     if not ok then
         engine.failed = true
         ReleaseEngine()
-        F.Print("|cffe05263武器特效计时条：引擎光环容器创建失败，已改用兼容扫描模式（战斗中可能不显示新触发）。|r " .. tostring(err))
+        F.Print("|cffe05263武器特效已切换兼容模式，战斗中部分新触发可能延迟显示。|r " .. tostring(err))
     elseif engine.initErr then
-        F.PrintOnce("kkowoUI_wp_initErr", "|cffe05263武器特效计时条：引擎条样式初始化出错：|r" .. engine.initErr)
+        F.PrintOnce("kkowoUI_wp_initErr", "|cffe05263武器特效条初始化失败，请 /reload 重试：|r" .. engine.initErr)
     end
     if mod.SyncEngineVisibility then mod.SyncEngineVisibility() end
 end
@@ -1185,9 +1198,10 @@ end
 
 local function OnTick(self, elapsed)
     tickAccum = tickAccum + (elapsed or 0)
-    -- 特效条与剩余 ≤2 分钟的附魔每帧全速平滑；超长附魔条 20Hz 轻量刷新（彻底告别 4fps 顿挫）
-    local fast = (previewItems ~= nil) or (not EngineActive() and #scanItems > 0) or fastEnchantLive
-    if not fast and tickAccum < 0.05 then return end
+    -- 任意特效条或武器附魔条显示期间均全帧率平滑推进（文字已在 FillRow 内按 0.1s/1s 缓存节流，无重排开销）；
+    -- 仅在「剩余不足」待机监控（当前无可见条）时降频至 10Hz 轻量检测
+    local anyVisible = (previewItems ~= nil) or (not EngineActive() and #scanItems > 0) or (#visibleEnch > 0) or fastEnchantLive
+    if not anyVisible and tickAccum < 0.10 then return end
     tickAccum = 0
     if not Render() then self:SetScript("OnUpdate", nil) end
 end
@@ -1285,7 +1299,7 @@ function mod:TogglePreview()
         return
     end
     self:SetPreview(not previewOn)
-    F.Print(previewOn and "已显示武器特效计时条示例，可用 /kk unlock 拖动位置；再次输入 /kk wp 关闭。" or "已关闭武器特效计时条示例。")
+    F.Print(previewOn and "已开启武器特效示例条，可用 /kk unlock 拖动，再输 /kk wp 关闭。" or "已关闭武器特效计时条示例。")
 end
 
 ----------------------------------------------------------------------
@@ -1561,8 +1575,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "显示示例条（摆放位置用）",
-        tooltip = "显示示例计时条，再用 EUI 解锁模式（/kk unlock）拖动「武器攻击特效计时条」「武器附魔计时条」两个框；进入战斗自动关闭。也可输入 /kk wp 开关。",
+        text = "显示示例条",
+        tooltip = "显示示例条方便配合 /kk unlock 拖动位置，进战自动关闭。",
         disabled = function() return not mod._active end,
         getValue = function() return previewOn end,
         setValue = function(v) mod:SetPreview(v == true) end,
@@ -1570,18 +1584,18 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "slider", text = "条宽度（含图标）", min = 120, max = 340, step = 5,
+        type = "slider", text = "条宽度 (px)", min = 120, max = 340, step = 5,
         getValue = function() return F.PlainNumber(db.width, 190) or 190 end,
         setValue = function(v) db.width = math_floor(v + 0.5); Structural() end,
     }, {
-        type = "slider", text = "条高度", min = 10, max = 28, step = 1,
+        type = "slider", text = "条高度 (px)", min = 10, max = 28, step = 1,
         getValue = function() return F.PlainNumber(db.height, 16) or 16 end,
         setValue = function(v) db.height = math_floor(v + 0.5); Structural() end,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "slider", text = "条间距", min = 0, max = 10, step = 1,
+        type = "slider", text = "条间距 (px)", min = 0, max = 10, step = 1,
         getValue = function() return F.PlainNumber(db.spacing, 3) or 3 end,
         setValue = function(v) db.spacing = math_floor(v + 0.5); Structural() end,
     }, {
@@ -1607,41 +1621,31 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     -- 武器附魔
     _, h = W:DualRow(parent, y, {
         type = "dropdown", text = "武器附魔计时条",
-        tooltip = "毒药 / 磨刀石 / 武器油（临时附魔）与萨满武器技能、盗贼毒药等（职业灌注）的剩余时间。",
+        tooltip = "显示毒药、磨刀石、武器油与职业武器灌注的剩余时间。",
         values = { always = "有附魔时始终显示", combat = "仅战斗中显示", low = "剩余不足时才显示", off = "不显示" },
         order = { "always", "combat", "low", "off" },
         getValue = function() return db.enchantMode or "always" end,
         setValue = function(v) db.enchantMode = v; if mod._active then Wake() end end,
     }, {
-        type = "slider", text = "「剩余不足」阈值（分钟）", min = 1, max = 30, step = 1,
+        type = "slider", text = "不足阈值 (分钟)", min = 1, max = 30, step = 1,
         disabled = function() return db.enchantMode ~= "low" end,
         getValue = function() return F.PlainNumber(db.enchantLowMinutes, 5) or 5 end,
         setValue = function(v) db.enchantLowMinutes = math_floor(v + 0.5); if mod._active then Wake() end end,
     })
     y = y - h
 
-    _, h = W:DualRow(parent, y, {
-        type = "multiSwatch", text = "临时附魔颜色：主手 / 副手 / 远程",
-        swatches = { ColorSwatch("ench_mh_temp"), ColorSwatch("ench_oh_temp"), ColorSwatch("ench_rg_temp") },
-    }, {
-        type = "multiSwatch", text = "职业灌注颜色：主手 / 副手",
-        swatches = { ColorSwatch("ench_mh_imbue"), ColorSwatch("ench_oh_imbue") },
-    })
-    y = y - h
-
-    -- 攻击特效
+    -- 攻击特效列表（预设）
     local modeText
     if engine.container then
-        modeText = "攻击特效：引擎光环容器驱动（战斗中也能显示）"
+        modeText = "攻击特效：已启用战斗追踪"
     elseif engine.failed or not EngineAvailable() then
-        modeText = "攻击特效：兼容扫描模式（战斗中光环受限时新触发可能不显示）"
+        modeText = "攻击特效：兼容模式（战斗中新触发可能延迟）"
     else
-        modeText = "攻击特效：勾选下面的特效后生效"
+        modeText = "攻击特效：勾选下方特效生效"
     end
     _, h = W:DualRow(parent, y, {
         type = "label", text = modeText,
-        tooltip = "只能追踪会给自己加 Buff 的特效（例如十字军的「神圣力量」）。烈焰武器、生命偷取、正义之手额外攻击这类不加 Buff 的效果，"
-            .. "需要战斗日志，无限服不对插件开放，无法计时。\n\n引擎模式按法术 ID 匹配：自定义特效最好填法术 ID；只填名称的，会在脱战可读时自动识别 ID。",
+        tooltip = "仅可追踪提供自身增益的武器特效，如十字军的神圣力量。",
     }, blank)
     y = y - h
 
@@ -1651,7 +1655,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
             _, h = W:DualRow(parent, y, {
                 type = "toggle",
                 text = ent.label,
-                tooltip = EntrySourceText(ent) .. "\n法术 ID：" .. table.concat(ent.idList, " / "),
+                tooltip = EntrySourceText(ent) .. "（法术 " .. table.concat(ent.idList, "/") .. "）",
                 getValue = function() return db.presetOn[ent.key] ~= false end,
                 setValue = function(v)
                     if v then db.presetOn[ent.key] = nil else db.presetOn[ent.key] = false end
@@ -1669,73 +1673,92 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         end
     end
 
-    for _, e in ipairs(entries) do
-        local ent = e
-        if ent.custom then
-            local idText = ent.idList[1] and table.concat(ent.idList, " / ") or "未识别（脱战时出现后自动识别）"
-            _, h = W:DualRow(parent, y, {
-                type = "colorpicker",
-                text = ent.label,
-                tooltip = "自定义特效\n法术 ID：" .. idText,
-                getValue = function() return GetColor(ent.key) end,
-                setValue = function(r, g, b)
-                    db.colors[ent.key] = { r, g, b }
-                    ColorsChanged()
-                end,
-            }, {
-                type = "button", text = "删除「" .. ent.label .. "」", width = 200, noCapture = true,
-                onClick = function()
-                    mod:RemoveCustom(ent.key)
-                    RebuildPage()
-                end,
-            })
-            y = y - h
-        end
-    end
+    local function buildAdv(w, p, curY)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "multiSwatch", text = "临时附魔颜色",
+            swatches = { ColorSwatch("ench_mh_temp"), ColorSwatch("ench_oh_temp"), ColorSwatch("ench_rg_temp") },
+        }, {
+            type = "multiSwatch", text = "职业灌注颜色",
+            swatches = { ColorSwatch("ench_mh_imbue"), ColorSwatch("ench_oh_imbue") },
+        })
+        curY = curY - rh
 
-    local recentValues, recentKeys = { ["_"] = "选择一个 Buff…" }, { "_" }
-    for i = #recentOrder, 1, -1 do
-        local sid = recentOrder[i]
-        local r = recent[sid]
-        if r and not HasEntryForID(sid) then
-            local k = tostring(sid)
-            local icon = r.icon and ("|T" .. tostring(r.icon) .. ":14:14:0:0:64:64:5:59:5:59|t ") or ""
-            recentValues[k] = icon .. (r.name or ("法术 " .. k)) .. " (" .. k .. ")"
-            recentKeys[#recentKeys + 1] = k
+        for _, e in ipairs(entries) do
+            local ent = e
+            if ent.custom then
+                local idText = ent.idList[1] and table.concat(ent.idList, " / ") or "待识别"
+                _, rh = w:DualRow(p, curY, {
+                    type = "colorpicker",
+                    text = ent.label,
+                    tooltip = "自定义特效，法术编号：" .. idText,
+                    getValue = function() return GetColor(ent.key) end,
+                    setValue = function(r, g, b)
+                        db.colors[ent.key] = { r, g, b }
+                        ColorsChanged()
+                    end,
+                }, {
+                    type = "button", text = "删除", width = 110, noCapture = true,
+                    onClick = function()
+                        mod:RemoveCustom(ent.key)
+                        RebuildPage()
+                    end,
+                })
+                curY = curY - rh
+            end
         end
-    end
-    _, h = W:DualRow(parent, y, {
-        type = "input", text = "添加特效：法术 ID 或 Buff 名称",
-        inputWidth = 140, inputStyle = "popup", placeholder = "例如 20007",
-        getValue = function() return "" end,
-        setValue = function(text)
-            local ok, msg = mod:AddCustomFromText(text)
-            if msg then F.Print(msg) end
-            if ok then RebuildPage() end
-        end,
-    }, {
-        type = "dropdown", text = "从最近出现过的 Buff 添加",
-        tooltip = "列出本次登录后脱战时读到的、持续 3 分钟以内的 Buff。",
-        values = recentValues,
-        order = recentKeys,
-        getValue = function() return "_" end,
-        setValue = function(v)
-            local sid = tonumber(v)
-            if sid then
-                local r = recent[sid]
-                local ok, msg = mod:AddCustom(sid, r and r.name or nil)
+
+        local recentValues, recentKeys = { ["_"] = "选择一项增益…" }, { "_" }
+        for i = #recentOrder, 1, -1 do
+            local sid = recentOrder[i]
+            local r = recent[sid]
+            if r and not HasEntryForID(sid) then
+                local k = tostring(sid)
+                local icon = r.icon and ("|T" .. tostring(r.icon) .. ":14:14:0:0:64:64:5:59:5:59|t ") or ""
+                recentValues[k] = icon .. (r.name or ("法术 " .. k)) .. " (" .. k .. ")"
+                recentKeys[#recentKeys + 1] = k
+            end
+        end
+        _, rh = w:DualRow(p, curY, {
+            type = "input", text = "添加自定义特效",
+            inputWidth = 140, inputStyle = "popup", placeholder = "例如 20007",
+            getValue = function() return "" end,
+            setValue = function(text)
+                local ok, msg = mod:AddCustomFromText(text)
                 if msg then F.Print(msg) end
                 if ok then RebuildPage() end
-            end
-        end,
-    })
-    y = y - h
+            end,
+        }, {
+            type = "dropdown", text = "从近期增益添加",
+            tooltip = "列出本次登录后脱战时记录的 3 分钟以内自身增益。",
+            values = recentValues,
+            order = recentKeys,
+            getValue = function() return "_" end,
+            setValue = function(v)
+                local sid = tonumber(v)
+                if sid then
+                    local r = recent[sid]
+                    local ok, msg = mod:AddCustom(sid, r and r.name or nil)
+                    if msg then F.Print(msg) end
+                    if ok then RebuildPage() end
+                end
+            end,
+        })
+        curY = curY - rh
 
-    _, h = W:WideButton(parent, "恢复全部默认颜色", y, function()
-        for k in pairs(db.colors) do db.colors[k] = nil end
-        ColorsChanged()
-        RebuildPage()
-    end)
-    y = y - h
+        _, rh = w:WideButton(p, "恢复全部默认颜色", curY, function()
+            for k in pairs(db.colors) do db.colors[k] = nil end
+            ColorsChanged()
+            RebuildPage()
+        end)
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("weaponProcs", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y)
+    end
     return y
 end

@@ -150,7 +150,7 @@ local function ApplyUnifiedResourceBars(forceApply)
             pcall(applyFn)
         end
         if forceApply then
-            F.Print("已统一资源条、挥砍计时器与施法条风格（249px 等宽 + 职业主题色 + 纤细 1px 暗灰边框，位置完全保留）。")
+            F.Print("已统一资源条、挥砍条与施法条外观，原有位置不变。")
         end
     end)
     return true

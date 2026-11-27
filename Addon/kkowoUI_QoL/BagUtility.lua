@@ -16,8 +16,8 @@ local GetTime = GetTime
 local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("bagUtility", {
-    title = "背包清理与拾取增强",
-    desc = "无闪烁极速静默拾取（替代 EUI 延迟拾取，消除闪窗卡顿）、包满低价值清单、EUI 背包金币对齐与宏界面放大。",
+    title = "拾取与背包工具",
+    desc = "快速静默拾取、自动卖灰与修理、包满清理清单及宏窗口放大。",
     group = "utility",
     order = 10,
     defaults = {
@@ -26,6 +26,7 @@ local mod = F.RegisterModule("bagUtility", {
         showEmptyLoot = true,
         clickLoot = false,         -- 默认使用暴雪原生 C++ 自动拾取（1 次往返零卡顿，按住 Shift+右键开窗）；开启则改为右键全拾 / 左键开窗
         v2NativeAutoLoot = false,
+        v2MerchantBulkBuySeeded = false,
         autoSellJunk = true,
         autoRepair = true,
         lowValueHelper = true,
@@ -1754,6 +1755,24 @@ local function HandleLootTrigger(_, event, autoLoot)
     end
 end
 
+local function SeedEUIMerchantBulkBuy()
+    local db = mod:GetDB()
+    local edb = _G.EllesmereUIDB
+    if type(edb) ~= "table" then return end
+    if not db.v2MerchantBulkBuySeeded then
+        db.v2MerchantBulkBuySeeded = true
+        if edb.merchantBulkBuy ~= true then
+            edb.merchantBulkBuy = true
+        end
+    end
+    if edb.merchantBulkBuy == true then
+        local EUI = _G.EllesmereUI
+        if EUI and type(EUI._Merchant_RefreshBulkBuy) == "function" then
+            pcall(EUI._Merchant_RefreshBulkBuy)
+        end
+    end
+end
+
 function mod:OnEnable()
     local db = self:GetDB()
     if not db.v2NativeAutoLoot then
@@ -1764,6 +1783,8 @@ function mod:OnEnable()
             ApplyClickLootCVars(false)
         end
     end
+    SeedEUIMerchantBulkBuy()
+    C_Timer.After(1.0, SeedEUIMerchantBulkBuy)
 
     SetupMoneyAlign()
     -- 背包/邮箱等框体可能早于本模块创建，启用时先统一对齐一次
@@ -1782,6 +1803,7 @@ function mod:OnEnable()
         HookLootFrameOnce()
         PreArmSilentLoot()
         DisableSlowEUIQuickLoot()
+        SeedEUIMerchantBulkBuy()
         C_Timer.After(1.0, DisableSlowEUIQuickLoot)
     end)
     self:RegisterEvent("LOOT_READY", HandleLootTrigger)
@@ -1867,8 +1889,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "无闪烁极速静默拾取",
-        tooltip = "自动拾取时单帧倒序秒拾并隐藏掉落窗，彻底消除闪现与卡顿；按住 Shift 拾取、背包满或拾取绑定物品时自动正常显窗。",
+        text = "快速静默拾取",
+        tooltip = "自动拾取时单帧收包不闪窗，按住 Shift、包满或绑定物品正常显窗。",
         getValue = function() return db.silentFastLoot ~= false end,
         setValue = function(v)
             db.silentFastLoot = v == true
@@ -1881,59 +1903,14 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "右键全部拾取 / 左键打开拾取窗口（可选）",
-        tooltip = "默认关闭以保留暴雪原生 C++ 自动拾取（最快、首拾零卡顿，按住 Shift+右键 即可开窗挑物品）。若习惯左键开窗、右键全拾可勾选此项。",
-        getValue = function() return db.clickLoot == true end,
-        setValue = function(v)
-            db.clickLoot = v == true
-            ApplyClickLootCVars(v == true and db.silentFastLoot ~= false)
-            SyncClickLootMouseWatch()
-        end,
-    }, {
-        type = "toggle",
-        text = "空包裹在拾取信息区提示",
-        tooltip = "怪物掉落空包裹时静默秒关防闪窗，并在 EUI 拾取信息位置以同风格微条提示「空包裹」。",
-        getValue = function() return db.showEmptyLoot ~= false end,
-        setValue = function(v)
-            db.showEmptyLoot = v == true
-            if not v and emptyToastFrame then
-                emptyToastFrame.show:Stop()
-                emptyToastFrame.fade:Stop()
-                emptyToastFrame:Hide()
-                emptyToastCount = 0
-            end
-        end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "对齐背包/邮箱/商人金币数字",
-        tooltip = "无侵入式钩子自动将背包、邮箱、商人、银行等界面的金币数字与金/银/铜币图标垂直居中对齐。",
-        getValue = function() return db.alignBagMoney ~= false end,
-        setValue = function(v)
-            db.alignBagMoney = v == true
-            AlignKnownMoneyFrames(db.alignBagMoney and MONEY_TEXT_Y_OFFSET or 0)
-        end,
-    }, {
-        type = "toggle",
-        text = "放大宏编辑窗口",
-        tooltip = "打开 /macro 时自动放大界面，方便查看和编辑长宏；同时收小宏名、按钮与输入框字号，避免文字和按钮重叠（关闭后 /reload 恢复原样）。",
-        getValue = function() return db.enlargeMacro ~= false end,
-        setValue = function(v) db.enlargeMacro = v == true; if v then EnlargeMacroFrame() end end,
-    })
-    y = y - h
-
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "访问商人自动卖灰色垃圾",
-        tooltip = "打开商人窗口时自动出售所有粗糙（灰色）可售垃圾并汇总收益；按住 Shift 对话可临时跳过（EUI QoL 开启时自动让位）。",
+        text = "自动卖灰色垃圾",
+        tooltip = "打开商人自动卖灰，按住 Shift 跳过，EUI 开启同类时自动让位。",
         getValue = function() return db.autoSellJunk ~= false end,
         setValue = function(v) db.autoSellJunk = v == true end,
     }, {
         type = "toggle",
-        text = "访问商人自动修理装备",
-        tooltip = "打开可修理商人时自动使用个人金币修满装备；按住 Shift 对话可临时跳过（EUI QoL 开启时自动让位）。",
+        text = "自动修理装备",
+        tooltip = "打开可修理商人自动修装，按住 Shift 跳过，EUI 开启同类时让位。",
         getValue = function() return db.autoRepair ~= false end,
         setValue = function(v) db.autoRepair = v == true end,
     })
@@ -1941,20 +1918,82 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "包满时弹出低价值清单",
+        text = "包满低价值清单",
         tooltip = "背包已满时按价值从低到高列出可清理物品。",
         getValue = function() return db.lowValueHelper ~= false end,
         setValue = function(v) db.lowValueHelper = v == true end,
     }, {
-        type = "toggle",
-        text = "参考 Auctionator 拍卖行价格",
-        tooltip = "低价值排序同时参考拍卖行市价，避免误删高价材料/白装。",
-        getValue = function() return db.useAuctionPrice ~= false end,
-        setValue = function(v) db.useAuctionPrice = v == true end,
+        type = "labeledButton",
+        text = "低价值物品清单",
+        buttonText = "立即查看",
+        width = 110,
+        tooltip = "立即打开当前背包低价值物品清单。",
+        onClick = function() RefreshLVIL(true) end,
     })
     y = y - h
 
-    _, h = W:WideButton(parent, "立即查看当前背包低价值清单", y, function() RefreshLVIL(true) end)
-    y = y - h
+    local function buildAdv(w, p, curY, blk)
+        local _, rh
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "左键开窗右键全拾",
+            tooltip = "默认关闭以保留原版自动拾取；习惯左键挑物品、右键全拾可开启。",
+            getValue = function() return db.clickLoot == true end,
+            setValue = function(v)
+                db.clickLoot = v == true
+                ApplyClickLootCVars(v == true and db.silentFastLoot ~= false)
+                SyncClickLootMouseWatch()
+            end,
+        }, {
+            type = "toggle",
+            text = "空包裹轻提示",
+            tooltip = "掉落空包裹时直接关闭防闪窗，并在拾取信息区提示空包裹。",
+            getValue = function() return db.showEmptyLoot ~= false end,
+            setValue = function(v)
+                db.showEmptyLoot = v == true
+                if not v and emptyToastFrame then
+                    emptyToastFrame.show:Stop()
+                    emptyToastFrame.fade:Stop()
+                    emptyToastFrame:Hide()
+                    emptyToastCount = 0
+                end
+            end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "对齐金币图标",
+            tooltip = "自动将背包、邮箱、商人界面的金币数字与图标垂直居中对齐。",
+            getValue = function() return db.alignBagMoney ~= false end,
+            setValue = function(v)
+                db.alignBagMoney = v == true
+                AlignKnownMoneyFrames(db.alignBagMoney and MONEY_TEXT_Y_OFFSET or 0)
+            end,
+        }, {
+            type = "toggle",
+            text = "放大宏编辑窗口",
+            tooltip = "放大 /macro 窗口方便编辑长宏，关闭后重载界面恢复原样。",
+            getValue = function() return db.enlargeMacro ~= false end,
+            setValue = function(v) db.enlargeMacro = v == true; if v then EnlargeMacroFrame() end end,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
+            type = "toggle",
+            text = "参考拍卖行价格",
+            tooltip = "低价值排序同时参考拍卖行市价，避免误删高价材料或白装。",
+            getValue = function() return db.useAuctionPrice ~= false end,
+            setValue = function(v) db.useAuctionPrice = v == true end,
+        }, blk)
+        curY = curY - rh
+        return curY
+    end
+
+    if type(F.BuildAdvancedSection) == "function" then
+        y = F.BuildAdvancedSection("bagUtility", W, parent, y, buildAdv, blank)
+    else
+        y = buildAdv(W, parent, y, blank)
+    end
     return y
 end

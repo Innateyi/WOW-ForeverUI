@@ -419,6 +419,219 @@ function Theme.SetGlassShown(frame, shown)
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- 统一现代流光渐变卡片系统（全 UI 共享：拾取微播报 / Roll 点条 / 装备一览 / 灵魂石 / 玻璃条）
+--   • 半透明流光磨砂渐变底（支持职业双色渐变或语义/品质双色渐变，不局限于纯黑底）
+--   • 左侧 3px 双色流光刃 + 横向柔和微光晕 + 顶部 1px 渐变流光边 + 抗锯齿圆角细框
+--   • 全部图层均为宿主内的纯 Texture（绝不创建遮挡鼠标的子 Frame，严格防误触/防遮屏）
+-- ---------------------------------------------------------------------------
+local luminousParts = setmetatable({}, { __mode = "k" })
+
+local function ResolveLuminousColors(opts)
+    local ST = F.StyleTokens
+    if opts and opts.palette == "class" and ST and ST.GetClassGradient then
+        local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient(nil, "bright")
+        return r1, g1, b1, r2, g2, b2
+    end
+    if opts and type(opts.c1) == "table" and type(opts.c2) == "table" then
+        return opts.c1[1], opts.c1[2], opts.c1[3], opts.c2[1], opts.c2[2], opts.c2[3]
+    end
+    local r = (opts and opts.r) or nil
+    local g = (opts and opts.g) or nil
+    local b = (opts and opts.b) or nil
+    if not (r and g and b) then
+        if ST and ST.GetClassGradient then
+            local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient(nil, "bright")
+            return r1, g1, b1, r2, g2, b2
+        end
+        r, g, b = Theme.GetAccent()
+    end
+    local r2 = math_min(1, r * 0.45 + 0.55)
+    local g2 = math_min(1, g * 0.45 + 0.55)
+    local b2 = math_min(1, b * 0.45 + 0.55)
+    return r, g, b, r2, g2, b2
+end
+
+function Theme.PaintLuminousCard(frame, opts)
+    local p = frame and luminousParts[frame]
+    if not p then return nil end
+    opts = opts or {}
+    local ST = F.StyleTokens
+    local r1, g1, b1, r2, g2, b2 = ResolveLuminousColors(opts)
+    local rad = opts.radius or p.radius or 7
+    local bgA = opts.bgAlpha or p.bgAlpha or 0.84
+    local tintMix = opts.tintMix or p.tintMix or 0.12
+    local showLeftBar = (opts.leftBar ~= nil) and (opts.leftBar == true) or (p.showLeftBar == true)
+    local glowA = opts.glowAlpha or p.glowAlpha or 0.20
+    local borderA = opts.borderAlpha or p.borderAlpha or 0.52
+
+    p.radius = rad
+    p.bgAlpha = bgA
+    p.tintMix = tintMix
+    p.showLeftBar = showLeftBar
+    p.glowAlpha = glowA
+    p.borderAlpha = borderA
+
+    -- 1) 精致黑曜石微染玻璃底（呼应 PrettyTooltip 暗黑质感，不发灰不塑料）
+    local topR = 0.044 + r2 * (tintMix * 0.58)
+    local topG = 0.042 + g2 * (tintMix * 0.58)
+    local topB = 0.056 + b2 * (tintMix * 0.58)
+    local botR = 0.020 + r1 * (tintMix * 0.34)
+    local botG = 0.020 + g1 * (tintMix * 0.34)
+    local botB = 0.028 + b1 * (tintMix * 0.34)
+    if not SetScratchGradient(p.bg, "VERTICAL", botR, botG, botB, math_min(0.95, bgA + 0.04), topR, topG, topB, bgA) then
+        p.bg:SetColorTexture(botR, botG, botB, bgA)
+    end
+    p.bg:Show()
+
+    -- 2) 左向/顶向双色柔光呼吸晕
+    if glowA > 0.005 then
+        local glowW = opts.glowWidth or p.glowWidth or 96
+        p.glowWidth = glowW
+        p.glow:SetWidth(glowW)
+        if not SetScratchGradient(p.glow, "HORIZONTAL", r1, g1, b1, glowA, r2, g2, b2, 0.00) then
+            p.glow:SetColorTexture(r1, g1, b1, glowA * 0.5)
+        end
+        p.glow:Show()
+    else
+        p.glow:Hide()
+    end
+
+    -- 3) 顶部 1px 精致渐变流光边线（柔和收尾，不刺眼）
+    if not SetScratchGradient(p.topRim, "HORIZONTAL", r2, g2, b2, 0.52, r1, g1, b1, 0.10) then
+        p.topRim:SetColorTexture(r2, g2, b2, 0.42)
+    end
+    p.topRim:Show()
+
+    -- 4) 底部极淡承托反光
+    if not SetScratchGradient(p.botRim, "HORIZONTAL", r1, g1, b1, 0.16, r2, g2, b2, 0.03) then
+        p.botRim:SetColorTexture(r1, g1, b1, 0.10)
+    end
+    p.botRim:Show()
+
+    -- 5) 左侧 3px 双色流光刃
+    if showLeftBar then
+        if not SetScratchGradient(p.leftBar, "VERTICAL", r1, g1, b1, 0.92, r2, g2, b2, 0.98) then
+            p.leftBar:SetColorTexture(r1, g1, b1, 0.92)
+        end
+        p.leftBar:Show()
+    else
+        p.leftBar:Hide()
+    end
+
+    -- 6) GPU 圆角遮罩 + PrettyTooltip 风深色细描边
+    if ST and rad > 0 then
+        ST.MaskTexture(frame, p.bg, rad)
+        ST.MaskTexture(frame, p.glow, rad)
+        ST.MaskTexture(frame, p.topRim, rad)
+        ST.MaskTexture(frame, p.botRim, rad)
+        ST.MaskTexture(frame, p.leftBar, rad)
+        if p.shimmer then ST.MaskTexture(frame, p.shimmer, rad) end
+        local mr = r1 * 0.42 + r2 * 0.12 + 0.06
+        local mg = g1 * 0.42 + g2 * 0.12 + 0.06
+        local mb = b1 * 0.42 + b2 * 0.12 + 0.08
+        ST.ApplyRoundedBorder(frame, rad, math_min(1, mr), math_min(1, mg), math_min(1, mb), borderA, opts.borderLevel or 5)
+    end
+
+    if p.shimmer then
+        p.shimmer:SetVertexColor(r2, g2, b2, 1)
+    end
+    return p
+end
+
+function Theme.StyleLuminousCard(frame, opts)
+    if not (frame and frame.CreateTexture) then return nil end
+    opts = opts or {}
+    local p = luminousParts[frame]
+    if not p then
+        local bg = frame:CreateTexture(nil, "BACKGROUND", nil, -7)
+        bg:SetAllPoints(frame)
+        bg:SetColorTexture(1, 1, 1, 1)
+
+        local glow = frame:CreateTexture(nil, "BACKGROUND", nil, -5)
+        glow:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -1)
+        glow:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 1, 1)
+        glow:SetWidth(opts.glowWidth or 96)
+        glow:SetColorTexture(1, 1, 1, 1)
+
+        local topRim = frame:CreateTexture(nil, "ARTWORK", nil, 3)
+        topRim:SetHeight(1.5)
+        topRim:SetPoint("TOPLEFT", frame, "TOPLEFT", 2, -1)
+        topRim:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -1)
+        topRim:SetBlendMode("ADD")
+        topRim:SetColorTexture(1, 1, 1, 1)
+
+        local botRim = frame:CreateTexture(nil, "ARTWORK", nil, 2)
+        botRim:SetHeight(1)
+        botRim:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 2, 1)
+        botRim:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -2, 1)
+        botRim:SetBlendMode("ADD")
+        botRim:SetColorTexture(1, 1, 1, 1)
+
+        local leftBar = frame:CreateTexture(nil, "OVERLAY", nil, 2)
+        leftBar:SetWidth(3)
+        leftBar:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -2)
+        leftBar:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 1, 2)
+        leftBar:SetColorTexture(1, 1, 1, 1)
+
+        local shimmer = frame:CreateTexture(nil, "OVERLAY", nil, 6)
+        shimmer:SetHeight(3)
+        shimmer:SetPoint("TOPLEFT", frame, "TOPLEFT", 2, -1)
+        shimmer:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -2, -1)
+        shimmer:SetTexture((F.StyleTokens and F.StyleTokens.TEX and F.StyleTokens.TEX.SOFT_GLOW) or Theme.FLAT_TEX)
+        shimmer:SetBlendMode("ADD")
+        shimmer:SetAlpha(0)
+        shimmer:Hide()
+
+        local shimmerAnim = shimmer:CreateAnimationGroup()
+        shimmerAnim:SetToFinalAlpha(true)
+        local shIn = shimmerAnim:CreateAnimation("Alpha")
+        shIn:SetOrder(1); shIn:SetFromAlpha(0); shIn:SetToAlpha(0.75); shIn:SetDuration(0.14); shIn:SetSmoothing("OUT")
+        local shOut = shimmerAnim:CreateAnimation("Alpha")
+        shOut:SetOrder(2); shOut:SetFromAlpha(0.75); shOut:SetToAlpha(0); shOut:SetDuration(0.50); shOut:SetSmoothing("OUT")
+        shimmerAnim:SetScript("OnFinished", function() shimmer:SetAlpha(0); shimmer:Hide() end)
+        shimmerAnim:SetScript("OnStop", function() shimmer:SetAlpha(0); shimmer:Hide() end)
+
+        p = {
+            bg = bg,
+            glow = glow,
+            topRim = topRim,
+            botRim = botRim,
+            leftBar = leftBar,
+            shimmer = shimmer,
+            shimmerAnim = shimmerAnim,
+            showLeftBar = opts.leftBar ~= false,
+        }
+        luminousParts[frame] = p
+    end
+    return Theme.PaintLuminousCard(frame, opts)
+end
+
+function Theme.PlayLuminousShimmer(frame)
+    local p = frame and luminousParts[frame]
+    if not (p and p.shimmer and p.shimmerAnim) then return end
+    p.shimmerAnim:Stop()
+    p.shimmer:SetAlpha(0)
+    p.shimmer:Show()
+    p.shimmerAnim:Play()
+end
+
+function Theme.SetLuminousCardShown(frame, shown)
+    local p = frame and luminousParts[frame]
+    if not p then return end
+    local show = shown == true
+    p.bg:SetShown(show)
+    p.glow:SetShown(show and (p.glowAlpha or 0) > 0.005)
+    p.topRim:SetShown(show)
+    p.botRim:SetShown(show)
+    p.leftBar:SetShown(show and p.showLeftBar == true)
+    if not show then
+        if p.shimmerAnim then p.shimmerAnim:Stop() end
+        if p.shimmer then p.shimmer:Hide() end
+        if F.StyleTokens then F.StyleTokens.ClearRoundedMask(frame) end
+    end
+end
+
 -- 半透明「磨砂玻璃」（悬浮提示 / 小地图卡片 / 聊天气泡共用）：
 -- 冷灰蓝底色 + 上半部柔和白色光泽（纵向渐变）+ 1px 顶部高光线。
 -- 只用纯色与渐变（系统栏玻璃按钮同款写法，游戏里显示可靠）；不再叠平铺颗粒贴图：

@@ -14,7 +14,7 @@ local GetTime = GetTime
 
 local mod = F.RegisterModule("rollBars", {
     title = "Roll 点增强",
-    desc = "现代扁平装备 Roll 点条（带倒计时条、需求/贪婪/分解/放弃快捷钮，零全局函数污染）。开启 EUI「拾取掷点框」时自动让位。",
+    desc = "扁平装备掷点条，带倒计时与快捷按钮；开启 EUI 掷点框时让位。",
     group = "combat",
     order = 30,
     defaults = {
@@ -35,6 +35,47 @@ local hideNativePending = false
 
 local ApplyBarBorder -- 前向声明
 
+local function LayoutRollButtons(bar, showDis)
+    if not bar then return end
+    if bar.btnPass then
+        bar.btnPass:ClearAllPoints()
+        bar.btnPass:SetPoint("RIGHT", bar, "RIGHT", -4, 0)
+    end
+    if showDis then
+        if bar.btnDis then
+            bar.btnDis:ClearAllPoints()
+            bar.btnDis:SetPoint("RIGHT", bar, "RIGHT", -28, 0)
+            bar.btnDis:Show()
+        end
+        if bar.btnGreed then
+            bar.btnGreed:ClearAllPoints()
+            bar.btnGreed:SetPoint("RIGHT", bar, "RIGHT", -52, 0)
+        end
+        if bar.btnNeed then
+            bar.btnNeed:ClearAllPoints()
+            bar.btnNeed:SetPoint("RIGHT", bar, "RIGHT", -76, 0)
+        end
+        if bar.timeFS then
+            bar.timeFS:ClearAllPoints()
+            bar.timeFS:SetPoint("RIGHT", bar, "RIGHT", -102, 0)
+        end
+    else
+        if bar.btnDis then bar.btnDis:Hide() end
+        if bar.btnGreed then
+            bar.btnGreed:ClearAllPoints()
+            bar.btnGreed:SetPoint("RIGHT", bar, "RIGHT", -28, 0)
+        end
+        if bar.btnNeed then
+            bar.btnNeed:ClearAllPoints()
+            bar.btnNeed:SetPoint("RIGHT", bar, "RIGHT", -52, 0)
+        end
+        if bar.timeFS then
+            bar.timeFS:ClearAllPoints()
+            bar.timeFS:SetPoint("RIGHT", bar, "RIGHT", -78, 0)
+        end
+    end
+end
+
 local function SyncBarLayers(bar, strata, barLvl)
     if not bar then return end
     bar:SetFrameStrata(strata)
@@ -48,6 +89,8 @@ local function SyncBarLayers(bar, strata, barLvl)
     if bar.btnGreed then bar.btnGreed:SetFrameLevel(btnLvl) end
     if bar.btnNeed then bar.btnNeed:SetFrameLevel(btnLvl) end
 end
+
+local SLIDE_X = 24
 
 local function LayoutBars()
     if not container then
@@ -68,10 +111,11 @@ local function LayoutBars()
         return (a._seq or 0) < (b._seq or 0)
     end)
 
-    -- 容器固定单条尺寸：
+    -- 容器固定单条尺寸且绝不拦截鼠标：
     -- 1) 解锁模式锚框与第 1 条严格对齐，增减装备时剩余条不再整体跳动；
     -- 2) 实战置 HIGH 层（高于 MEDIUM 层核心 HUD / 常驻 BUFF / 动作条，低于 DIALOG 拾取绑定弹窗与 TOOLTIP），杜绝多件装备重叠时点击被下层框体吞掉。
     container:SetSize(w, h)
+    container:EnableMouse(false)
     local strata = hasPreview and "FULLSCREEN_DIALOG" or "HIGH"
     local baseLvl = hasPreview and 200 or 50
     container:SetFrameStrata(strata)
@@ -81,13 +125,18 @@ local function LayoutBars()
     local anchorPt = growDown and "TOP" or "BOTTOM"
     for idx, bar in ipairs(visible) do
         local offset = (idx - 1) * step
-        bar:ClearAllPoints()
-        bar:SetSize(w, h)
-        bar:SetPoint(anchorPt, container, anchorPt, 0, growDown and -offset or offset)
-        SyncBarLayers(bar, strata, baseLvl + 1)
-        if bar._borderColor then
-            ApplyBarBorder(bar, bar._borderColor[1], bar._borderColor[2], bar._borderColor[3])
+        local newY = growDown and -offset or offset
+        local geomChanged = (bar._slotPt ~= anchorPt) or (bar._slotY ~= newY) or (bar._slotW ~= w) or (bar._slotH ~= h)
+        bar._slotPt = anchorPt
+        bar._slotY = newY
+        bar._slotW = w
+        bar._slotH = h
+        if geomChanged then
+            bar:ClearAllPoints()
+            bar:SetSize(w, h)
+            bar:SetPoint(anchorPt, container, anchorPt, 0, newY)
         end
+        SyncBarLayers(bar, strata, baseLvl + 1)
     end
 end
 
@@ -146,6 +195,8 @@ end
 
 local function CloseBar(bar)
     if not bar then return end
+    if bar._animIn then bar._animIn:Stop() end
+    bar:SetAlpha(1)
     if GameTooltip and GameTooltip.IsOwned then
         local owner = GameTooltip.GetOwner and GameTooltip:GetOwner()
         if owner and (owner == bar or owner == bar._iconBtn
@@ -157,6 +208,10 @@ local function CloseBar(bar)
     bar.rollID = nil
     bar.endTime = nil
     bar.bop = nil
+    bar._slotPt = nil
+    bar._slotY = nil
+    bar._slotW = nil
+    bar._slotH = nil
     bar:Hide()
 end
 
@@ -269,26 +324,29 @@ ApplyBarBorder = function(bar, r, g, b)
     if not bar then return end
     local ST = F.StyleTokens
     local rad = ST and ST.GetCornerRadius(6) or 0
+    F.Theme.PaintLuminousCard(bar, {
+        r = r, g = g, b = b,
+        radius = rad,
+        bgAlpha = 0.84,
+        tintMix = 0.14,
+        glowAlpha = 0.20,
+        glowWidth = 104,
+        borderAlpha = 0.58,
+        borderLevel = 2,
+        leftBar = false,
+    })
+    if bar._iconBg then
+        bar._iconBg:SetColorTexture(
+            math_min(1, r * 0.58 + 0.08),
+            math_min(1, g * 0.58 + 0.08),
+            math_min(1, b * 0.58 + 0.08), 0.86)
+    end
     if ST and rad > 0 then
-        if bar._fuiBg then ST.MaskTexture(bar, bar._fuiBg, rad) end
-        if bar._fuiBorders then
-            for _, ln in ipairs(bar._fuiBorders) do ln:Hide() end
-        end
         local ft = bar.status and bar.status:GetStatusBarTexture()
         if ft then ST.MaskTexture(bar, ft, rad) end
-        ST.ApplyRoundedBorder(bar, rad, r * 0.68 + 0.10, g * 0.68 + 0.10, b * 0.68 + 0.10, 0.86, 6)
-        if bar._iconBtn and bar.icon then ST.MaskIcon(bar._iconBtn, bar.icon, 4) end
-    else
-        if ST then
-            ST.ClearRoundedMask(bar)
-            if bar._iconBtn then ST.ClearRoundedMask(bar._iconBtn) end
-        end
-        if bar._fuiBorders then
-            for _, ln in ipairs(bar._fuiBorders) do
-                ln:SetColorTexture(r, g, b, 0.72)
-                ln:Show()
-            end
-        end
+        if bar._spark and bar._spark._spark then ST.MaskTexture(bar, bar._spark._spark, rad) end
+    elseif ST then
+        ST.ClearRoundedMask(bar)
     end
 end
 
@@ -325,7 +383,16 @@ local function AcquireBar(rollID)
     local bar = CreateFrame("Frame", nil, container)
     bar:EnableMouse(true)
     bar:SetClampedToScreen(true)
-    F.Theme.StylePanel(bar, 0.88, 0.85)
+    F.Theme.StyleLuminousCard(bar, {
+        radius = 6,
+        bgAlpha = 0.80,
+        tintMix = 0.18,
+        glowAlpha = 0.24,
+        glowWidth = 112,
+        borderAlpha = 0.86,
+        borderLevel = 2,
+        leftBar = false,
+    })
     bar:SetScript("OnEnter", function(self) ShowRollTooltip(self, self) end)
     bar:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
@@ -342,14 +409,34 @@ local function AcquireBar(rollID)
         if sbFill.SetTexelSnappingBias then pcall(sbFill.SetTexelSnappingBias, sbFill, 0) end
     end
     bar.status = sb
+    if F.Motion and F.Motion.AttachEdgeSpark then
+        bar._spark = F.Motion.AttachEdgeSpark(sb, { width = 18, extraHeight = 2, levelOffset = 2 })
+    end
+
+    -- 与 EUI LootFeed 同款零闪烁入场：播放前 SetAlpha(0)，Order 2 位移与淡入等长并启用 SetToFinalAlpha(true)
+    local animIn = bar:CreateAnimationGroup()
+    animIn:SetToFinalAlpha(true)
+    local aJump = animIn:CreateAnimation("Translation")
+    aJump:SetOrder(1); aJump:SetOffset(SLIDE_X, 0); aJump:SetDuration(0)
+    local aSlide = animIn:CreateAnimation("Translation")
+    aSlide:SetOrder(2); aSlide:SetOffset(-SLIDE_X, 0); aSlide:SetDuration(0.34); aSlide:SetSmoothing("OUT")
+    local aFade = animIn:CreateAnimation("Alpha")
+    aFade:SetOrder(2); aFade:SetFromAlpha(0); aFade:SetToAlpha(1); aFade:SetDuration(0.34); aFade:SetSmoothing("OUT")
+    animIn:SetScript("OnFinished", function() bar:SetAlpha(1) end)
+    bar._animIn = animIn
 
     local iconBtn = CreateFrame("Button", nil, bar)
-    iconBtn:SetSize(28, 28)
-    iconBtn:SetPoint("LEFT", bar, "LEFT", 2, 0)
+    iconBtn:SetSize(26, 26)
+    iconBtn:SetPoint("LEFT", bar, "LEFT", 3, 0)
+    local iconBg = iconBtn:CreateTexture(nil, "BACKGROUND", nil, -1)
+    iconBg:SetAllPoints(iconBtn)
+    iconBg:SetColorTexture(0.18, 0.20, 0.26, 0.86)
     local icon = iconBtn:CreateTexture(nil, "ARTWORK")
-    icon:SetAllPoints()
+    icon:SetPoint("TOPLEFT", iconBtn, "TOPLEFT", 1, -1)
+    icon:SetPoint("BOTTOMRIGHT", iconBtn, "BOTTOMRIGHT", -1, 1)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     bar._iconBtn = iconBtn
+    bar._iconBg = iconBg
     bar.icon = icon
 
     ApplyBarBorder(bar, 0.04, 0.045, 0.06)
@@ -443,7 +530,7 @@ function mod:OnStartRoll(_, rollID, rollTime)
         return
     end
     if EUILootRollsInUse() then
-        F.PrintOnce("rollbars_yield_eui", "检测到 EUI「拾取掷点框」已开启，kkowoUI 的 Roll 点条自动让位（关闭 EUI 的掷点框后自动恢复）。")
+        F.PrintOnce("rollbars_yield_eui", "EUI 拾取掷点框已开启，掷点条自动让位。")
         return
     end
     EnsureContainer()
@@ -475,7 +562,20 @@ function mod:OnStartRoll(_, rollID, rollTime)
         local okQ, r, g, b = pcall(getQualColor, F.PlainNumber(quality, 1))
         if okQ and r and g and b then qr, qg, qb = r, g, b end
     end
-    bar.status:SetStatusBarColor(qr, qg, qb, 0.42)
+    local ST = F.StyleTokens
+    if ST and ST.ApplyBarGradient then
+        bar.status:SetStatusBarColor(1, 1, 1, 1)
+        ST.ApplyBarGradient(bar.status,
+            qr * 0.40, qg * 0.40, qb * 0.40,
+            math_min(1, qr * 0.85 + 0.15), math_min(1, qg * 0.85 + 0.15), math_min(1, qb * 0.85 + 0.15),
+            0.54)
+    else
+        bar.status:SetStatusBarColor(qr, qg, qb, 0.42)
+    end
+    if bar._spark then
+        bar._spark:SetColor(math_min(1, qr * 0.5 + 0.5), math_min(1, qg * 0.5 + 0.5), math_min(1, qb * 0.5 + 0.5), 0.82)
+        bar._spark:SyncAnchor()
+    end
     bar._borderColor = { qr, qg, qb }
     bar._lastSec = nil
     bar.icon:SetTexture(texture or 134400)
@@ -485,9 +585,23 @@ function mod:OnStartRoll(_, rollID, rollTime)
     bar.btnPass:SetEnabled(true); bar.btnPass:SetAlpha(1)
     bar.btnNeed:SetEnabled(canNeed == true); bar.btnNeed:SetAlpha(canNeed == true and 1 or 0.25)
     bar.btnGreed:SetEnabled(canGreed == true); bar.btnGreed:SetAlpha(canGreed == true and 1 or 0.25)
-    bar.btnDis:SetEnabled(canDisenchant == true); bar.btnDis:SetAlpha(canDisenchant == true and 1 or 0.25)
-    bar:Show()
-    LayoutBars()
+    local showDis = (canDisenchant == true)
+    bar.btnDis:SetEnabled(showDis); bar.btnDis:SetAlpha(showDis and 1 or 0.25)
+    LayoutRollButtons(bar, showDis)
+    if not existed and bar._animIn then
+        bar._animIn:Stop()
+        bar:SetAlpha(0)
+        bar:Show()
+        LayoutBars()
+        ApplyBarBorder(bar, qr, qg, qb)
+        bar._animIn:Play()
+        if F.Theme and F.Theme.PlayLuminousShimmer then F.Theme.PlayLuminousShimmer(bar) end
+    else
+        bar:SetAlpha(1)
+        bar:Show()
+        LayoutBars()
+        ApplyBarBorder(bar, qr, qg, qb)
+    end
 end
 
 function mod:OnCancelRoll(_, rollID)
@@ -505,19 +619,45 @@ function mod:ShowPreview()
     bar.status:SetStatusBarTexture(F.Theme.GetBarTexture())
     bar.status:SetMinMaxValues(0, 12)
     bar.status:SetValue(12)
-    local ar, ag, ab = F.Theme.GetAccent()
-    bar.status:SetStatusBarColor(ar, ag, ab, 0.45)
+    local qr, qg, qb = 0.64, 0.21, 0.93
+    local ST = F.StyleTokens
+    if ST and ST.ApplyBarGradient then
+        bar.status:SetStatusBarColor(1, 1, 1, 1)
+        ST.ApplyBarGradient(bar.status,
+            qr * 0.40, qg * 0.40, qb * 0.40,
+            math_min(1, qr * 0.85 + 0.15), math_min(1, qg * 0.85 + 0.15), math_min(1, qb * 0.85 + 0.15),
+            0.56)
+    else
+        bar.status:SetStatusBarColor(qr, qg, qb, 0.45)
+    end
+    if bar._spark then
+        bar._spark:SetColor(math_min(1, qr * 0.5 + 0.5), math_min(1, qg * 0.5 + 0.5), math_min(1, qb * 0.5 + 0.5), 0.85)
+        bar._spark:SyncAnchor()
+    end
     bar.icon:SetTexture(135489)
     bar.nameText:SetText("[预览] 史诗猎人长弓")
-    bar.nameText:SetTextColor(0.64, 0.21, 0.93, 1)
+    bar.nameText:SetTextColor(qr, qg, qb, 1)
     -- 复用的条可能残留上一次真实掷骰的禁用状态 / 倒计时 / 品质边框色
     bar._lastSec = nil
-    bar._borderColor = { 0.64, 0.21, 0.93 }
+    bar._borderColor = { qr, qg, qb }
     bar.btnPass:SetEnabled(true); bar.btnPass:SetAlpha(1)
-    bar.btnNeed:SetEnabled(true); bar.btnGreed:SetEnabled(true); bar.btnDis:SetEnabled(true)
-    bar.btnNeed:SetAlpha(1); bar.btnGreed:SetAlpha(1); bar.btnDis:SetAlpha(1)
-    bar:Show()
-    LayoutBars()
+    bar.btnNeed:SetEnabled(true); bar.btnGreed:SetEnabled(true); bar.btnDis:SetEnabled(false)
+    bar.btnNeed:SetAlpha(1); bar.btnGreed:SetAlpha(1); bar.btnDis:SetAlpha(0.25)
+    LayoutRollButtons(bar, false)
+    if bar._animIn then
+        bar._animIn:Stop()
+        bar:SetAlpha(0)
+        bar:Show()
+        LayoutBars()
+        ApplyBarBorder(bar, qr, qg, qb)
+        bar._animIn:Play()
+        if F.Theme and F.Theme.PlayLuminousShimmer then F.Theme.PlayLuminousShimmer(bar) end
+    else
+        bar:SetAlpha(1)
+        bar:Show()
+        LayoutBars()
+        ApplyBarBorder(bar, qr, qg, qb)
+    end
 end
 
 function mod:OnEnable()
@@ -534,6 +674,11 @@ function mod:OnDisable()
 end
 
 function mod:OnThemeChanged()
+    for _, bar in ipairs(bars) do
+        if bar._borderColor then
+            ApplyBarBorder(bar, bar._borderColor[1], bar._borderColor[2], bar._borderColor[3])
+        end
+    end
     LayoutBars()
 end
 
@@ -552,7 +697,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, {
         type = "dropdown",
         text = "多件装备堆叠方向",
-        tooltip = "同时掉落多件装备时新条目的展开方向。默认向上堆叠，避免向下压到常驻 BUFF 图标与核心双翼 HUD。",
+        tooltip = "多件装备同时掷点时的展开方向，默认向上避免压到双翼。",
         values = {
             UP   = "向上堆叠（推荐）",
             DOWN = "向下堆叠",

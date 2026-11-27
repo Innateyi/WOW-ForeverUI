@@ -702,14 +702,14 @@ local function CollectUnitDebuffs()
     return out
 end
 
--- 精致化 Cooldown 原生倒计时字体（彻底解决暴雪默认 16px 巨字糊满图标：9px 清爽描边沉底贴边，图标画面 100% 清晰，12.x 保密值安全）
+-- 精致化 Cooldown 原生倒计时字体（彻底解决暴雪默认 16px 巨字糊满图标：9px 清爽描边沉底居中留在框内，12.x 保密值安全）
 local function StyleCooldownTimerFont(cd, slot)
     if not (cd and cd.GetRegions) then return end
     for _, reg in ipairs({ cd:GetRegions() }) do
         if reg and reg.GetObjectType and reg:GetObjectType() == "FontString" then
             ST.ApplyText(reg, 9, 0.96, 0.98, 1.00, 1)
             reg:ClearAllPoints()
-            reg:SetPoint("BOTTOM", slot, "BOTTOM", 0, -2)
+            reg:SetPoint("BOTTOM", slot, "BOTTOM", 0, 2)
             reg:SetJustifyH("CENTER")
             reg:SetShadowOffset(1, -1)
         end
@@ -1348,9 +1348,9 @@ local function UpdateCombatAuras()
     if not (CH.coreFrame and CH.coreFrame._buffSlots and CH.coreFrame._debuffSlots) then return end
     local db = mod:GetDB()
     local sz = math_max(20, math_min(34, F.PlainNumber(db.auraIconSize, 26) or 26))
-    local permSz = math_max(18, math_min(26, sz - 4))
+    local permSz = sz
     local gap = 5
-    local permGap = 4
+    local permGap = gap
     local anchorTarget = CH.coreFrame._orb or CH.coreFrame
 
     for k in pairs(wingShownInstanceIDs) do wingShownInstanceIDs[k] = nil end
@@ -1840,9 +1840,9 @@ local function BuildCoreHUD()
         local tShade = slot:CreateTexture(nil, "ARTWORK", nil, 3)
         tShade:SetPoint("BOTTOMLEFT", slot, "BOTTOMLEFT", 1, 1)
         tShade:SetPoint("BOTTOMRIGHT", slot, "BOTTOMRIGHT", -1, 1)
-        tShade:SetHeight(10)
+        tShade:SetHeight(12)
         tShade:SetTexture(ST.TEX.FLAT)
-        ST.ApplyGradient(tShade, "VERTICAL", 0, 0, 0, 0.72, 0, 0, 0, 0.0)
+        ST.ApplyGradient(tShade, "VERTICAL", 0, 0, 0, 0.78, 0, 0, 0, 0.0)
         tShade:Hide()
         slot._timerShade = tShade
 

@@ -13,7 +13,7 @@ local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("questBar", {
     title = "任务快捷条",
-    desc = "紧凑的「接 / 交 / 通告」任务快捷按钮，默认无缝嵌入任务追踪标题栏，一键切换自动接交与小队进度通告。",
+    desc = "在任务追踪标题栏嵌入接、交、通告与本图收纳快捷按钮。",
     group = "quest",
     order = 20,
     defaults = {
@@ -39,6 +39,7 @@ local updateFade = nil
 local applyFreePos = nil
 local isDockedNow = false
 local dockPollTicker = nil
+local dockPollExhausted = false
 local eqtInitHooked = false
 local eqtApplyHooked = false
 local inEncounter = false
@@ -170,7 +171,8 @@ local function EnsureEmptyTrackerShown(tracker)
         pcall(tracker.Show, tracker)
     end
     local a = tracker.GetAlpha and F.PlainNumber(tracker:GetAlpha(), 1) or 1
-    if a <= 0.01 and tracker.SetAlpha then
+    local fadedByHUD = F.UnifiedFade and type(F.UnifiedFade.IsFading) == "function" and F.UnifiedFade.IsFading(tracker)
+    if a <= 0.01 and not fadedByHUD and tracker.SetAlpha then
         pcall(tracker.SetAlpha, tracker, 1)
     end
     keepingTrackerShown = false
@@ -458,13 +460,19 @@ local function StopDockPoll()
     end
 end
 
+-- 仅在 EUI 任务追踪已加载但尚未建框时启动有界兜底检查（每 1 秒一次，20 秒后自动停止）；
+-- 若未加载则纯事件等待 ADDON_LOADED / PLAYER_ENTERING_WORLD，空闲零轮询。
 local function EnsureDockPoll()
-    if dockPollTicker or not (C_Timer and C_Timer.NewTicker) then return end
+    if dockPollTicker or dockPollExhausted or not (C_Timer and C_Timer.NewTicker) then return end
+    if not (_G.EllesmereUIQuestTracker or F.IsAddOnLoaded("EllesmereUIQuestTracker")) then return end
     local tries = 0
-    dockPollTicker = C_Timer.NewTicker(0.4, function()
+    dockPollTicker = C_Timer.NewTicker(1.0, function()
         tries = tries + 1
         RefreshButtons()
-        if isDockedNow or tries >= 35 or not mod._active then
+        if isDockedNow or not mod._active then
+            StopDockPoll()
+        elseif tries >= 20 then
+            dockPollExhausted = true
             StopDockPoll()
         end
     end)
@@ -646,13 +654,22 @@ RefreshButtons = function()
                 F.StyleTokens.MaskTexture(b, b._pillBg, 4)
             end
             if on then
-                b._pillBg:SetColorTexture(ar, ag, ab, 0.16)
+                local ST = F.StyleTokens
+                if ST and ST.GetClassGradient and ST.ApplyGradient then
+                    local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient(nil, "bright")
+                    b._pillBg:SetColorTexture(1, 1, 1, 1)
+                    ST.ApplyGradient(b._pillBg, "HORIZONTAL", r1, g1, b1, 0.22, r2, g2, b2, 0.14)
+                    b._accentLine:SetColorTexture(1, 1, 1, 1)
+                    ST.ApplyGradient(b._accentLine, "HORIZONTAL", r1, g1, b1, 0.96, r2, g2, b2, 0.98)
+                else
+                    b._pillBg:SetColorTexture(ar, ag, ab, 0.16)
+                    b._accentLine:SetColorTexture(ar, ag, ab, 0.92)
+                end
                 b._pillBg:Show()
                 b._accentLine:SetHeight(1.5)
                 b._accentLine:ClearAllPoints()
                 b._accentLine:SetPoint("BOTTOMLEFT", b, "BOTTOMLEFT", 4, 1)
                 b._accentLine:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -4, 1)
-                b._accentLine:SetColorTexture(ar, ag, ab, 0.92)
                 b._accentLine:Show()
                 b._label:SetTextColor(ar, ag, ab, 1)
             else
@@ -906,13 +923,22 @@ function mod:OnEnable()
     end
     CreateBar()
     SeedCompletedQuests()
+    dockPollExhausted = false
     HookEQTInitOnce()
     RefreshButtons()
     -- 兜底重挂：若 EUI_CustomQuestTracker 稍晚完成建框，自动吸附进标题栏
     C_Timer.After(0.5, RefreshButtons)
     C_Timer.After(1.5, RefreshButtons)
+    self:RegisterEvent("ADDON_LOADED", function(_, _, addonName)
+        if addonName == "EllesmereUIQuestTracker" then
+            dockPollExhausted = false
+            HookEQTInitOnce()
+            C_Timer.After(0, RefreshButtons)
+        end
+    end)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         inEncounter = false
+        dockPollExhausted = false
         SeedCompletedQuests()
         HookEQTInitOnce()
         RefreshButtons()
@@ -984,18 +1010,18 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "显示方式",
-        tooltip = "默认无缝嵌入任务追踪器「任务 ... 16/40」标题栏内部，不占额外屏幕空间；也可切换为自由悬浮条。",
+        tooltip = "默认嵌入任务追踪标题栏不占空间，也可改为自由悬浮条。",
         values = { header = "嵌入任务追踪标题栏（默认）", free = "自由悬浮（可拖动）" },
         order = { "header", "free" },
         getValue = function() return db.dockMode or "header" end,
-        setValue = function(v) db.dockMode = v; RefreshButtons() end,
+        setValue = function(v) db.dockMode = v; dockPollExhausted = false; RefreshButtons() end,
     })
     y = y - h
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "显示「本图」智能收纳按钮",
-        tooltip = "在标题栏新增「本图」按钮：左键一键只看当前地图任务，右键切换自动折叠已完成任务。",
+        text = "显示本图按钮",
+        tooltip = "左键仅看当前地图任务，右键切换自动折叠已完成任务。",
         getValue = function() return db.showZoneBtn ~= false end,
         setValue = function(v) db.showZoneBtn = v == true; RefreshButtons() end,
     }, {

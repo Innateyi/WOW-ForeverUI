@@ -16,8 +16,8 @@ local ST = F.StyleTokens
 local M = F.Motion
 
 local mod = F.RegisterModule("swingTimerMotion", {
-    title = "武器挥砍计时器增强",
-    desc = "支持原地增强 EUI 挥砍条（圆角+临界光刃+出手瞬闪）或切换为 4px 独立极细圆角挥砍条（兼容双持主副手与猎人防卡平射）。",
+    title = "挥砍条动效",
+    desc = "原地增强 EUI 挥砍条或启用独立细条，支持双持与猎人平射。",
     group = "motion",
     order = 25,
     masterKey = "motionFX",
@@ -420,7 +420,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "挥砍条运行模式",
-        tooltip = "原地增强 EUI 挥砍条避免双条重叠；也可切换为独立 4px 极细圆角条（支持双持上下双条与猎人自动射击防卡平射）。",
+        tooltip = "原地增强避免双条重叠，也可切为 4px 独立条支持双持与平射。",
         values = {
             enhance_eui = "原地增强 EUI 挥砍条（推荐·防重复）",
             standalone  = "独立 4px 极细圆角挥砍条（支持双持）",
@@ -450,7 +450,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "出手临界（<0.25s）前沿光点提亮",
+        text = "临界前沿提亮",
         getValue = function() return db.criticalBoost ~= false end,
         setValue = function(v) db.criticalBoost = v == true end,
     }, {

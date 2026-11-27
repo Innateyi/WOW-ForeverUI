@@ -18,8 +18,8 @@ local GameTooltip = _G.GameTooltip
 local ST = F.StyleTokens
 
 local mod = F.RegisterModule("keybindBoard", {
-    title = "可视化键盘拖拽绑键器（/kkkeys）",
-    desc = "直观暗黑实体键盘布局，支持切换修饰键页签、直接从法术书/宏/动作条拖拽技能图标到虚拟按键绑键、右键一键解绑，战斗中自动锁定。",
+    title = "键位图",
+    desc = "打开实体键盘布局拖拽绑定技能，右键解绑，战斗中自动锁定。",
     group = "motion",
     order = 45,
     masterKey = "motionFX",
@@ -763,17 +763,13 @@ end
 
 function mod:ToggleBoard()
     if not self._active then
-        F.Print("可视化键位图模块当前已关闭，请在 /kk「动效与视觉增强」中启用。")
+        F.Print("键位图已关闭，请在「界面外观 → 窗口与沉浸」中启用。")
         return
     end
     BuildBoard()
     if boardFrame:IsShown() then
         boardFrame:Hide()
     else
-        local EUI = _G.EllesmereUI
-        if EUI and type(EUI.Hide) == "function" then
-            pcall(EUI.Hide, EUI)
-        end
         pendingSlotCmd = nil
         RebuildKeyboardGrid()
         boardFrame:Show()
@@ -822,13 +818,13 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "labeledButton",
-        text = "可视化实体键盘绑键器",
-        buttonText = "打开 /kkkeys",
+        text = "打开键盘绑键器",
+        buttonText = "打开键位图",
         width = 130,
         tooltip = "弹出实体键盘绑键面板，支持拖放技能/宏/动作槽与右键一键解绑。",
         onClick = function()
             if type(F.LaunchFromEUI) == "function" then
-                F.LaunchFromEUI(function() mod:ToggleBoard() end)
+                F.LaunchFromEUI(function() mod:ToggleBoard() end, function() return boardFrame end)
             else
                 mod:ToggleBoard()
             end
@@ -853,7 +849,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         end,
     }, {
         type = "dropdown",
-        text = "底部默认动作条映射",
+        text = "默认映射动作条",
         values = { [1] = "主动作条", [2] = "左下动作条", [3] = "右下动作条", [4] = "右侧1", [5] = "右侧2", [6] = "动作条6" },
         order = { 1, 2, 3, 4, 5, 6 },
         getValue = function() return db.actionBar or 1 end,

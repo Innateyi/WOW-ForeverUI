@@ -16,7 +16,7 @@ local C_Timer = C_Timer
 
 local mod = F.RegisterModule("cdPresets", {
     title = "职业预设冷却条",
-    desc = "为当前职业在 EUI 冷却管理器里添加一组常用技能冷却条（图标 + 技能名 + 右侧倒计时，冷却中才显示）。只添加已学会的技能，学会新技能或新等级时自动补上。需要启用 EllesmereUI 冷却管理器。",
+    desc = "自动向 EUI 冷却管理器添加当前职业常用冷却条，冷却时才显示。",
     group = "combat",
     order = 12,
     defaults = {
@@ -221,7 +221,7 @@ local function Sync()
             -- 练级途中学会新技能：一句话带过
             F.Print("新增冷却条：" .. table.concat(added, "、"))
         else
-            F.Print("已在 EUI 冷却管理器添加 " .. #added .. " 条预设冷却条（冷却中才显示；位置与样式在 EUI 设置 → 冷却管理器 → 追踪条 调整）。")
+            F.Print("已在 EUI 冷却管理器添加 " .. #added .. " 条预设冷却条，可在 EUI 冷却管理器中调整位置。")
         end
     end
     st.seeded = true
@@ -268,12 +268,19 @@ function mod:OnDisable()
 end
 
 function mod:BuildOptions(W, parent, y, enableSlot, blank)
+    local hasCDM = F.IsAddOnLoaded("EllesmereUICooldownManager")
+    if not hasCDM then
+        enableSlot.disabled = function() return true end
+        enableSlot.disabledTooltip = "需要开启 EUI 冷却管理器。"
+    end
     local _, h = W:DualRow(parent, y, enableSlot, {
         type = "labeledButton",
-        text = "恢复被删除的预设冷却条",
+        text = "恢复预设冷却条",
         buttonText = "重新添加",
-        width = 120,
-        tooltip = "把你在 EUI 里删掉的预设冷却条加回来（已存在的不会重复添加）。",
+        width = 110,
+        disabled = function() return not hasCDM end,
+        disabledTooltip = hasCDM and nil or "需要开启 EUI 冷却管理器。",
+        tooltip = "把在 EUI 里删掉的预设冷却条加回来，已存在项不重复添加。",
         onClick = ResetRemoved,
     })
     y = y - h

@@ -1,13 +1,22 @@
 ----------------------------------------------------------------------
---  kkowoUI — Data/PolestarZh.lua
---  Polestar 的 NPC 副标题（「饮料商」「兽栏管理员」等）在它的数据库 Polestar_Codex 里只有英文，
---  中文包也不翻译它们：地图服务图标、附近列表的鼠标提示因此显示英文。
---  这里包一层 Polestar.Codex.Npc，第一次读到某个 NPC 时把 subName 换成中文（记录会被缓存，只换一次）。
---  不改 Polestar 的任何文件；Polestar 更新后照样生效，没有的副标题保持英文。仅中文客户端启用。
+--  kkowoUI_Integrations — Data/PolestarZh.lua
+--  Polestar 全家桶零文件补丁运行时简中注入（官方有译文优先官方，仅补空缺）：
+--    • Polestar.L：补齐 74 条界面缺译（原 polestar_zhcn_fill 72 条 + 2 条新增）
+--    • Polestar.Names & Compat.GetMapName：补齐 2,090 条实体译名（官方 API + Questie + 43 条审批 AI）
+--    • Polestar.GuideTexts：补齐全部缺译指南正文（原补丁迁移 + 669 条新增），保留全部 {kind:id} 占位符
+--    • Polestar.Codex.Npc：补齐 456 条 NPC 副标题中文
+--  仅简体中文客户端且 Polestar 当前显示语言为 zhCN 时生效；随时可无损卸载。
 ----------------------------------------------------------------------
 local _G = _G
 local F = _G.kkowoUI
 if not F then return end
+
+local ipairs, pairs, pcall, rawget, setmetatable, tonumber, type =
+    ipairs, pairs, pcall, rawget, setmetatable, tonumber, type
+local string_find, string_sub, table_concat = string.find, string.sub, table.concat
+local CreateFrame = CreateFrame
+local GetLocale = _G.GetLocale
+
 local SUB = {
     ["Accessories Quartermaster"] = "饰品军需官",
     ["Agent of the Black Market"] = "黑市商人",
@@ -467,15 +476,319 @@ local SUB = {
     ["Zandalar Supplies and Repair"] = "赞达拉补给和修理",
 }
 
-local function hook()
-    local P = _G.Polestar
+local function IsZhCN(P)
+    if P and P.Names and type(P.Names.Language) == "function" then
+        local ok, lang = pcall(P.Names.Language)
+        if ok and type(lang) == "string" then
+            return lang == "zhCN"
+        end
+    end
+    return GetLocale and GetLocale() == "zhCN"
+end
+
+local function ValidStr(s)
+    return type(s) == "string" and s ~= ""
+end
+
+-- 1) Polestar.L：仅在 rawget(L, k) == nil 时补齐，官方 Polestar_zhCN\Interface.lua 永远优先
+local function ApplyInterface(P)
+    local L = P and P.L
+    local IFACE = F._PolestarInterfaceZH
+    if not (IsZhCN(P) and type(L) == "table" and type(IFACE) == "table") then return false end
+    for k, v in pairs(IFACE) do
+        if rawget(L, k) == nil then
+            L[k] = v
+        end
+    end
+    return true
+end
+
+-- 2) Polestar.Names & Compat.GetMapName：官方客户端/学习名/官方包永远优先，仅在返回 nil 时兜底
+local function HookNames(P)
+    local N = P and P.Names
+    if not (N and type(N) == "table") then return false end
+    if N._kkowoZhNames then return true end
+    N._kkowoZhNames = true
+
+    local function Fallback(kind, id)
+        if not IsZhCN(P) or type(id) ~= "number" then return nil end
+        local data = F._PolestarNamesData
+        if type(data) ~= "table" then return nil end
+        local t = data[kind]
+        if t and t[id] then return t[id] end
+        if kind == "map" and data.zone and data.zone[id] then
+            return data.zone[id]
+        end
+        return nil
+    end
+
+    local function WrapSingle(field, kind)
+        local orig = N[field]
+        if type(orig) ~= "function" then return end
+        N[field] = function(id)
+            local v = orig(id)
+            if ValidStr(v) then return v end
+            return Fallback(kind, id)
+        end
+    end
+
+    WrapSingle("Quest", "quest")
+    WrapSingle("Item", "item")
+    WrapSingle("Npc", "npc")
+    WrapSingle("Object", "object")
+    WrapSingle("Spell", "spell")
+    WrapSingle("Area", "area")
+    WrapSingle("Instance", "map")
+
+    if type(N.Get) == "function" then
+        local origGet = N.Get
+        N.Get = function(kind, id)
+            local v = origGet(kind, id)
+            if ValidStr(v) then return v end
+            return Fallback(kind, id)
+        end
+    end
+
+    if type(N.Cached) == "function" then
+        local origCached = N.Cached
+        N.Cached = function(kind, id, cursor)
+            local v = origCached(kind, id, cursor)
+            if ValidStr(v) then return v end
+            return Fallback(kind, id)
+        end
+    end
+
+    local C = P.Compat
+    if C and type(C.GetMapName) == "function" and not C._kkowoZhMap then
+        C._kkowoZhMap = true
+        local origMap = C.GetMapName
+        C.GetMapName = function(id)
+            local v = origMap(id)
+            if ValidStr(v) then return v end
+            if IsZhCN(P) and type(id) == "number" then
+                local data = F._PolestarNamesData
+                return data and data.zone and data.zone[id] or nil
+            end
+            return nil
+        end
+    end
+    return true
+end
+
+-- 3) Polestar.GuideTexts：精准识别官方 Texts.lua 未翻译的原文并套用补充译文 + 动态填词
+local GUIDE_FIELDS = { "title", "why", "pitch" }
+local GUIDE_LISTS = { "pros", "cons" }
+local STEP_FIELDS = { "title", "note" }
+local GOAL_FIELDS = { "note", "text" }
+local EMPTY_GOALS = {}
+local FILL_CAP = 8192
+local fbState = setmetatable({}, { __mode = "k" })
+
+local function HookGuideTexts(P)
+    local GT = P and P.GuideTexts
+    if not (GT and type(GT) == "table") then return false end
+    if GT._kkowoZhGT then return true end
+    GT._kkowoZhGT = true
+
+    local function LocalTokenName(kind, id, en)
+        if kind == "zone" then
+            if P.Names and P.Names.Localised and P.Names.Native and P.Names.Localised() and P.Names.Native() then
+                if P.Compat and P.Compat.GetMapName then
+                    local zn = P.Compat.GetMapName(id)
+                    if ValidStr(zn) then return zn end
+                end
+            end
+            local data = F._PolestarNamesData
+            return data and data.zone and data.zone[id] or nil
+        end
+        if kind == "skill" then
+            return P.L and P.L[en] or nil
+        end
+        if kind == "spell" or kind == "faction" or kind == "area" then
+            return P.Names and P.Names.Get and P.Names.Get(kind, id) or nil
+        end
+        return P.Names and P.Names.Cached and P.Names.Cached(kind, id) or nil
+    end
+
+    local function FillTokens(s, names, live)
+        if not string_find(s, "{", 1, true) then return s end
+        local parts, n, at, total = {}, 0, 1, 0
+        local zh = IsZhCN(P)
+        while true do
+            local a, b, kind, idStr = string_find(s, "{(%l+):(%d+)}", at)
+            if not a then break end
+            local prefix = string_sub(s, at, a - 1)
+            n = n + 1; parts[n] = prefix; total = total + #prefix
+            local en = names and names[kind .. ":" .. idStr]
+            local name = en and live and zh and LocalTokenName(kind, tonumber(idStr), en) or nil
+            local tok
+            if ValidStr(name) then
+                tok = name
+            elseif ValidStr(en) then
+                tok = en
+            else
+                tok = string_sub(s, a, b)
+            end
+            n = n + 1; parts[n] = tok; total = total + #tok
+            at = b + 1
+            if total >= FILL_CAP then break end
+        end
+        n = n + 1; parts[n] = string_sub(s, at)
+        return table_concat(parts, "", 1, n)
+    end
+
+    local function NewEntry(def)
+        local names = type(def.names) == "table" and def.names or nil
+        if names then
+            local raw = {}
+            for k, v in pairs(names) do
+                if ValidStr(k) and ValidStr(v) then raw[k] = v end
+            end
+            names = raw
+        end
+        return { names = names, fields = {} }
+    end
+
+    local function CollectFields(def, entry, withHeader)
+        local fields = entry.fields
+        local function Add(holder, key)
+            local en = holder[key]
+            if not ValidStr(en) then return end
+            local n = #fields
+            fields[n + 1] = holder ~= def and holder or false
+            fields[n + 2] = key
+            fields[n + 3] = en
+        end
+        if withHeader then
+            for _, f in ipairs(GUIDE_FIELDS) do Add(def, f) end
+            for _, f in ipairs(GUIDE_LISTS) do
+                local list = def[f]
+                if type(list) == "table" then
+                    for i = 1, #list do Add(list, i) end
+                end
+            end
+            if type(def.reward) == "table" then
+                for _, r in ipairs(def.reward) do
+                    if type(r) == "table" then Add(r, "text") end
+                end
+            end
+        end
+        local steps = rawget(def, "steps")
+        if type(steps) == "table" then
+            for _, step in ipairs(steps) do
+                for _, f in ipairs(STEP_FIELDS) do Add(step, f) end
+                for _, goal in ipairs(step.goals or EMPTY_GOALS) do
+                    if type(goal) == "table" then
+                        for _, f in ipairs(GOAL_FIELDS) do Add(goal, f) end
+                        if goal.t == "kill" and goal.npc == nil then Add(goal, "target") end
+                    end
+                end
+            end
+        end
+    end
+
+    local function ApplyFallback(def, entry, from, live, escapeFn)
+        if not IsZhCN(P) then return false end
+        local GUIDE_ZH = F._PolestarGuideZH
+        if type(GUIDE_ZH) ~= "table" then return false end
+        local changed = false
+        local fields = entry.fields
+        for i = from, #fields, 3 do
+            local holder, key, en = fields[i] or def, fields[i + 1], fields[i + 2]
+            local zh = GUIDE_ZH[en]
+            if zh then
+                local enRendered = FillTokens(en, entry.names, live)
+                if escapeFn then enRendered = escapeFn(enRendered) end
+                if holder[key] == enRendered then
+                    local zhRendered = FillTokens(zh, entry.names, live)
+                    if escapeFn then zhRendered = escapeFn(zhRendered) end
+                    if holder[key] ~= zhRendered then
+                        holder[key] = zhRendered
+                        changed = true
+                    end
+                end
+            end
+        end
+        return changed
+    end
+
+    if type(GT.PackText) == "function" then
+        local origPackText = GT.PackText
+        GT.PackText = function(packId, s)
+            local out = origPackText(packId, s)
+            if out == s and IsZhCN(P) and ValidStr(s) then
+                local GUIDE_ZH = F._PolestarGuideZH
+                if type(GUIDE_ZH) == "table" and GUIDE_ZH[s] then
+                    return GUIDE_ZH[s]
+                end
+            end
+            return out
+        end
+    end
+
+    if type(GT.Prepare) == "function" then
+        local origPrepare = GT.Prepare
+        GT.Prepare = function(def, live)
+            local entry = NewEntry(def)
+            CollectFields(def, entry, true)
+            fbState[def] = entry
+            origPrepare(def, live)
+            ApplyFallback(def, entry, 1, live, nil)
+        end
+    end
+
+    if type(GT.PrepareSteps) == "function" then
+        local origPrepareSteps = GT.PrepareSteps
+        GT.PrepareSteps = function(def)
+            local entry = fbState[def]
+            if not entry then
+                entry = NewEntry(def)
+                fbState[def] = entry
+            end
+            local from = #entry.fields + 1
+            entry.header = entry.header or (from - 1)
+            CollectFields(def, entry, false)
+            origPrepareSteps(def)
+            ApplyFallback(def, entry, from, true, nil)
+        end
+    end
+
+    if type(GT.DropSteps) == "function" then
+        local origDropSteps = GT.DropSteps
+        GT.DropSteps = function(def)
+            origDropSteps(def)
+            local entry = fbState[def]
+            if entry and entry.header then
+                for i = #entry.fields, entry.header + 1, -1 do
+                    entry.fields[i] = nil
+                end
+            end
+        end
+    end
+
+    if type(GT.Refresh) == "function" then
+        local origRefresh = GT.Refresh
+        GT.Refresh = function(def)
+            local changed = origRefresh(def)
+            local entry = fbState[def]
+            if entry and ApplyFallback(def, entry, 1, true, P.EscapeText) then
+                changed = true
+            end
+            return changed
+        end
+    end
+    return true
+end
+
+-- 4) Polestar.Codex.Npc：NPC 副标题中文映射
+local function HookCodex(P)
     local C = P and P.Codex
     if C and C._kkowoZhSub then return true end
     if not (C and type(C.Npc) == "function") then return false end
     local orig = C.Npc
     C.Npc = function(id)
         local rec = orig(id)
-        if type(rec) == "table" then
+        if type(rec) == "table" and IsZhCN(P) then
             local s = rec.subName
             if type(s) == "string" and SUB[s] then rec.subName = SUB[s] end
         end
@@ -485,14 +798,70 @@ local function hook()
     return true
 end
 
-if GetLocale and GetLocale() == "zhCN" then
-    if not hook() then
-        local f = CreateFrame("Frame")
-        f:RegisterEvent("ADDON_LOADED")
-        f:SetScript("OnEvent", function(self, _, name)
-            if name == "Polestar" and hook() then self:UnregisterAllEvents() end
-        end)
+local function InstallAll()
+    local P = _G.Polestar
+    if type(P) ~= "table" then return false end
+    local okI = ApplyInterface(P)
+    local okN = HookNames(P)
+    local okG = HookGuideTexts(P)
+    HookCodex(P)
+    if okI or okN or okG then
+        P._kkowoZhRuntime = true
     end
+    return P._kkowoZhRuntime == true and (P.Codex and P.Codex._kkowoZhSub == true)
+end
+
+if GetLocale and GetLocale() == "zhCN" then
+    InstallAll()
+    local f = CreateFrame("Frame")
+    f:RegisterEvent("ADDON_LOADED")
+    f:RegisterEvent("PLAYER_LOGIN")
+    f:SetScript("OnEvent", function(_, event, name)
+        if event == "PLAYER_LOGIN" then
+            InstallAll()
+            local P = _G.Polestar
+            if P and P.Fire and not P._kkowoZhNamesFired and IsZhCN(P) then
+                P._kkowoZhNamesFired = true
+                pcall(P.Fire, "NAMES_LOADED")
+            end
+        elseif name == "Polestar" or name == "Polestar_zhCN" or name == "Polestar_Codex" then
+            InstallAll()
+        end
+    end)
 end
 
 F.PolestarSubtitleZH = SUB
+
+-- 注册到 /kk selftest 抽查（覆盖 L / Names / GuideTexts / Subtitles 四层共 10 项）
+F._LocaleChecks = F._LocaleChecks or {}
+F._LocaleChecks.Polestar = function()
+    local P = _G.Polestar
+    if not (P or F.IsAddOnLoaded("Polestar")) then
+        return true, "skipped (not loaded)"
+    end
+    if type(P) ~= "table" then
+        return false, "Polestar table missing"
+    end
+    InstallAll()
+    local hit, total = 0, 10
+    if P._kkowoZhRuntime then hit = hit + 1 end
+    local L = P.L
+    if type(L) == "table" then
+        if ValidStr(rawget(L, "A guide to the items 1 quest in your log needs from where it is given, ending at the entrance.")) then hit = hit + 1 end
+        if ValidStr(rawget(L, "A guide to the items %d quests in your log need from where they are given, ending at the entrance.")) then hit = hit + 1 end
+    end
+    local N = P.Names
+    if type(N) == "table" and type(N.Get) == "function" then
+        if ValidStr(N.Get("quest", 96383)) then hit = hit + 1 end
+        if ValidStr(N.Get("npc", 222413)) then hit = hit + 1 end
+        if ValidStr(N.Get("item", 213566)) then hit = hit + 1 end
+    end
+    local GZH = F._PolestarGuideZH
+    if type(GZH) == "table" then
+        if ValidStr(GZH["Eastern pylon found"]) then hit = hit + 1 end
+        if ValidStr(GZH["Western pylon found"]) then hit = hit + 1 end
+    end
+    if ValidStr(SUB["Auctioneer"]) then hit = hit + 1 end
+    if ValidStr(SUB["Banker"]) then hit = hit + 1 end
+    return hit == total, "Polestar " .. hit .. "/" .. total
+end

@@ -5,3 +5,15 @@ Tools/_preview/
 *.zip
 *.bak
 __pycache__/
+
+# 本地网易DD 分享上传与整合包打包工具（仅本机使用，不上传 GitHub）
+Tools/网易DD分享上传.bat
+Tools/DD更新后重打补丁.bat
+Tools/make_friend_pack.py
+Tools/pack_share.py
+Tools/prepare_share_wtf.py
+Tools/friend_pack/
+Tools/apply_live_config.py
+Tools/apply_phase2_handoff.py
+Tools/apply_phase3_handoff.py
+Profiles/

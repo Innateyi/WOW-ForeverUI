@@ -23,8 +23,8 @@ local GameTooltip = _G.GameTooltip
 local WorldFrame = _G.WorldFrame
 
 local mod = F.RegisterModule("durability", {
-    title = "核心属性与装备耐久面板",
-    desc = "将角色核心属性、装备耐久与实时背包栏位融为一体：默认纯透明无边框清爽呈现（可自由调底板透明度）、全职业智能综合，悬停看全身耐久、修理费与背包余量。",
+    title = "属性与耐久",
+    desc = "整合核心属性、装备耐久与背包格数，悬停可看耐久与修理费。",
     group = "utility",
     order = 20,
     defaults = {
@@ -1331,8 +1331,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "一体化现代属性与耐久面板（推荐）",
-        tooltip = "将 EUI 原本的杂色次要属性与耐久度整合为一张两端对齐、按职业精选属性的现代卡片；关闭后退回仅在 EUI 原属性下附加耐久行。",
+        text = "一体化属性耐久",
+        tooltip = "将次要属性与耐久整合成对齐卡片，关闭则退回附在原属性下方。",
         getValue = function() return db.unifiedPanel ~= false end,
         setValue = function(v) db.unifiedPanel = v == true; UpdateAll() end,
     })
@@ -1341,7 +1341,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, {
         type = "dropdown",
         text = "属性展示方案",
-        tooltip = "「智能动态综合」自动适配所有职业与无限服混伤配装（猎人兼顾远程/近战并在有法强时自动补全，混合职业同时展示物理+法术）；也可切为「经典全属性」固定显示全部 8 项。",
+        tooltip = "智能模式按职业精选属性，经典模式固定显示全部 8 项。",
         values = {
             smart   = "智能动态综合（全职业推荐）",
             classic = "经典全属性（近战+法术+移速+耐久）",
@@ -1357,8 +1357,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         setValue = function(v) db.statPreset = v; UpdateAll() end,
     }, {
         type = "slider",
-        text = "底板透明度（0 = 纯透明）",
-        tooltip = "调节属性与耐久面板的背景底板浓度（默认 0.00 纯透明无边框，调高可显示半透明玻璃底板）。",
+        text = "底板透明度",
+        tooltip = "调节背景底板浓度，0 为纯透明无边框，调高显示半透明底板。",
         min = 0.0, max = 0.85, step = 0.04,
         getValue = function()
             if db.showBackdrop == false then return 0 end
@@ -1375,28 +1375,28 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "显示全身平均耐久（关闭为最低单件）",
+        text = "显示平均耐久",
         tooltip = "默认显示损耗最严重单件的百分比，便于及时修理；开启后显示全身平均耐久。",
         getValue = function() return db.useAverage == true end,
         setValue = function(v) db.useAverage = v == true; durDirty = true; UpdateAll() end,
     }, {
         type = "toggle",
-        text = "显示顶部装饰横线（仅底板开启时）",
-        tooltip = "默认关闭，呈现无横线极简外观；若调高底板透明度并想要顶部 1px 职业色细线可开启。",
+        text = "顶部装饰细线",
+        tooltip = "底板开启时在顶部增加 1px 主题色细线，默认关闭。",
         getValue = function() return db.showTopLine == true end,
         setValue = function(v) db.showTopLine = v == true; UpdateAll() end,
     })
     y = y - h
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "触发增益属性提升时数字短暂高亮闪烁",
-        tooltip = "当触发饰品、嗜血、光环或增益 Buff 令攻强/暴击/法强/移速上升时，对应属性数字短促高亮回弹提示。",
+        text = "属性提升闪烁",
+        tooltip = "触发增益导致攻强、暴击、法强或移速提高时短暂高亮提示。",
         getValue = function() return db.flashOnStatGain ~= false end,
         setValue = function(v) db.flashOnStatGain = v == true end,
     }, {
         type = "toggle",
-        text = "底部实时显示背包栏位（如 18/72）",
-        tooltip = "在装备耐久下方实时显示当前已用/总背包格数（自动排除箭袋/弹药袋/灵魂袋，与 EUI 背包标题一致）。",
+        text = "显示背包格数",
+        tooltip = "在耐久下方显示已用与总背包格数，自动排除箭袋与灵魂袋。",
         getValue = function() return db.showBagSlots ~= false end,
         setValue = function(v) db.showBagSlots = v == true; UpdateAll() end,
     })

@@ -12,8 +12,8 @@ local table_sort = table.sort
 local CreateFrame = CreateFrame
 
 local mod = F.RegisterModule("socialTools", {
-    title = "右键菜单与邮件联系人",
-    desc = "右键玩家菜单新增「复制名字-服务器」与公会邀请；寄信时在右侧展示本服小号与收藏联系人一键填入。",
+    title = "社交与邮件工具",
+    desc = "右键玩家增加复制名字与公会邀请，寄信页右侧列出小号联系人。",
     group = "social",
     order = 20,
     defaults = {
@@ -439,7 +439,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     local _, h
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
-        text = "右键菜单复制名字 / 公会邀请",
+        text = "右键复制与邀请",
         tooltip = "使用官方 Menu.ModifyMenu 安全扩展玩家右键菜单。",
         getValue = function() return db.contextMenu ~= false end,
         setValue = function(v) db.contextMenu = v == true end,
@@ -448,8 +448,8 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "寄信界面显示小号/联系人抽屉",
-        tooltip = "打开寄信标签页时，在邮箱右侧列出同服同阵营小号与常用收件人（左键填入、右键移除）。",
+        text = "寄信联系人抽屉",
+        tooltip = "寄信时在右侧列出同服小号与常用收件人，左键填入右键移除。",
         getValue = function() return db.mailContacts ~= false end,
         setValue = function(v) db.mailContacts = v == true; RefreshMailDrawer() end,
     }, {

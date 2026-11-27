@@ -19,8 +19,8 @@ local ST = F.StyleTokens
 local M = F.Motion
 
 local mod = F.RegisterModule("actionBarMotion", {
-    title = "动作条与冷却条圆角动效",
-    desc = "为 EUI 动作条、冷却管理器图标及伤害统计条施加统一抗锯齿圆角裁边、按键缩放回弹、职业色点击边闪与冷却完成脉冲。",
+    title = "动作条动效",
+    desc = "为动作条、冷却图标与伤害统计添加圆角、按键回弹与冷却脉冲。",
     group = "motion",
     order = 30,
     masterKey = "motionFX",
@@ -349,7 +349,26 @@ local function EnsureFlashOverlay(btn)
         tex:Hide()
     end)
 
-    fl = { host = host, tex = tex, ag = ag }
+    local bloom = host:CreateTexture(nil, "OVERLAY", nil, 7)
+    bloom:SetPoint("CENTER", host, "CENTER", 0, 0)
+    bloom:SetTexture(ST.TEX.SOFT_GLOW)
+    bloom:SetBlendMode("ADD")
+    bloom:SetAlpha(0)
+    bloom:Hide()
+
+    local bag = bloom:CreateAnimationGroup()
+    local b1 = bag:CreateAnimation("Alpha")
+    b1:SetOrder(1); b1:SetFromAlpha(0); b1:SetToAlpha(0.68); b1:SetDuration(0.06); b1:SetSmoothing("OUT")
+    local bSc = bag:CreateAnimation("Scale")
+    bSc:SetOrder(1); bSc:SetOrigin("CENTER", 0, 0)
+    bSc:SetScaleFrom(0.84, 0.84); bSc:SetScaleTo(1.22, 1.22); bSc:SetDuration(0.34); bSc:SetSmoothing("OUT")
+    local b2 = bag:CreateAnimation("Alpha")
+    b2:SetOrder(2); b2:SetFromAlpha(0.68); b2:SetToAlpha(0); b2:SetDuration(0.28); b2:SetSmoothing("OUT")
+    bag:SetScript("OnPlay", function() bloom:SetAlpha(0); bloom:Show() end)
+    bag:SetScript("OnFinished", function() bloom:SetAlpha(0); bloom:Hide() end)
+    bag:SetScript("OnStop", function() bloom:SetAlpha(0); bloom:Hide() end)
+
+    fl = { host = host, tex = tex, ag = ag, bloom = bloom, bag = bag }
     flashOverlays[btn] = fl
     return fl
 end
@@ -388,6 +407,16 @@ local function TriggerButtonFX(btn, isCDFinish)
         fl.tex:SetAlpha(0)
         fl.tex:Show()
         fl.ag:Play()
+        if isCDFinish and fl.bloom and fl.bag then
+            local bw = F.PlainNumber(btn.GetWidth and btn:GetWidth(), 36) or 36
+            local bh = F.PlainNumber(btn.GetHeight and btn:GetHeight(), 36) or 36
+            fl.bloom:SetSize(bw * 1.38, bh * 1.38)
+            fl.bloom:SetVertexColor(r2, g2, b2)
+            fl.bag:Stop()
+            fl.bloom:SetAlpha(0)
+            fl.bloom:Show()
+            fl.bag:Play()
+        end
     end
 end
 
@@ -1263,13 +1292,13 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "动作条图标统一圆角 + 1px 描边",
-        tooltip = "将 EUI 全部动作条（含主动作条、宠物条、姿态条与空技能格）统一改为抗锯齿圆角与 1px 细描边。",
+        text = "动作条圆角描边",
+        tooltip = "为主动作条、宠物条、姿态条与空格应用圆角与细描边。",
         getValue = function() return db.roundActionBars ~= false end,
         setValue = function(v) db.roundActionBars = v == true; ScanButtons() end,
     }, {
         type = "toggle",
-        text = "冷却管理器与伤害统计统一圆角",
+        text = "冷却与统计圆角",
         getValue = function() return db.roundCooldownManager ~= false end,
         setValue = function(v)
             db.roundCooldownManager = v == true
@@ -1281,13 +1310,13 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "按下技能缩放回弹 + 职业色边闪",
+        text = "按键回弹边闪",
         tooltip = "仅对有技能的动作格生效，空技能格不会触发闪烁。",
         getValue = function() return db.pressBounce ~= false end,
         setValue = function(v) db.pressBounce = v == true; db.pressFlash = v == true end,
     }, {
         type = "toggle",
-        text = "冷却转完脉冲高亮提醒（>2秒技能）",
+        text = "冷却完成脉冲",
         getValue = function() return db.cdFinishPulse ~= false end,
         setValue = function(v) db.cdFinishPulse = v == true end,
     })

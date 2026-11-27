@@ -16,8 +16,8 @@ local C_Timer = C_Timer
 local ST = F.StyleTokens
 
 local mod = F.RegisterModule("auraBarSkin", {
-    title = "小地图左侧增益 / 减益圆角美化",
-    desc = "将小地图左侧的增益与减益图标升级为现代圆角裁边 + 1px 语义细描边 + 清晰计时排版（零污染，关闭即还原）。",
+    title = "增益栏美化",
+    desc = "美化小地图左侧增益与减益图标，应用圆角描边与清晰计时。",
     group = "motion",
     order = 6,
     masterKey = "motionFX",
@@ -299,7 +299,7 @@ function mod:BuildOptions(W, parent, y, enableSlot)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "减益按法术类型着色圆角细框",
+        text = "减益类型着色",
         tooltip = "魔法蓝、诅咒紫、中毒绿、疾病棕、物理/流血红，一目了然。",
         getValue = function() return db.colorDebuffBorder ~= false end,
         setValue = function(v) db.colorDebuffBorder = v == true; RefreshAllAuras() end,

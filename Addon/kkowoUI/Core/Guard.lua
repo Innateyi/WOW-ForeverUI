@@ -18,8 +18,8 @@ local C_Timer = C_Timer
 local InCombatLockdown = InCombatLockdown
 
 local mod = F.RegisterModule("controlHub", {
-    title = "整合包总控台与补丁守卫",
-    desc = "集中管理 kkowoUI、kkowoUI_Tooltip 与保留的上游核心引擎，并提供登录后补丁守卫（PatchGuard）、零补丁 ESC 增强与重叠开关体检。",
+    title = "总控与体检守卫",
+    desc = "集中打开常用插件，提供启动巡检、按键返回与重叠开关体检。",
     group = "hub",
     order = 1,
     defaults = {
@@ -33,7 +33,7 @@ local mod = F.RegisterModule("controlHub", {
 -- ---------------------------------------------------------------------------
 function F.RunSlashCommand(slash, arg)
     if InCombatLockdown and InCombatLockdown() then
-        F.Print("|cffe0a24b战斗中暂不打开配置窗口，脱战后再点即可。|r")
+        F.Print("|cffe0a24b战斗中无法打开设置，脱战后再试。|r")
         return false
     end
     local target = tostring(slash or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -106,7 +106,72 @@ end
 
 local pendingReturnFrame = nil
 local returnHooked = setmetatable({}, { __mode = "k" })
+local overlayHooked = setmetatable({}, { __mode = "k" })
+local overlaySavedLayer = setmetatable({}, { __mode = "k" })
+local activeOverlayFrame = nil
+local overlaySwallowFrame = nil
 local euiMainShowHooked = false
+
+local STRATA_ORDER = {
+    BACKGROUND = 1,
+    LOW = 2,
+    MEDIUM = 3,
+    HIGH = 4,
+    DIALOG = 5,
+    FULLSCREEN = 6,
+    FULLSCREEN_DIALOG = 7,
+    TOOLTIP = 8,
+}
+
+local function IsInUISpecialFrames(frame)
+    local name = frame and frame.GetName and F.PlainString(frame:GetName(), nil)
+    if not name or name == "" then return false end
+    local special = _G.UISpecialFrames
+    if type(special) ~= "table" then return false end
+    for _, existing in ipairs(special) do
+        if existing == name then return true end
+    end
+    return false
+end
+
+local function EnsureOverlaySwallowFrame()
+    if overlaySwallowFrame then return overlaySwallowFrame end
+    local sf = CreateFrame("Frame", "kkowoUI_OverlayEscSwallow", _G.UIParent)
+    sf:SetSize(1, 1)
+    sf:SetPoint("TOPLEFT", _G.UIParent, "TOPLEFT", -10, 10)
+    sf:EnableMouse(false)
+    sf:Hide()
+    local EUI = _G.EllesmereUI
+    if EUI and type(EUI.RegisterEscapeClose) == "function" then
+        pcall(EUI.RegisterEscapeClose, sf, { notOwned = true, modal = true })
+    end
+    overlaySwallowFrame = sf
+    return sf
+end
+
+local function RestoreOverlayLayer(frame)
+    local saved = frame and overlaySavedLayer[frame]
+    if not saved then return end
+    overlaySavedLayer[frame] = nil
+    if InCombatLockdown and InCombatLockdown() then return end
+    if IsSafeFrame(frame) then
+        if saved.strata and frame.SetFrameStrata then pcall(frame.SetFrameStrata, frame, saved.strata) end
+        if saved.level and frame.SetFrameLevel then pcall(frame.SetFrameLevel, frame, saved.level) end
+    end
+end
+
+local function ClearOverlaySwallowDeferred()
+    if not overlaySwallowFrame then return end
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function()
+            if overlaySwallowFrame and (not activeOverlayFrame or not IsFrameShown(activeOverlayFrame)) then
+                overlaySwallowFrame:Hide()
+            end
+        end)
+    else
+        overlaySwallowFrame:Hide()
+    end
+end
 
 local function EnsureEUIMainShowCancelHook()
     if euiMainShowHooked then return end
@@ -117,6 +182,11 @@ local function EnsureEUIMainShowCancelHook()
         mf:HookScript("OnShow", function()
             pendingReturnFrame = nil
         end)
+        mf:HookScript("OnHide", function()
+            if overlaySwallowFrame and overlaySwallowFrame:IsShown() then
+                overlaySwallowFrame:Hide()
+            end
+        end)
     end
 end
 
@@ -124,8 +194,8 @@ local function OnTrackedFrameHide(self)
     if pendingReturnFrame ~= self then return end
     pendingReturnFrame = nil
     if not (C_Timer and C_Timer.After) then return end
-    -- 延迟 0.03s 确保暴雪 HideUIPanel(SettingsPanel) 与 ESC 退出栈完全收尾后再恢复 EUI
-    C_Timer.After(0.03, function()
+    -- 延迟 0.04s 确保暴雪原生 HideUIPanel(SettingsPanel) 与 ESC 退出栈完全收尾后再恢复 EUI
+    C_Timer.After(0.04, function()
         if InCombatLockdown and InCombatLockdown() then return end
         if IsEUIMainShown() then return end
         if IsFrameShown(_G.GameMenuFrame) then return end
@@ -142,6 +212,72 @@ local function ArmReturnToEUI(frame)
     if not returnHooked[frame] then
         returnHooked[frame] = true
         frame:HookScript("OnHide", OnTrackedFrameHide)
+    end
+    return true
+end
+
+local function OnOverlayFrameHide(self)
+    RestoreOverlayLayer(self)
+    if activeOverlayFrame == self then
+        activeOverlayFrame = nil
+        ClearOverlaySwallowDeferred()
+    end
+end
+
+-- 将独立插件窗口叠放在 EUI 设置面板上层（EUI 保持打开零闪烁；按 ESC 仅关上层弹窗）
+local function ArmOverlayAboveEUI(frame, closeFn)
+    if not (frame and IsSafeFrame(frame)) then return false end
+    if InCombatLockdown and InCombatLockdown() then return false end
+    local EUI = _G.EllesmereUI
+    local mf = type(EUI) == "table" and EUI._mainFrame or nil
+    if not (mf and IsFrameShown(mf)) then return false end
+
+    if activeOverlayFrame and activeOverlayFrame ~= frame then
+        RestoreOverlayLayer(activeOverlayFrame)
+    end
+    activeOverlayFrame = frame
+
+    -- 记录原层级并抬升到 EUI 主面板之上（高一档或同档 +30 级）
+    if not overlaySavedLayer[frame] then
+        overlaySavedLayer[frame] = {
+            strata = frame.GetFrameStrata and F.PlainString(frame:GetFrameStrata(), nil) or nil,
+            level  = frame.GetFrameLevel and F.PlainNumber(frame:GetFrameLevel(), nil) or nil,
+        }
+    end
+    local euiStrata = mf.GetFrameStrata and F.PlainString(mf:GetFrameStrata(), "DIALOG") or "DIALOG"
+    local euiLevel = mf.GetFrameLevel and F.PlainNumber(mf:GetFrameLevel(), 100) or 100
+    local curStrata = frame.GetFrameStrata and F.PlainString(frame:GetFrameStrata(), "MEDIUM") or "MEDIUM"
+    local targetStrata = (STRATA_ORDER[curStrata] or 3) > (STRATA_ORDER[euiStrata] or 5) and curStrata or euiStrata
+    if frame.SetFrameStrata then pcall(frame.SetFrameStrata, frame, targetStrata) end
+    if targetStrata == euiStrata and frame.SetFrameLevel then
+        local curLevel = frame.GetFrameLevel and F.PlainNumber(frame:GetFrameLevel(), 0) or 0
+        if curLevel <= euiLevel + 50 then
+            pcall(frame.SetFrameLevel, frame, euiLevel + 60)
+        end
+    end
+    if frame.Raise then pcall(frame.Raise, frame) end
+
+    if not overlayHooked[frame] and frame.HookScript then
+        overlayHooked[frame] = true
+        frame:HookScript("OnHide", OnOverlayFrameHide)
+    end
+
+    if IsInUISpecialFrames(frame) then
+        -- 窗口自身已在 UISpecialFrames：ESC 由暴雪关闭该窗口，同步用 modal 哨兵吞掉当帧 EUI EscapeProxy，避免底下的 EUI 一起被关
+        local sf = EnsureOverlaySwallowFrame()
+        if sf then sf:Show() end
+    elseif EUI and type(EUI.RegisterEscapeClose) == "function" then
+        -- 窗口不在 UISpecialFrames（如 BigWigs/BugSack/键位图）：重挂至 EUI ESC 栈最顶端，按一次 ESC 只关该弹窗
+        if overlaySwallowFrame then overlaySwallowFrame:Hide() end
+        if type(EUI._ForgetEscapeClose) == "function" then
+            pcall(EUI._ForgetEscapeClose, frame)
+        end
+        pcall(EUI.RegisterEscapeClose, frame, {
+            notOwned = true,
+            onEscape = type(closeFn) == "function" and closeFn or nil,
+        })
+        local proxy = _G.EllesmereUI_EscapeProxy
+        if proxy and proxy.Show then pcall(proxy.Show, proxy) end
     end
     return true
 end
@@ -171,7 +307,8 @@ local function FindNewlyOpenedWindow(beforeSnap)
     local best, bestArea = nil, 0
     for _, child in ipairs(children) do
         if not beforeSnap[child]
-            and child ~= euiMain and child ~= escProxy and child ~= gameMenu and child ~= layoutFrame
+            and child ~= euiMain and child ~= escProxy and child ~= overlaySwallowFrame
+            and child ~= gameMenu and child ~= layoutFrame
             and IsFrameShown(child) then
             local strata = child.GetFrameStrata and F.PlainString(child:GetFrameStrata(), "") or ""
             if strata ~= "TOOLTIP" and strata ~= "BACKGROUND" then
@@ -192,9 +329,11 @@ local function FindNewlyOpenedWindow(beforeSnap)
     return best
 end
 
--- expectedFrameFn 可选：明确返回目标框体（如 _G.SettingsPanel / _G.PolestarOptions），
--- 绕过非 UIParent 子框体（Polestar.UIParent）或暴雪全屏布局层干扰，确保 100% 精准追踪返回。
-function F.LaunchFromEUI(fn, expectedFrameFn)
+-- expectedFrameFn 可选：明确返回目标框体（如 _G.SettingsPanel / _G.PolestarOptions）。
+-- opts.hideEUI = true（用于受暴雪保护的 SettingsPanel）：先隐 EUI、让暴雪原生处理 ESC、关闭后自动恢复 EUI；
+-- 默认（独立插件窗口）：保持 EUI 在下层打开不闪烁，抬升子窗口至 EUI 上层并让 ESC 仅关闭上层弹窗。
+function F.LaunchFromEUI(fn, expectedFrameFn, opts)
+    opts = type(opts) == "table" and opts or {}
     local EUI = _G.EllesmereUI
     local wasOpen = IsEUIMainShown()
     if not wasOpen then
@@ -204,26 +343,34 @@ function F.LaunchFromEUI(fn, expectedFrameFn)
     EnsureEUIMainShowCancelHook()
     local beforeSnap = SnapshotShownUIParentChildren()
     pendingReturnFrame = nil
-    if EUI and type(EUI.Hide) == "function" then
+
+    local hideEUI = opts.hideEUI == true
+    if hideEUI and EUI and type(EUI.Hide) == "function" then
         pcall(EUI.Hide, EUI)
     end
 
     local armed = false
-    local function tryArm()
-        if armed or IsEUIMainShown() then return true end
+    local function resolveOpenedFrame()
         if type(expectedFrameFn) == "function" then
             local okE, exp = pcall(expectedFrameFn)
             if okE and exp and IsFrameShown(exp) then
-                armed = ArmReturnToEUI(exp)
-                return armed
+                return exp
             end
         end
-        local opened = FindNewlyOpenedWindow(beforeSnap)
-        if opened then
+        return FindNewlyOpenedWindow(beforeSnap)
+    end
+
+    local function tryArm()
+        if armed then return true end
+        if hideEUI and IsEUIMainShown() then return true end
+        local opened = resolveOpenedFrame()
+        if not opened then return false end
+        if hideEUI then
             armed = ArmReturnToEUI(opened)
-            return armed
+        else
+            armed = ArmOverlayAboveEUI(opened, opts.onEscape)
         end
-        return false
+        return armed
     end
 
     local function runAndTrack()
@@ -231,7 +378,7 @@ function F.LaunchFromEUI(fn, expectedFrameFn)
         if tryArm() then return end
         if C_Timer and C_Timer.After then
             -- 兼容 LoD 首次加载（Polestar_Options / BigWigs_Options）或延迟打开的面板
-            for _, delay in ipairs({ 0.05, 0.16, 0.38 }) do
+            for _, delay in ipairs({ 0.04, 0.14, 0.36 }) do
                 C_Timer.After(delay, function()
                     if not armed then tryArm() end
                 end)
@@ -239,20 +386,17 @@ function F.LaunchFromEUI(fn, expectedFrameFn)
         end
     end
 
-    if C_Timer and C_Timer.After then
-        C_Timer.After(0, runAndTrack)
-    else
-        runAndTrack()
-    end
+    -- 保持同步在按钮硬件点击栈内调用（绝不经 C_Timer.After 延迟调 Settings.OpenToCategory，避免 12.1 触发界面行为失效）
+    runAndTrack()
 end
 
 -- ---------------------------------------------------------------------------
--- 3) 零补丁 ESC 关闭增强：BigWigs AceGUI + BugSack + SettingsPanel(GTFO/Atr/SAO)
+-- 3) 零补丁 ESC 关闭增强：仅限第三方无保护框体（BigWigs AceGUI + BugSack）
+--    严禁向受暴雪保护的 SettingsPanel 挂载自定义 Escape 代理，避免触发界面行为失效
 -- ---------------------------------------------------------------------------
 local bwEscOwner = {}
 local bwHooked = false
 local bugSackHooked = false
-local settingsEscRegistered = false
 
 local function BindBugSackEscapeClose()
     local bf = _G.BugSackFrame
@@ -318,36 +462,11 @@ local function SetupThirdPartyEscapeClose()
         end
         BindBugSackEscapeClose()
     end
-
-    if not settingsEscRegistered and _G.SettingsPanel then
-        settingsEscRegistered = true
-        F.Theme.RegisterEscapeClose(_G.SettingsPanel, function(sp)
-            if InCombatLockdown and InCombatLockdown() then return end
-            local kbl = _G.KeybindListener
-            if type(kbl) == "table" and type(kbl.IsListening) == "function" then
-                local okL, listening = pcall(kbl.IsListening, kbl)
-                if okL and listening then
-                    if type(kbl.StopListening) == "function" then
-                        pcall(kbl.StopListening, kbl)
-                    end
-                    return
-                end
-            end
-            if type(sp.Close) == "function" then
-                pcall(sp.Close, sp)
-            end
-            if IsFrameShown(sp) and type(_G.HideUIPanel) == "function" then
-                pcall(_G.HideUIPanel, sp)
-            end
-            if IsFrameShown(sp) then
-                pcall(sp.Hide, sp)
-            end
-        end)
-    end
 end
 
 -- ---------------------------------------------------------------------------
--- 4) PatchGuard：运行时核验仅剩的 3 个极简补丁是否健在
+-- 4) 启动功能巡检：运行时核验仅剩的 2 个底层加速模块是否健在
+--    （原 polestar_zhcn_fill 已退役并转为运行时注入）
 -- ---------------------------------------------------------------------------
 function F.CheckPatches()
     local results = {}
@@ -355,10 +474,10 @@ function F.CheckPatches()
     if F.IsAddOnLoaded("EllesmereUIChat") then
         local EUI = _G.EllesmereUI
         local chatNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIChat
-        local ok = type(chatNS) == "table" and chatNS._kkowoFastTab == true
+        local ok = type(chatNS) == "table" and chatNS._kkowoFastTab == true and (chatNS._kkowoFastTabVer or 0) >= 5
         results[#results + 1] = {
             id = "eui_chat_tab_fast",
-            name = "EUI 聊天标签瞬切补丁 (EllesmereUIChat)",
+            name = "EUI 聊天标签瞬切 v5",
             ok = ok,
         }
     end
@@ -368,19 +487,9 @@ function F.CheckPatches()
         local okNav = type(ps) == "table" and ps._kkowoNavOpt == true
         results[#results + 1] = {
             id = "polestar_nav_optimize",
-            name = "Polestar 寻路与怪区补丁 (Polestar)",
+            name = "北极星寻路与怪区优化",
             ok = okNav,
         }
-
-        local locale = _G.GetLocale and F.PlainString(_G.GetLocale(), "") or ""
-        if locale == "zhCN" and F.IsAddOnLoaded("Polestar_zhCN") then
-            local okZh = type(ps) == "table" and ps._kkowoZhFilled == true
-            results[#results + 1] = {
-                id = "polestar_zhcn_fill",
-                name = "Polestar 简体中文补齐补丁 (Polestar_zhCN)",
-                ok = okZh,
-            }
-        end
     end
 
     return results
@@ -500,7 +609,7 @@ function F.DisableDeadAddons(verbose)
         local parts = {}
         if #off > 0 then parts[#parts + 1] = "已停用：" .. table_concat(off, "、") end
         if cdmOn then parts[#parts + 1] = "已启用：EUI 冷却管理器" end
-        F.Print(table_concat(parts, "；") .. "（下次登录 / 重载生效；/kk deadguard off 可关闭自动停用）")
+        F.Print(table_concat(parts, "；") .. "（重载生效，/kk deadguard off 可关闭）")
         local liveChange = cdmOn
         for _, name in ipairs(off) do
             if F.IsAddOnLoaded(name) then liveChange = true end
@@ -518,6 +627,10 @@ end
 -- 生命周期：登录挂载 ESC 增强、DeadGuard 与 PatchGuard
 -- ---------------------------------------------------------------------------
 local guardFrame = nil
+
+function mod:OnDisable()
+    pendingReturnFrame = nil
+end
 
 function mod:OnEnable()
     SetupThirdPartyEscapeClose()
@@ -542,8 +655,8 @@ function mod:OnEnable()
                     if not p.ok then missing[#missing + 1] = p.name end
                 end
                 if #missing > 0 then
-                    F.Print("|cffffb84d[补丁守卫]|r 检测到以下极简补丁可能被更新覆盖：" .. table_concat(missing, "、")
-                        .. "。退出游戏后双击 |cffdca77fTools\\DD更新后重打补丁.bat|r 即可恢复（/kk doctor 查看详情）。")
+                    F.Print("|cffffb84d以下功能可能被更新覆盖|r：" .. table_concat(missing, "、")
+                        .. "；退出游戏后运行重打脚本恢复（/kk doctor 查看详情）。")
                 end
             end)
         end)

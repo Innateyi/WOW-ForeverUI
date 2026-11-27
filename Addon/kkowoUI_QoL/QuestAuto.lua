@@ -15,7 +15,7 @@ local C_Timer = C_Timer
 
 local mod = F.RegisterModule("questAuto", {
     title = "自动接交任务",
-    desc = "自动接取/提交任务、单选项自动对话；按住 Shift 临时跳过并在任务框显示暂停提示。",
+    desc = "自动接交任务与单选项对话，按住 Shift 可临时跳过。",
     group = "quest",
     order = 10,
     defaults = {
@@ -390,7 +390,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "toggle",
         text = "单选项自动对话",
-        tooltip = "无任务且 NPC 只有 1 个对话选项时自动继续（使用现代 C_GossipInfo API）。",
+        tooltip = "NPC 无任务且仅有 1 个对话选项时自动点击继续。",
         getValue = function() return db.autoGossip == true end,
         setValue = function(v) db.autoGossip = v == true end,
     })
@@ -413,13 +413,13 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "跳过低等级灰色任务",
+        text = "跳过灰色任务",
         tooltip = "自动接任务时跳过灰色过低等级任务。",
         getValue = function() return db.skipTrivial ~= false end,
         setValue = function(v) db.skipTrivial = v == true end,
     }, {
         type = "toggle",
-        text = "多奖励自动选卖价最高",
+        text = "自动选最贵奖励",
         tooltip = "任务有多个奖励可选时，自动选择商店售价最高的物品。",
         getValue = function() return db.pickBestReward == true end,
         setValue = function(v) db.pickBestReward = v == true end,
@@ -428,13 +428,13 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "包含可用装备时停下手动选",
-        tooltip = "开启「自动选卖价最高」时，若奖励里包含本职业可用装备则暂停自动，防止误卖升级装。",
+        text = "含装备时手动选",
+        tooltip = "奖励含本职业可用装备时暂停自动提交，防止误选卖店装。",
         getValue = function() return db.protectEquipRewards ~= false end,
         setValue = function(v) db.protectEquipRewards = v == true end,
     }, {
         type = "toggle",
-        text = "自动确认拾取/Roll 绑定",
+        text = "自动确认绑定",
         tooltip = "拾取或 Roll 拾取绑定物品时自动点击确认。",
         getValue = function() return db.autoConfirmBind == true end,
         setValue = function(v) db.autoConfirmBind = v == true end,
