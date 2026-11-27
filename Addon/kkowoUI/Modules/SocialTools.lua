@@ -141,7 +141,8 @@ local function ShowCopyDialog(text)
             eb:ClearFocus()
             copyBoxFrame:Hide()
         end)
-        copyBoxFrame:SetScript("OnHide", function()
+        copyBoxFrame:SetScript("OnHide", function(self)
+            self:StopMovingOrSizing()
             if eb.ClearFocus then eb:ClearFocus() end
         end)
         copyBoxFrame.editBox = eb
@@ -283,14 +284,14 @@ local function RefreshMailDrawer()
     local alts = db.alts[realm] and db.alts[realm][faction]
     if type(alts) == "table" then
         for n, cls in pairs(alts) do
-            if n ~= selfName then
+            if type(n) == "string" and n ~= selfName then
                 list[#list + 1] = { name = n, class = cls, tag = "小号", kind = "alt" }
                 seen[n] = true
             end
         end
     end
     for n, cls in pairs(db.favorites or {}) do
-        if not seen[n] then
+        if type(n) == "string" and not seen[n] then
             list[#list + 1] = { name = n, class = cls, tag = "常用", kind = "fav" }
         end
     end

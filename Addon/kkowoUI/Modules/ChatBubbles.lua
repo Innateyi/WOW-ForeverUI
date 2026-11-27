@@ -12,13 +12,13 @@ local _, F = ...
 
 local _G = _G
 local pairs, pcall, setmetatable, type = pairs, pcall, setmetatable, type
-local math_floor, math_max, math_min = math.floor, math.max, math.min
+local math_abs, math_floor, math_max, math_min = math.abs, math.floor, math.max, math.min
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 
 local mod = F.RegisterModule("chatBubbles", {
     title = "头顶聊天气泡统一",
-    desc = "所有头顶气泡统一为 PrettyTooltip 同源黑曜石圆角卡片与适中字号，出现淡入、消失渐隐；自动接管 EUI 旧气泡皮肤（停用即恢复）。副本内气泡受暴雪保护，保持原样。",
+    desc = "野外头顶气泡统一为 PrettyTooltip 同源黑曜石圆角卡片与适中字号（淡入/渐隐），自动接管 EUI 旧气泡皮肤；副本内受暴雪保护无法换肤，但会自动按界面缩放调小系统 ChatBubbleFont，避免副本气泡大得挡视野。",
     group = "social",
     order = 15,
     defaults = {
@@ -31,6 +31,8 @@ local mod = F.RegisterModule("chatBubbles", {
         fadeOut = 0.80,       -- 引擎收起气泡后原地渐隐的时长
         followColor = true,   -- 沿用引擎给的频道颜色（说白 / 喊红 / NPC 等）
         partyBubbles = true,  -- 队伍 / 副本队伍频道也显示气泡
+        scaleInstanceBubble = true,  -- 副本内自动缩放系统 ChatBubbleFont，避免原生气泡过大
+        instanceBubbleScale = 0.90,  -- 相对「野外气泡字号 × 界面缩放」的微调倍率
         v2RoundedPretty = false,
     },
 })
@@ -569,6 +571,136 @@ local function SetEUIBubblesSuppressed(on)
 end
 
 ----------------------------------------------------------------------
+--  副本内原生气泡字号缩放（通过全局 ChatBubbleFont 对象生效）：
+--    • 副本内气泡框体受暴雪保护（IsForbidden），插件不能改框体但可以改全局字体对象 ChatBubbleFont；
+--      原生气泡渲染在 WorldFrame（缩放 1.0）而非 UIParent（2K 屏常为 0.71/0.53），
+--      加上黑体字库字身饱满，原生 13~16 号字在副本里会显得比野外气泡与姓名板大近一倍。
+--    • 绝不直接改共享 FontFamily 成员（避免连带缩小 GameFontNormal 等其它系统字）：
+--      优先通过 EUI.GetFontFamily 给 ChatBubbleFont 绑定独立字体族，校验生效后再保留；
+--      否则回退到 ChatBubbleFont:SetFont 仅改该对象本身。关闭模块时无损还原快照。
+----------------------------------------------------------------------
+local origBubbleFontSnap = nil
+local bubbleFontApplied = false
+
+local function SnapshotBlizzBubbleFont()
+    if origBubbleFontSnap then return end
+    local cbf = _G.ChatBubbleFont
+    if not (cbf and type(cbf) == "table" and cbf.GetFont) then return end
+    local snap = {}
+    if cbf.GetFontObject then
+        local okO, fo = pcall(cbf.GetFontObject, cbf)
+        if okO and fo then snap.fontObject = fo end
+    end
+    local okF, face, size, flags = pcall(cbf.GetFont, cbf)
+    if okF and type(face) == "string" and face ~= "" then
+        snap.face = face
+        snap.size = F.PlainNumber(size, 13) or 13
+        snap.flags = F.PlainString(flags, "") or ""
+    end
+    if cbf.GetTextColor then
+        local okC, r, g, b, a = pcall(cbf.GetTextColor, cbf)
+        if okC and F.PlainNumber(r, nil) then
+            snap.color = { r, F.PlainNumber(g, 1) or 1, F.PlainNumber(b, 1) or 1, F.PlainNumber(a, 1) or 1 }
+        end
+    end
+    if cbf.GetShadowColor then
+        local okS, sr, sg, sb, sa = pcall(cbf.GetShadowColor, cbf)
+        if okS and F.PlainNumber(sr, nil) then
+            snap.shadowColor = { sr, F.PlainNumber(sg, 0) or 0, F.PlainNumber(sb, 0) or 0, F.PlainNumber(sa, 1) or 1 }
+        end
+    end
+    if cbf.GetShadowOffset then
+        local okOff, sx, sy = pcall(cbf.GetShadowOffset, cbf)
+        if okOff and F.PlainNumber(sx, nil) then
+            snap.shadowOffset = { sx, F.PlainNumber(sy, 0) or 0 }
+        end
+    end
+    local EUI = _G.EllesmereUI
+    if not cbf.SetFontObject and EUI and type(EUI.SnapshotFontObject) == "function" then
+        local okE, es = pcall(EUI.SnapshotFontObject, cbf)
+        if okE and es then snap.euiSnap = es end
+    end
+    origBubbleFontSnap = snap
+end
+
+local function RestoreBubbleFontAttrs(cbf, snap)
+    if not (cbf and snap) then return end
+    if snap.color and cbf.SetTextColor then
+        pcall(cbf.SetTextColor, cbf, snap.color[1], snap.color[2], snap.color[3], snap.color[4])
+    end
+    if snap.shadowColor and cbf.SetShadowColor then
+        pcall(cbf.SetShadowColor, cbf, snap.shadowColor[1], snap.shadowColor[2], snap.shadowColor[3], snap.shadowColor[4])
+    end
+    if snap.shadowOffset and cbf.SetShadowOffset then
+        pcall(cbf.SetShadowOffset, cbf, snap.shadowOffset[1], snap.shadowOffset[2])
+    end
+end
+
+local function RestoreInstanceBubbleFont()
+    if not (bubbleFontApplied and origBubbleFontSnap) then return end
+    local cbf = _G.ChatBubbleFont
+    if not (cbf and type(cbf) == "table") then return end
+    bubbleFontApplied = false
+    local EUI = _G.EllesmereUI
+    if origBubbleFontSnap.euiSnap and EUI and type(EUI.RestoreFontObject) == "function" then
+        pcall(EUI.RestoreFontObject, cbf, origBubbleFontSnap.euiSnap)
+    elseif origBubbleFontSnap.fontObject and cbf.SetFontObject then
+        pcall(cbf.SetFontObject, cbf, origBubbleFontSnap.fontObject)
+        RestoreBubbleFontAttrs(cbf, origBubbleFontSnap)
+    elseif origBubbleFontSnap.face and origBubbleFontSnap.size and cbf.SetFont then
+        pcall(cbf.SetFont, cbf, origBubbleFontSnap.face, origBubbleFontSnap.size, origBubbleFontSnap.flags or "")
+        RestoreBubbleFontAttrs(cbf, origBubbleFontSnap)
+    end
+end
+
+local function ApplyInstanceBubbleFont()
+    local db = mod:GetDB()
+    if not mod._active or db.scaleInstanceBubble == false then
+        RestoreInstanceBubbleFont()
+        return
+    end
+    local cbf = _G.ChatBubbleFont
+    if not (cbf and type(cbf) == "table" and cbf.SetFont) then return end
+    SnapshotBlizzBubbleFont()
+
+    local baseSize = Clamp(db.fontSize, 10, 22, 14)
+    local uiScale = _G.UIParent and F.PlainNumber(_G.UIParent:GetEffectiveScale(), 1) or 1
+    if uiScale < 0.35 or uiScale > 1.8 then uiScale = 1 end
+    local factor = Clamp(db.instanceBubbleScale, 0.60, 1.30, 0.90)
+    local targetSize = Clamp(math_floor(baseSize * uiScale * factor + 0.5), 7, 20, 10)
+
+    local face = (origBubbleFontSnap and origBubbleFontSnap.face) or F.Theme.GetFont()
+    local flags = (origBubbleFontSnap and origBubbleFontSnap.flags) or ""
+    local applied = false
+    local EUI = _G.EllesmereUI
+
+    if cbf.SetFontObject and EUI and type(EUI.GetFontFamily) == "function" then
+        local okF, fam = pcall(EUI.GetFontFamily, face, targetSize, flags, flags == "")
+        if okF and fam then
+            local okS = pcall(cbf.SetFontObject, cbf, fam)
+            if okS then
+                local okG, _, gotSize = pcall(cbf.GetFont, cbf)
+                local gs = okG and F.PlainNumber(gotSize, nil) or nil
+                if gs and math_abs(gs - targetSize) <= 0.5 then
+                    RestoreBubbleFontAttrs(cbf, origBubbleFontSnap)
+                    applied = true
+                end
+            end
+        end
+    end
+
+    if not applied then
+        if not cbf.SetFontObject and EUI and type(EUI.SetFontObjectFace) == "function" then
+            pcall(EUI.SetFontObjectFace, cbf, nil, targetSize, nil, nil)
+        else
+            pcall(cbf.SetFont, cbf, face, targetSize, flags)
+            RestoreBubbleFontAttrs(cbf, origBubbleFontSnap)
+        end
+    end
+    bubbleFontApplied = true
+end
+
+----------------------------------------------------------------------
 --  生命周期
 ----------------------------------------------------------------------
 local BUBBLE_EVENTS = {
@@ -612,6 +744,7 @@ function mod:OnEnable()
     uiHidden = _G.UIParent and not _G.UIParent:IsShown() or false
     SetEUIBubblesSuppressed(true)
     ApplyCVars()
+    ApplyInstanceBubbleFont()
     UpdateSuspended()
 
     for _, ev in pairs(BUBBLE_EVENTS) do
@@ -619,8 +752,11 @@ function mod:OnEnable()
     end
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         UpdateSuspended()
+        ApplyInstanceBubbleFont()
         if not suspended then QueueScan() end
     end)
+    self:RegisterEvent("UI_SCALE_CHANGED", ApplyInstanceBubbleFont)
+    self:RegisterEvent("DISPLAY_SIZE_CHANGED", ApplyInstanceBubbleFont)
     -- 过图前交还所有原版样式：之后这些框可能被重新归类为受保护，届时就改不回来了
     self:RegisterEvent("PLAYER_LEAVING_WORLD", ReleaseAll)
     self:RegisterEvent("PLAYER_LOGOUT", function()
@@ -632,8 +768,14 @@ end
 
 function mod:OnDisable()
     ReleaseAll()
+    RestoreInstanceBubbleFont()
     RestoreCVars(false)
     SetEUIBubblesSuppressed(false)
+end
+
+function mod:OnThemeChanged()
+    RestyleAll()
+    ApplyInstanceBubbleFont()
 end
 
 ----------------------------------------------------------------------
@@ -655,10 +797,10 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, {
         type = "slider",
         text = "气泡字号",
-        tooltip = "默认 14：比 EUI 旧皮肤的 12 号小框大，比暴雪原版气泡小。",
+        tooltip = "默认 14：比 EUI 旧皮肤的 12 号小框大，比暴雪原版气泡小。副本内原生气泡也会随之联动缩放。",
         min = 11, max = 20, step = 1,
         getValue = function() return Clamp(db.fontSize, 10, 22, 14) end,
-        setValue = function(v) db.fontSize = math_floor(v + 0.5); RestyleAll() end,
+        setValue = function(v) db.fontSize = math_floor(v + 0.5); RestyleAll(); ApplyInstanceBubbleFont() end,
     }, {
         type = "slider",
         text = "气泡最大宽度",
@@ -699,6 +841,22 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         tooltip = "开启：强制打开队伍 / 副本队伍发言的头顶气泡。关闭：不再强制，沿用你在游戏「界面 → 社交」里的设置（团队频道始终沿用游戏设置）。",
         getValue = function() return db.partyBubbles ~= false end,
         setValue = function(v) db.partyBubbles = v == true; ApplyCVars() end,
+    })
+    y = y - h
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "副本内自动缩小原生气泡",
+        tooltip = "副本内气泡受暴雪保护无法换肤，且渲染在世界缩放 1.0 上显得过大；开启后自动按界面缩放调整系统 ChatBubbleFont 字号，使其与野外气泡和姓名板协调一致。",
+        getValue = function() return db.scaleInstanceBubble ~= false end,
+        setValue = function(v) db.scaleInstanceBubble = v == true; ApplyInstanceBubbleFont() end,
+    }, {
+        type = "slider",
+        text = "副本内气泡缩放倍率",
+        tooltip = "在自动匹配界面缩放的基础上微调副本内原生气泡大小（默认 0.90，拖动即时生效）。",
+        min = 0.60, max = 1.30, step = 0.05,
+        disabled = function() return db.scaleInstanceBubble == false end,
+        getValue = function() return Clamp(db.instanceBubbleScale, 0.60, 1.30, 0.90) end,
+        setValue = function(v) db.instanceBubbleScale = v; ApplyInstanceBubbleFont() end,
     })
     y = y - h
     return y

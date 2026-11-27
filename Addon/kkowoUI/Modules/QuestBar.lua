@@ -210,8 +210,11 @@ end
 local function SendPartyNotice(msg)
     if _G.IsInGroup and _G.IsInGroup() then
         local ci = _G.C_ChatInfo
-        if ci and ci.InChatMessagingLockdown and ci.InChatMessagingLockdown() then
-            return
+        if ci and ci.InChatMessagingLockdown then
+            local okL, locked = pcall(ci.InChatMessagingLockdown)
+            if okL and not F.IsSecret(locked) and locked == true then
+                return
+            end
         end
         local sendFn = (ci and ci.SendChatMessage) or _G.SendChatMessage
         if type(sendFn) ~= "function" then return end

@@ -1251,7 +1251,7 @@ do
         local disable = (ca and ca.DisableAddOn) or _G.DisableAddOn
         if not disable then return end
         local getState = ca and ca.GetAddOnEnableState
-        local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+        local guid = _G.UnitGUID and F.PlainString(_G.UnitGUID("player"), nil) or nil
         -- 无限服角色名带姓氏，UnitName("player") 会丢失姓氏导致 DisableAddOn(name, player) 静默失效；
         -- 优先用 UnitGUID("player") 按当前角色停用，若未生效则回退为全局停用（与 EUI 面板一致）
         if guid then
@@ -1601,6 +1601,306 @@ do
         local EUI = _G.EllesmereUI
         if EUI and EUI.UnregisterUnlockModeListener then
             pcall(EUI.UnregisterUnlockModeListener, EUI, "kkowoUI_SwingHeightGuard")
+        end
+    end
+end
+
+-- EUI 冷却管理器（CDM 增益条 / 冷却条 / 追踪冷却条）位置漂移零侵入自愈守护：
+-- 1) 未吸附到其它框体的非 CENTER 增长 CDM 条（如 buffs / cooldowns 向右增长，存档为 LEFT 锚点），
+--    在空条/刚登录宽高为 0 时 EUI ApplyCenterPosition 会退化写死为 CENTER 锚点（并且覆盖 rowGrowDirection 角锚点），
+--    随后 LayoutCDMBar 扩展宽高时因 _layoutBarResizing 抑制重锚且未重套 ApplyBarPositionCentered，导致整条横向偏移/回弹；
+-- 2) 解锁模式保存退出时，CommitPositions 只重建 CDM_* 而跳过 TBB_* / TBBG_* 追踪条，
+--    留下拖拽期的 TOPLEFT 临时锚点，直到后续重绘才突然跳回 CENTER 存档坐标。
+local cdmPosGuard = {}
+do
+    local math_abs = math.abs
+    local unlockRegistered = false
+    local settleScheduled = false
+    local hookedNotifyResized = false
+    local hookedLayoutCDMBar = false
+    local hookedCollectAndReanchor = false
+    local hookedBarFrames = setmetatable({}, { __mode = "k" })
+    local verifying = false
+    local verifyQueued = false
+    local queuedBarKeys = {}
+
+    local function GetCDMNS()
+        local EUI = _G.EllesmereUI
+        return EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUICooldownManager or nil
+    end
+
+    local function IsModuleAnchoredCDM(bd)
+        local a = bd and bd.anchorTo
+        if type(a) ~= "string" then return false end
+        return a == "mouse" or a == "partyframe" or a == "playerframe" or a:sub(1, 4) == "erb_"
+    end
+
+    local function ComputeExpectedBarAnchor(EUI, cdmNS, frame, pos, bd)
+        local fw = F.PlainNumber(frame.GetWidth and frame:GetWidth(), 0) or 0
+        local fh = F.PlainNumber(frame.GetHeight and frame:GetHeight(), 0) or 0
+        local px = F.PlainNumber(pos.x, 0) or 0
+        local py = F.PlainNumber(pos.y, 0) or 0
+        local anchor = pos.point
+        local storedIsCorner = (anchor:find("TOP", 1, true) or anchor:find("BOTTOM", 1, true))
+            and (anchor:find("LEFT", 1, true) or anchor:find("RIGHT", 1, true))
+        if ((bd and bd.rowGrowDirection) or storedIsCorner)
+            and type(cdmNS.AnchorCoordToCenter) == "function"
+            and type(cdmNS.ResolveGrowAnchorPoint) == "function"
+            and type(cdmNS.CenterToAnchorCoord) == "function" then
+            local cx, cy = cdmNS.AnchorCoordToCenter(anchor, px, py, fw, fh)
+            anchor = cdmNS.ResolveGrowAnchorPoint(bd) or anchor
+            px, py = cdmNS.CenterToAnchorCoord(anchor, cx, cy, fw, fh)
+        elseif anchor == "CENTER" and bd then
+            local grow = bd.growDirection or "CENTER"
+            if grow == "RIGHT" and fw > 0 then
+                anchor = "LEFT"; px = px - fw / 2
+            elseif grow == "LEFT" and fw > 0 then
+                anchor = "RIGHT"; px = px + fw / 2
+            elseif grow == "DOWN" and fh > 0 then
+                anchor = "TOP"; py = py + fh / 2
+            elseif grow == "UP" and fh > 0 then
+                anchor = "BOTTOM"; py = py - fh / 2
+            end
+        end
+        if type(cdmNS.CDMAddOffset) == "function" then
+            local okO, ox, oy = pcall(cdmNS.CDMAddOffset, bd)
+            if okO then
+                px = px + (F.PlainNumber(ox, 0) or 0)
+                py = py + (F.PlainNumber(oy, 0) or 0)
+            end
+        end
+        local PPa = EUI and EUI.PP
+        if PPa and frame.GetEffectiveScale then
+            local okS, es = pcall(frame.GetEffectiveScale, frame)
+            es = okS and F.PlainNumber(es, nil) or nil
+            if es and es > 0 then
+                if anchor == "CENTER" and PPa.SnapCenterForDim then
+                    px = PPa.SnapCenterForDim(px, fw, es)
+                    py = PPa.SnapCenterForDim(py, fh, es)
+                elseif PPa.SnapForES then
+                    if PPa.SnapCenterForDim and (anchor == "LEFT" or anchor == "RIGHT") then
+                        px = PPa.SnapForES(px, es)
+                        py = PPa.SnapCenterForDim(py, fh, es)
+                    elseif PPa.SnapCenterForDim and (anchor == "TOP" or anchor == "BOTTOM") then
+                        px = PPa.SnapCenterForDim(px, fw, es)
+                        py = PPa.SnapForES(py, es)
+                    else
+                        px = PPa.SnapForES(px, es)
+                        py = PPa.SnapForES(py, es)
+                    end
+                end
+            end
+        end
+        return anchor, pos.relPoint or anchor, px, py
+    end
+
+    function cdmPosGuard.VerifyBar(barKey)
+        if not mod._active or verifying or type(barKey) ~= "string" or barKey == "focuskick" then return end
+        local EUI = _G.EllesmereUI
+        if not EUI or EUI._unlockActive then return end
+        local cdmNS = GetCDMNS()
+        local internals = cdmNS and cdmNS._internals
+        local applyCentered = internals and internals.ApplyBarPositionCentered
+        local barFrames = (cdmNS and cdmNS.cdmBarFrames) or (internals and internals.cdmBarFrames)
+        local barDataByKey = (cdmNS and cdmNS.barDataByKey) or (internals and internals.barDataByKey)
+        local positions = EUI._cdmBarPositions
+        if not (type(applyCentered) == "function" and type(barFrames) == "table"
+            and type(barDataByKey) == "table" and type(positions) == "table") then
+            return
+        end
+        local frame = barFrames[barKey]
+        local bd = barDataByKey[barKey]
+        local pos = positions[barKey]
+        if not (frame and bd and type(pos) == "table" and type(pos.point) == "string" and pos.point ~= "") then
+            return
+        end
+        if frame.IsForbidden and frame:IsForbidden() then return end
+        if IsModuleAnchoredCDM(bd) then return end
+        if EUI.IsUnlockAnchored and EUI.IsUnlockAnchored("CDM_" .. barKey) then return end
+
+        local expPt, expRelPt, expX, expY = ComputeExpectedBarAnchor(EUI, cdmNS, frame, pos, bd)
+        local okP, curPt, curRelTo, curRelPt, curX, curY = pcall(frame.GetPoint, frame, 1)
+        if not okP then return end
+        curPt = F.PlainString(curPt, nil)
+        curRelPt = F.PlainString(curRelPt, nil)
+        curX = F.PlainNumber(curX, nil)
+        curY = F.PlainNumber(curY, nil)
+
+        local drifted = (curPt ~= expPt) or (curRelTo ~= _G.UIParent) or (curRelPt ~= expRelPt)
+        if not drifted and curX and curY then
+            if math_abs(curX - expX) > 0.75 or math_abs(curY - expY) > 0.75 then
+                drifted = true
+            end
+        end
+        if not drifted then return end
+
+        if _G.InCombatLockdown and _G.InCombatLockdown() and frame.IsProtected and frame:IsProtected() then
+            F.RunOutOfCombat("FUI_CDMBarPos_" .. barKey, function()
+                if mod._active then cdmPosGuard.VerifyBar(barKey) end
+            end)
+            return
+        end
+        verifying = true
+        pcall(applyCentered, frame, pos, barKey)
+        verifying = false
+    end
+
+    function cdmPosGuard.VerifyAll()
+        if not mod._active or verifying then return end
+        local EUI = _G.EllesmereUI
+        if not EUI or EUI._unlockActive then return end
+        local cdmNS = GetCDMNS()
+        local internals = cdmNS and cdmNS._internals
+        local barFrames = (cdmNS and cdmNS.cdmBarFrames) or (internals and internals.cdmBarFrames)
+        if type(barFrames) ~= "table" then return end
+        for barKey in pairs(barFrames) do
+            cdmPosGuard.VerifyBar(barKey)
+        end
+    end
+
+    local function QueueVerifyAll(delay)
+        if delay and delay > 0 then
+            C_Timer.After(delay, function()
+                if mod._active then cdmPosGuard.VerifyAll() end
+            end)
+            return
+        end
+        if verifyQueued then return end
+        verifyQueued = true
+        C_Timer.After(0, function()
+            verifyQueued = false
+            if mod._active then cdmPosGuard.VerifyAll() end
+        end)
+    end
+
+    local function QueueVerifyBar(barKey)
+        if not barKey or queuedBarKeys[barKey] then return end
+        queuedBarKeys[barKey] = true
+        C_Timer.After(0, function()
+            queuedBarKeys[barKey] = nil
+            if mod._active then cdmPosGuard.VerifyBar(barKey) end
+        end)
+    end
+
+    local function HookCDMBarFrames()
+        local cdmNS = GetCDMNS()
+        local internals = cdmNS and cdmNS._internals
+        local barFrames = (cdmNS and cdmNS.cdmBarFrames) or (internals and internals.cdmBarFrames)
+        if type(barFrames) ~= "table" then return end
+        -- 直接监听 EUI 自己的 ECME_CDMBar_* 容器（非暴雪受保护框体）的 SetPoint 与 OnSizeChanged，
+        -- 即使 EUI 通过文件内局部上值调用 ApplyCenterPosition / LayoutCDMBar 也能 100% 捕获并自愈。
+        for barKey, frame in pairs(barFrames) do
+            if type(barKey) == "string" and barKey ~= "focuskick" and frame and not hookedBarFrames[frame]
+                and not (frame.IsForbidden and frame:IsForbidden()) then
+                hookedBarFrames[frame] = true
+                local key = barKey
+                if frame.SetPoint then
+                    _G.hooksecurefunc(frame, "SetPoint", function()
+                        if not mod._active or verifying then return end
+                        local EUI = _G.EllesmereUI
+                        if EUI and EUI._unlockActive then return end
+                        QueueVerifyBar(key)
+                    end)
+                end
+                if frame.HookScript and frame.HasScript and frame:HasScript("OnSizeChanged") then
+                    frame:HookScript("OnSizeChanged", function()
+                        if not mod._active or verifying then return end
+                        local EUI = _G.EllesmereUI
+                        if EUI and EUI._unlockActive then return end
+                        QueueVerifyBar(key)
+                    end)
+                end
+            end
+        end
+    end
+
+    function cdmPosGuard.SyncTBBOnSave()
+        if not mod._active then return end
+        local EUI = _G.EllesmereUI
+        if not EUI or EUI._unlockActive then return end
+        local cdmNS = GetCDMNS()
+        if not (cdmNS and type(cdmNS.BuildTrackedBuffBars) == "function") then return end
+        if _G.InCombatLockdown and _G.InCombatLockdown() then
+            F.RunOutOfCombat("FUI_TBBPostSave", function()
+                if mod._active then cdmPosGuard.SyncTBBOnSave() end
+            end)
+            return
+        end
+        pcall(cdmNS.BuildTrackedBuffBars)
+    end
+
+    function cdmPosGuard.Install()
+        local EUI = _G.EllesmereUI
+        if not EUI then return end
+        if not unlockRegistered and EUI.RegisterUnlockModeListener then
+            unlockRegistered = true
+            pcall(EUI.RegisterUnlockModeListener, EUI, "kkowoUI_CDMPosGuard", function(active, closeAction)
+                if not mod._active or active then return end
+                C_Timer.After(0, function()
+                    if not mod._active then return end
+                    HookCDMBarFrames()
+                    cdmPosGuard.VerifyAll()
+                    if closeAction == "save" then
+                        cdmPosGuard.SyncTBBOnSave()
+                    end
+                end)
+                C_Timer.After(0.12, function()
+                    if mod._active then cdmPosGuard.VerifyAll() end
+                end)
+            end)
+        end
+        -- 严禁对 EUI._applySavedPositions 使用 hooksecurefunc：
+        -- EUI_ActionBars_Setup.lua 会直接把 EllesmereUI._applySavedPositions 按引用传给 C_Timer.After(1.5, ...)，
+        -- hooksecurefunc 替换后的包装函数会被 WoW 12.x 的 C_Timer.After 拒收并抛出 bad argument #2。
+        -- 各条容器已有 SetPoint / LayoutCDMBar / CollectAndReanchor 监听，这里只需在 1.5s 延迟重排之后补扫一次即可。
+        if not settleScheduled then
+            settleScheduled = true
+            C_Timer.After(1.8, function()
+                if mod._active then
+                    HookCDMBarFrames()
+                    QueueVerifyAll(0)
+                end
+            end)
+        end
+        if not hookedNotifyResized and type(EUI.NotifyElementResized) == "function" then
+            hookedNotifyResized = true
+            _G.hooksecurefunc(EUI, "NotifyElementResized", function(key)
+                if mod._active and type(key) == "string" and key:sub(1, 4) == "CDM_" then
+                    QueueVerifyAll(0)
+                    QueueVerifyAll(0.06)
+                end
+            end)
+        end
+        local cdmNS = GetCDMNS()
+        if cdmNS then
+            if not hookedLayoutCDMBar and type(cdmNS.LayoutCDMBar) == "function" then
+                hookedLayoutCDMBar = true
+                _G.hooksecurefunc(cdmNS, "LayoutCDMBar", function(barKey)
+                    if mod._active and type(barKey) == "string" then
+                        HookCDMBarFrames()
+                        cdmPosGuard.VerifyBar(barKey)
+                    end
+                end)
+            end
+            if not hookedCollectAndReanchor and type(cdmNS.CollectAndReanchor) == "function" then
+                hookedCollectAndReanchor = true
+                _G.hooksecurefunc(cdmNS, "CollectAndReanchor", function()
+                    if mod._active then
+                        HookCDMBarFrames()
+                        QueueVerifyAll(0)
+                    end
+                end)
+            end
+            HookCDMBarFrames()
+        end
+    end
+
+    function cdmPosGuard.Remove()
+        if not unlockRegistered then return end
+        unlockRegistered = false
+        local EUI = _G.EllesmereUI
+        if EUI and EUI.UnregisterUnlockModeListener then
+            pcall(EUI.UnregisterUnlockModeListener, EUI, "kkowoUI_CDMPosGuard")
         end
     end
 end
@@ -4247,6 +4547,7 @@ do
     local hookedSF   = setmetatable({}, { __mode = "k" })
     local skillsBoxHooked = false
     local gossipScrollHooked = false
+    local questGreetingFnHooked = false
     local questDialogHooked = setmetatable({}, { __mode = "k" })
 
     local function IsSafeObj(o)
@@ -4406,27 +4707,63 @@ do
         "OpenMailBodyText",
         "ItemTextPageText",
     }
+    local MULTILINE_DIALOG_SET = {}
+    for _, name in ipairs(MULTILINE_DIALOG_FS) do
+        MULTILINE_DIALOG_SET[name] = true
+    end
+
+    local function FitGreetingTitleButton(btn)
+        if not (IsSafeObj(btn) and btn.IsShown and btn:IsShown() and btn.SetHeight) then return end
+        local fs = btn.GetFontString and btn:GetFontString()
+        if IsSafeObj(fs) and fs.CanWordWrap and fs:CanWordWrap() and fs.SetHeight then
+            local curFh = F.PlainNumber(fs.GetHeight and fs:GetHeight(), 0) or 0
+            local curSh = F.PlainNumber(fs.GetStringHeight and fs:GetStringHeight(), 0) or 0
+            if curFh > 0 and curSh >= curFh - 2 then
+                pcall(fs.SetHeight, fs, 0)
+            end
+        end
+        local sh = math_max(
+            (IsSafeObj(fs) and fs.GetStringHeight and F.PlainNumber(fs:GetStringHeight(), 0)) or 0,
+            (btn.GetTextHeight and F.PlainNumber(btn:GetTextHeight(), 0)) or 0
+        )
+        if sh <= 0 then return end
+        local iconH = (IsSafeObj(btn.Icon) and btn.Icon.GetHeight and F.PlainNumber(btn.Icon:GetHeight(), 0)) or 0
+        local wantH = math_max(math_floor(sh + 4 + 0.5), math_floor(iconH + 0.5))
+        local curH = F.PlainNumber(btn.GetHeight and btn:GetHeight(), 0) or 0
+        if wantH > curH + 0.5 then
+            pcall(btn.SetHeight, btn, wantH)
+        end
+    end
 
     local function FixSimilarDialogOverlaps()
         for _, name in ipairs(MULTILINE_DIALOG_FS) do
             local fs = _G[name]
-            if IsSafeObj(fs) and fs.SetHeight and fs.GetStringHeight then
-                local curH = F.PlainNumber(fs.GetHeight and fs:GetHeight(), 0) or 0
-                local strH = F.PlainNumber(fs:GetStringHeight(), 0) or 0
-                if curH > 0 and strH >= curH - 2 then
-                    pcall(fs.SetHeight, fs, 0)
-                end
+            if IsSafeObj(fs) and fs.SetHeight and fs.GetStringHeight
+                and (not fs.GetObjectType or fs:GetObjectType() == "FontString") then
+                pcall(fs.SetHeight, fs, 0)
             end
         end
-        -- 任务问候页（QuestFrameGreetingPanel）：确保水平分隔线与第一个任务按钮严禁压在 GreetingText 上
+        -- 任务问候页（QuestFrameGreetingPanel）：
+        -- 注意：QuestGreetingFrameHorizontalBreak 是「现有任务」最后一个按钮与「可以取得的任务」之间的分隔线，
+        -- AvailableQuestsText 锚在它下方（-12, -10），绝不可把它重锚到 GreetingText 下方，否则会把「可以取得的任务」拽上来压住现有任务列表。
+        -- 只要保证 GreetingText 自动撑高（SetHeight(0)）且各任务标题按钮高度足够容纳鸿蒙字体/换行高度，暴雪原生锚点链即可自然顺排、绝不重叠。
         local qgp = _G.QuestFrameGreetingPanel
-        local gt = _G.GreetingText
-        if IsSafeObj(qgp) and qgp:IsShown() and IsSafeObj(gt) and gt:IsShown() then
-            pcall(gt.SetHeight, gt, 0)
-            local hBreak = _G.QuestGreetingFrameHorizontalBreak
-            if IsSafeObj(hBreak) and hBreak:IsShown() and hBreak.ClearAllPoints then
-                pcall(hBreak.ClearAllPoints, hBreak)
-                pcall(hBreak.SetPoint, hBreak, "TOPLEFT", gt, "BOTTOMLEFT", 0, -10)
+        if IsSafeObj(qgp) and qgp:IsShown() then
+            local gt = _G.GreetingText
+            if IsSafeObj(gt) and gt:IsShown() and gt.SetHeight then
+                pcall(gt.SetHeight, gt, 0)
+            end
+            local pool = qgp.titleButtonPool
+            if type(pool) == "table" and type(pool.EnumerateActive) == "function" then
+                for btn in pool:EnumerateActive() do
+                    FitGreetingTitleButton(btn)
+                end
+            else
+                for i = 1, 32 do
+                    local btn = _G["QuestTitleButton" .. i]
+                    if not btn then break end
+                    FitGreetingTitleButton(btn)
+                end
             end
         end
     end
@@ -4496,6 +4833,11 @@ do
 
     local function GuardFontStringHeight(fs, want)
         if not (IsSafeObj(fs) and fs.GetFont and fs.GetHeight and fs.SetHeight) then return end
+        local fname = fs.GetName and F.PlainString(fs:GetName(), nil) or nil
+        if fname and MULTILINE_DIALOG_SET[fname] then
+            if want then pcall(fs.SetHeight, fs, 0) end
+            return
+        end
         local okF, _, sz = pcall(fs.GetFont, fs)
         sz = okF and F.PlainNumber(sz, 0) or 0
         if sz < 9 then return end
@@ -4534,6 +4876,14 @@ do
         end
     end
 
+    local function IsFlushToParentTop(region, parent)
+        if not (IsSafeObj(region) and region.GetPoint) then return false end
+        local okP, pt, rel, rpt = pcall(region.GetPoint, region, 1)
+        if not okP or not IsTopPoint(pt) then return false end
+        if rel ~= nil and rel ~= parent then return false end
+        return rpt == nil or IsTopPoint(rpt)
+    end
+
     local function SyncScrollFrameTopGuard(sf, want)
         if not IsSafeObj(sf) then return end
         local sc = sf.GetScrollChild and sf:GetScrollChild()
@@ -4543,14 +4893,16 @@ do
         if sc.GetRegions then
             for _, reg in ipairs({ sc:GetRegions() }) do
                 if IsSafeObj(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
-                    ShiftAnchorY(reg, -6, want, -3)
+                    if not want or IsFlushToParentTop(reg, sc) then
+                        ShiftAnchorY(reg, -6, want, -3)
+                    end
                     GuardFontStringHeight(reg, want)
                 end
             end
         end
         if sc.GetChildren then
             for _, ch in ipairs({ sc:GetChildren() }) do
-                if IsSafeObj(ch) then
+                if IsSafeObj(ch) and (not want or IsFlushToParentTop(ch, sc)) then
                     ShiftAnchorY(ch, -6, want, -3)
                 end
             end
@@ -4722,6 +5074,14 @@ do
                     end
                 end)
             end
+        end
+        if not questGreetingFnHooked and type(_G.QuestFrameGreetingPanel_OnShow) == "function" then
+            questGreetingFnHooked = true
+            _G.hooksecurefunc("QuestFrameGreetingPanel_OnShow", function()
+                if mod._active and mod:GetDB().harmonyFontGuard ~= false then
+                    C_Timer.After(0, FixSimilarDialogOverlaps)
+                end
+            end)
         end
         for _, winName in ipairs(FONT_GUARD_WINDOWS) do
             local w = _G[winName]
@@ -5552,6 +5912,8 @@ local function ScheduleBootRefresh(fromPEW)
         pcall(ApplyUnifiedResourceBars, false)
         pcall(swingGuard.Install)
         pcall(swingGuard.Heal, nil)
+        pcall(cdmPosGuard.Install)
+        pcall(cdmPosGuard.VerifyAll)
         RefreshAllModernHUD()
         if extra then extra() end
     end
@@ -5567,6 +5929,7 @@ end
 function mod:OnDisable()
     bootRefreshGen = bootRefreshGen + 1
     swingGuard.Remove()
+    cdmPosGuard.Remove()
     StopWorldRefreshTicker()
     RestoreWorldTextScale()
     ExpandFriendsIfEnabled()
@@ -5683,6 +6046,8 @@ function mod:OnEnable()
         pcall(ApplyUnifiedResourceBars, false)
         pcall(swingGuard.Install)
         pcall(swingGuard.Heal, nil)
+        pcall(cdmPosGuard.Install)
+        pcall(cdmPosGuard.VerifyAll)
         RefreshAllModernHUD()
         ScheduleBootRefresh(true)
         -- 冲突诊断弹窗只在登录/重载时检查一次，过传送门、副本读条不再重复弹出
@@ -5718,8 +6083,10 @@ function mod:OnEnable()
     end)
     QueueAuraFit()
     swingGuard.Install()
+    cdmPosGuard.Install()
     pcall(ApplyUnifiedResourceBars, false)
     pcall(swingGuard.Heal, nil)
+    pcall(cdmPosGuard.VerifyAll)
     ScheduleBootRefresh(false)
 end
 

@@ -391,11 +391,19 @@ local function ScanLowValueItems()
                 if info and info.hyperlink and info.itemID and not info.isLocked then
                     -- 炉石(6948) / 灵魂碎片(6265) 永不列入清理清单
                     if info.itemID ~= 6948 and info.itemID ~= 6265 then
-                        local name, _, quality, _, _, itemType, _, _, equipLoc, _, sellPrice, classID = getInfo(info.hyperlink)
+                        local name, quality, itemType, equipLoc, sellPrice, classID
+                        if getInfo then
+                            local okI, n1, _, q1, _, _, it1, _, _, el1, _, sp1, cid1 = pcall(getInfo, info.hyperlink)
+                            if okI then
+                                name, quality, itemType, equipLoc, sellPrice, classID = n1, q1, it1, el1, sp1, cid1
+                            end
+                        end
                         if (not classID or not equipLoc) and getInstant then
-                            local _, _, _, instEquipLoc, _, instClassID = getInstant(info.itemID)
-                            classID = classID or instClassID
-                            equipLoc = equipLoc or instEquipLoc
+                            local okIn, _, _, _, instEquipLoc, _, instClassID = pcall(getInstant, info.itemID)
+                            if okIn then
+                                classID = classID or instClassID
+                                equipLoc = equipLoc or instEquipLoc
+                            end
                         end
                         local isAmmo = (classID == CLASS_PROJECTILE)
                             or (equipLoc == "INVTYPE_AMMO")
@@ -696,7 +704,7 @@ RefreshLVIL = function(forceShow, fromOptions)
         row.delBtn._item = it
         row:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-            GameTooltip:SetBagItem(it.bag, it.slot)
+            pcall(GameTooltip.SetBagItem, GameTooltip, it.bag, it.slot)
             GameTooltip:AddLine(" ")
             GameTooltip:AddDoubleLine("商店总价", F.FormatMoney(it.vendorTotal), 0.75, 0.75, 0.78, 1, 1, 1)
             if it.ahTotal > 0 then

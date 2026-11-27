@@ -5,8 +5,8 @@
 local _, F = ...
 
 local _G = _G
-local math_floor, math_max, math_min, pairs, pcall, setmetatable, type =
-    math.floor, math.max, math.min, pairs, pcall, setmetatable, type
+local math_ceil, math_floor, math_max, math_min, pairs, pcall, setmetatable, type =
+    math.ceil, math.floor, math.max, math.min, pairs, pcall, setmetatable, type
 local CreateFrame = CreateFrame
 local InCombatLockdown = InCombatLockdown
 
@@ -30,6 +30,10 @@ ST.TEX = {
 }
 
 local EUI_ROUND_DIR = "Interface\\AddOns\\EllesmereUI\\media\\rounded\\"
+local EUI_AURA_MASK_DIR = EUI_ROUND_DIR .. "aura-masks\\"
+local EUI_AURA_SWIPE = EUI_AURA_MASK_DIR .. "aura-swipe.tga"
+local SWIPE_UV_ZERO = { x = 0, y = 0 }
+local SWIPE_UV_ONE = { x = 1, y = 1 }
 
 ST.COLORS = {
     brand       = { 0.322, 0.839, 0.412, 1.00 }, -- 青草绿 #52D669
@@ -326,17 +330,99 @@ end
 local roundState = setmetatable({}, { __mode = "k" })
 local activePixelBorders = setmetatable({}, { __mode = "k" })
 local hookedMaskedTex = setmetatable({}, { __mode = "k" })
+local hookedHostShow = setmetatable({}, { __mode = "k" })
+local hookedHostSize = setmetatable({}, { __mode = "k" })
+local roundedSwipes = setmetatable({}, { __mode = "k" })
 local maskedTexHost = setmetatable({}, { __mode = "kv" })
+local attachedMask = setmetatable({}, { __mode = "kv" })
+local isIconTex = setmetatable({}, { __mode = "k" })
+local keepLoadedTex = setmetatable({}, { __mode = "k" })
+local customMaskSpec = setmetatable({}, { __mode = "k" })
+local hostCustomTex = setmetatable({}, { __mode = "k" })
 local pendingMasks = {}
+local pendingBorderHoles = {}
+local stalledMasks = setmetatable({}, { __mode = "k" })
+local stalledBorderHoles = setmetatable({}, { __mode = "k" })
+local borderHoleTokens = setmetatable({}, { __mode = "k" })
+local borderHoleSeq = 0
 local maskWaitFrame = nil
 local scaleWatchFrame = nil
 
-local function IsTextureLoadedSafe(obj)
+-- 贴图加载三态：true = 已加载；false = 确定未加载；nil = 读不到（12.x 保密布尔值或调用失败）。
+-- 读不到或确定未加载时绝不能强行挂圆角遮罩，否则 WoW 12.1 引擎会把该贴图整格画成空白且加载完也不重绘。
+local function TextureLoadState(obj)
     if not obj then return false end
     if not obj.IsObjectLoaded then return true end
     local ok, loaded = pcall(obj.IsObjectLoaded, obj)
-    if not ok or F.IsSecret(loaded) then return true end
+    if not ok then return nil end
+    if F.IsSecret(loaded) then return nil end
     return loaded == true
+end
+
+local function IsVisibleSafe(obj)
+    if not obj then return false end
+    if not obj.IsVisible then return true end
+    local ok, vis = pcall(obj.IsVisible, obj)
+    if not ok or F.IsSecret(vis) then return false end
+    return vis == true
+end
+
+-- 判断贴图对象当前是否处于「完全没赋图」的空槽状态（例如空动作条格的 icon）：
+-- 空槽不需要挂遮罩，也绝不能在超时后强挂（否则之后拖入新技能或换页时遮罩已经挂在未加载的新图上）。
+local function IsEmptyUnassignedTex(tex)
+    if not tex or not tex.GetTexture then return false end
+    local okT, t = pcall(tex.GetTexture, tex)
+    if not okT or F.IsSecret(t) or t ~= nil then return false end
+    if tex.GetAtlas then
+        local okA, a = pcall(tex.GetAtlas, tex)
+        if not okA or F.IsSecret(a) or a ~= nil then return false end
+    end
+    return true
+end
+
+-- 贴图确定没加载完时最多等约 10 秒（600 帧）；读不到（保密值）最多试 12 帧避免战斗中空转 OnUpdate；
+-- 隐藏态最多等 5 帧即转入 stalledMasks（由 OnShow / Show / SetShown 瞬间唤醒，零后台轮询）。
+-- 任何超时分支都绝不强行挂遮罩（宁可暂时直角，绝不空白）。
+local MASK_WAIT_MAX = 600
+local MASK_SECRET_MAX = 12
+local MASK_HIDDEN_MAX = 5
+
+local function DetachMaskTrack(tex, mask)
+    if not (tex and mask) then return end
+    if tex.RemoveMaskTexture then
+        pcall(tex.RemoveMaskTexture, tex, mask)
+    end
+    if attachedMask[tex] == mask then
+        attachedMask[tex] = nil
+    end
+end
+
+local function ApplyMaskNow(tex, mask, forceRebind)
+    if not (tex and mask and tex.AddMaskTexture) then return end
+    if attachedMask[tex] == mask then
+        if not forceRebind then return end
+        if tex.RemoveMaskTexture then
+            pcall(tex.RemoveMaskTexture, tex, mask)
+        end
+        attachedMask[tex] = nil
+    end
+    local ok = pcall(tex.AddMaskTexture, tex, mask)
+    if ok then
+        attachedMask[tex] = mask
+    end
+end
+
+local function ResolveTexTarget(tex)
+    local spec = customMaskSpec[tex]
+    if spec and spec.mask then
+        return spec.host, spec.mask, spec.isIcon == true, spec.keepIfLoaded == true
+    end
+    local h = maskedTexHost[tex]
+    local st = h and roundState[h]
+    if st and st.mask and st.masked[tex] then
+        return h, st.mask, isIconTex[tex] == true, keepLoadedTex[tex] == true
+    end
+    return nil, nil, false, false
 end
 
 local function EnsureMaskWaitFrame()
@@ -353,13 +439,82 @@ local function EnsureMaskWaitFrame()
                 pendingMasks[tex] = nil
             else
                 entry.tries = entry.tries + 1
-                if (IsTextureLoadedSafe(tex) and IsTextureLoadedSafe(mask)) or entry.tries >= 60 then
+                local ls, lm = TextureLoadState(tex), TextureLoadState(mask)
+                local needVis = (entry.settleNeed or 1) >= 2
+                if ls == false and IsEmptyUnassignedTex(tex) then
+                    -- 空技能格：不必每帧空轮询，等真正 SetTexture / SetAtlas / Show 时再挂
                     pendingMasks[tex] = nil
-                    if tex.AddMaskTexture then
-                        pcall(tex.AddMaskTexture, tex, mask)
+                    stalledMasks[tex] = mask
+                elseif needVis and not IsVisibleSafe(tex) then
+                    -- 隐藏中的动态图标不提交 GPU 渲染：短暂宽限几帧（覆盖 SetTexture 后紧接 Show），仍隐藏则停轮询等 OnShow 唤醒
+                    entry.visibleReady = 0
+                    entry.hiddenTicks = (entry.hiddenTicks or 0) + 1
+                    if entry.hiddenTicks >= MASK_HIDDEN_MAX then
+                        pendingMasks[tex] = nil
+                        stalledMasks[tex] = mask
+                    else
+                        anyLeft = true
                     end
                 else
+                    entry.hiddenTicks = 0
+                    if ls == true and lm == true then
+                        entry.visibleReady = (entry.visibleReady or 0) + 1
+                        -- 动态图标/换图后必须先在可见态完整绘制至少 1 帧无遮罩原图，确保 GPU 纹理上传就绪后再挂圆角遮罩
+                        if entry.visibleReady >= (entry.settleNeed or 1) then
+                            pendingMasks[tex] = nil
+                            stalledMasks[tex] = nil
+                            ApplyMaskNow(tex, mask, false)
+                        else
+                            anyLeft = true
+                        end
+                    elseif (ls == nil or lm == nil) and entry.tries >= MASK_SECRET_MAX then
+                        pendingMasks[tex] = nil
+                        stalledMasks[tex] = mask
+                    elseif entry.tries < MASK_WAIT_MAX then
+                        entry.visibleReady = 0
+                        anyLeft = true
+                    else
+                        -- 绝不强挂遮罩：留在 stalledMasks 等后续事件/显形补挂
+                        pendingMasks[tex] = nil
+                        stalledMasks[tex] = mask
+                    end
+                end
+            end
+        end
+        for keyObj, entry in pairs(pendingBorderHoles) do
+            local fill, hole, outer = entry.fill, entry.hole, entry.outer
+            if not (keyObj and fill and hole)
+                or borderHoleTokens[keyObj] ~= entry.token
+                or (keyObj.IsForbidden and keyObj:IsForbidden())
+                or (fill.IsForbidden and fill:IsForbidden()) then
+                pendingBorderHoles[keyObj] = nil
+            else
+                entry.tries = entry.tries + 1
+                local lf = TextureLoadState(fill)
+                local lh = TextureLoadState(hole)
+                local lo = outer and TextureLoadState(outer) or true
+                if lf == true and lh == true and lo == true then
+                    pendingBorderHoles[keyObj] = nil
+                    stalledBorderHoles[keyObj] = nil
+                    if borderHoleTokens[keyObj] == entry.token then
+                        if outer and fill.AddMaskTexture then
+                            pcall(fill.AddMaskTexture, fill, outer)
+                        end
+                        if fill.AddMaskTexture then
+                            pcall(fill.AddMaskTexture, fill, hole)
+                        end
+                        fill:Show()
+                        if entry.onReady then pcall(entry.onReady, keyObj) end
+                    end
+                elseif (lf == nil or lh == nil or lo == nil) and entry.tries >= MASK_SECRET_MAX then
+                    pendingBorderHoles[keyObj] = nil
+                    stalledBorderHoles[keyObj] = entry
+                elseif entry.tries < MASK_WAIT_MAX then
                     anyLeft = true
+                else
+                    -- 孔遮罩超时仍未就绪：保持 fill 隐藏，记入 stalledBorderHoles 等后续重试，绝不画成实心色块盖住图标
+                    pendingBorderHoles[keyObj] = nil
+                    stalledBorderHoles[keyObj] = entry
                 end
             end
         end
@@ -370,23 +525,215 @@ local function EnsureMaskWaitFrame()
     return maskWaitFrame
 end
 
--- WoW 12.1 异步贴图 + 遮罩引擎保护：贴图尚未加载完成时挂载遮罩会导致图标整格空白或残留左上极小碎块；
--- 先请求同步加载，若仍未就绪则暂卸遮罩并在 IsObjectLoaded() 转 true 的当帧无感补回（空闲 0 CPU）
-local function AttachMaskSafely(tex, mask)
+-- WoW 12.1 异步贴图 + 遮罩引擎保护：
+-- 1) 绝不对暴雪/外部图标强行调用 SetBlockingLoadsRequested(true)（仅用于我们自己的遮罩/描边 .tga）；
+-- 2) 贴图未就绪、处于隐藏态、或刚经历 SetTexture/SetAtlas 换图时，一律先卸除遮罩，
+--    待可见且 IsObjectLoaded() == true 后至少完整绘制 1 帧（settleNeed=2）再无感补回圆角，彻底根治整格变空与左上碎块。
+local function AttachMaskSafely(tex, mask, host, fromSwap, isIcon, keepIfLoaded)
     if not (tex and mask and tex.AddMaskTexture) then return end
-    if tex.SetBlockingLoadsRequested then
-        pcall(tex.SetBlockingLoadsRequested, tex, true)
-    end
-    if IsTextureLoadedSafe(tex) and IsTextureLoadedSafe(mask) then
+    stalledMasks[tex] = nil
+    local ls, lm = TextureLoadState(tex), TextureLoadState(mask)
+    if ls == false and IsEmptyUnassignedTex(tex) then
+        DetachMaskTrack(tex, mask)
         pendingMasks[tex] = nil
-        pcall(tex.AddMaskTexture, tex, mask)
+        stalledMasks[tex] = mask
+        return
+    end
+    local vis = IsVisibleSafe(tex)
+    -- 圆形技能球/目标头像等高频切换图标：已挂遮罩且新图与遮罩均已加载且可见时直接保持，避免每次施法闪一帧方角
+    if keepIfLoaded and attachedMask[tex] == mask and ls == true and lm == true and vis then
+        pendingMasks[tex] = nil
+        return
+    end
+    local needSettle = (isIcon == true) or (fromSwap == true)
+    if not needSettle and ls == true and lm == true then
+        pendingMasks[tex] = nil
+        ApplyMaskNow(tex, mask, false)
+        return
+    end
+    DetachMaskTrack(tex, mask)
+    local settleNeed = needSettle and 2 or 1
+    pendingMasks[tex] = {
+        mask = mask,
+        host = host,
+        tries = 0,
+        visibleReady = 0,
+        hiddenTicks = 0,
+        settleNeed = settleNeed,
+    }
+    EnsureMaskWaitFrame():Show()
+end
+
+local function RetryStalledBorderHole(keyObj, entry)
+    if not (keyObj and entry and entry.fill and entry.hole) then return end
+    if borderHoleTokens[keyObj] ~= entry.token then
+        stalledBorderHoles[keyObj] = nil
+        return
+    end
+    stalledBorderHoles[keyObj] = nil
+    local fill, hole, outer = entry.fill, entry.hole, entry.outer
+    local lf = TextureLoadState(fill)
+    local lh = TextureLoadState(hole)
+    local lo = outer and TextureLoadState(outer) or true
+    if lf == true and lh == true and lo == true then
+        if outer and fill.AddMaskTexture then pcall(fill.AddMaskTexture, fill, outer) end
+        if fill.AddMaskTexture then pcall(fill.AddMaskTexture, fill, hole) end
+        fill:Show()
+        if entry.onReady then pcall(entry.onReady, keyObj) end
     else
-        if tex.RemoveMaskTexture then
-            pcall(tex.RemoveMaskTexture, tex, mask)
-        end
-        pendingMasks[tex] = { mask = mask, tries = 0 }
+        entry.tries = 0
+        pendingBorderHoles[keyObj] = entry
         EnsureMaskWaitFrame():Show()
     end
+end
+
+local ReseatHostBodyMask -- 前向声明
+local FitPixelRoundedBorder -- 前向声明
+local SyncRoundedCooldownSwipe -- 前向声明
+
+local function WakeHostStalled(host)
+    if not host then return end
+    local st = roundState[host]
+    if st then
+        if st.borderFrame and st.borderFrame:IsShown() and st.borderReqRadius and st.borderReqRadius > 0 then
+            st.maskSizePending = nil
+            FitPixelRoundedBorder(host, st)
+        elseif st.maskSizePending and st.radius and st.radius > 0 then
+            st.maskSizePending = nil
+            ReseatHostBodyMask(host, st, st.maskReqR or st.radius, st.maskInset or 0)
+        elseif st.roundedSwipeCDs then
+            SyncRoundedCooldownSwipe(host, st)
+        end
+        if st.mask then
+            for tex in pairs(st.masked) do
+                if stalledMasks[tex] == st.mask then
+                    AttachMaskSafely(tex, st.mask, host, false, isIconTex[tex] == true, keepLoadedTex[tex] == true)
+                end
+            end
+        end
+        if st.borderFrame and stalledBorderHoles[st.borderFrame] then
+            RetryStalledBorderHole(st.borderFrame, stalledBorderHoles[st.borderFrame])
+        end
+    end
+    local customSet = hostCustomTex[host]
+    if customSet then
+        for tex in pairs(customSet) do
+            if stalledMasks[tex] then
+                local h, m, ic, kl = ResolveTexTarget(tex)
+                if m then AttachMaskSafely(tex, m, h, false, ic, kl) end
+            end
+        end
+    end
+    if stalledBorderHoles[host] then
+        RetryStalledBorderHole(host, stalledBorderHoles[host])
+    end
+end
+
+local function OnHostSizeChanged(host)
+    if not host or (host.IsForbidden and host:IsForbidden()) then return end
+    local st = roundState[host]
+    if not st then return end
+    if st.borderFrame and st.borderFrame:IsShown() and st.borderReqRadius and st.borderReqRadius > 0 then
+        FitPixelRoundedBorder(host, st)
+    elseif st.radius and st.radius > 0 then
+        ReseatHostBodyMask(host, st, st.maskReqR or st.radius, st.maskInset or 0)
+    elseif st.roundedSwipeCDs then
+        SyncRoundedCooldownSwipe(host, st)
+    end
+end
+
+local function EnsureHostSizeHook(host)
+    if not host or hookedHostSize[host] or (host.IsForbidden and host:IsForbidden()) then return end
+    if host.HookScript and host.HasScript and host:HasScript("OnSizeChanged") then
+        hookedHostSize[host] = true
+        host:HookScript("OnSizeChanged", OnHostSizeChanged)
+    end
+end
+
+local function EnsureHostShowHook(host)
+    if not host or (host.IsForbidden and host:IsForbidden()) then return end
+    EnsureHostSizeHook(host)
+    if hookedHostShow[host] then return end
+    if host.HookScript and host.HasScript and host:HasScript("OnShow") then
+        hookedHostShow[host] = true
+        host:HookScript("OnShow", WakeHostStalled)
+    end
+end
+
+local function OnMaskedTexChanged(self)
+    local h, m, ic, kl = ResolveTexTarget(self)
+    if m then
+        AttachMaskSafely(self, m, h, true, ic, kl)
+    end
+end
+
+local function OnMaskedColorChanged(self)
+    local h, m, ic, kl = ResolveTexTarget(self)
+    if not m then return end
+    -- SetColorTexture 保留既有遮罩且无异步文件流；仅在未挂上或挂起时补挂，避免反复卸挂造成闪烁
+    if attachedMask[self] == m and not pendingMasks[self] and not stalledMasks[self] then
+        return
+    end
+    AttachMaskSafely(self, m, h, false, ic, kl)
+end
+
+local function OnMaskedTexShown(self)
+    if not stalledMasks[self] then return end
+    local h, m, ic, kl = ResolveTexTarget(self)
+    if m then
+        AttachMaskSafely(self, m, h, false, ic, kl)
+    end
+end
+
+local function OnMaskedTexSetShown(self, shown)
+    if not stalledMasks[self] then return end
+    if not F.IsSecret(shown) and shown == false then return end
+    local h, m, ic, kl = ResolveTexTarget(self)
+    if m then
+        AttachMaskSafely(self, m, h, false, ic, kl)
+    end
+end
+
+local function EnsureTexHooks(tex)
+    if not tex or hookedMaskedTex[tex] or (tex.IsForbidden and tex:IsForbidden()) then return end
+    hookedMaskedTex[tex] = true
+    if tex.SetTexture then _G.hooksecurefunc(tex, "SetTexture", OnMaskedTexChanged) end
+    if tex.SetAtlas then _G.hooksecurefunc(tex, "SetAtlas", OnMaskedTexChanged) end
+    if tex.SetColorTexture then _G.hooksecurefunc(tex, "SetColorTexture", OnMaskedColorChanged) end
+    if tex.Show then _G.hooksecurefunc(tex, "Show", OnMaskedTexShown) end
+    if tex.SetShown then _G.hooksecurefunc(tex, "SetShown", OnMaskedTexSetShown) end
+end
+
+-- 脱战 / 过图 / 法术与动作条变动后，把此前因受限态、隐藏或未加载而暂缓的圆角与描边孔洞补挂上
+do
+    local retry = CreateFrame("Frame")
+    retry:RegisterEvent("PLAYER_REGEN_ENABLED")
+    retry:RegisterEvent("PLAYER_ENTERING_WORLD")
+    retry:RegisterEvent("SPELLS_CHANGED")
+    retry:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+    retry:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
+    retry:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
+    retry:RegisterEvent("UPDATE_SHAPESHIFT_FORMS")
+    retry:RegisterEvent("PET_BAR_UPDATE")
+    retry:SetScript("OnEvent", function()
+        local list = {}
+        for tex, mask in pairs(stalledMasks) do list[#list + 1] = { tex, mask } end
+        for _, it in ipairs(list) do
+            local tex, mask = it[1], it[2]
+            local h, curMask, ic, kl = ResolveTexTarget(tex)
+            if curMask == mask then
+                stalledMasks[tex] = nil
+                AttachMaskSafely(tex, mask, h, false, ic, kl)
+            else
+                stalledMasks[tex] = nil
+            end
+        end
+        local holes = {}
+        for keyObj, entry in pairs(stalledBorderHoles) do holes[#holes + 1] = { keyObj, entry } end
+        for _, it in ipairs(holes) do
+            RetryStalledBorderHole(it[1], it[2])
+        end
+    end)
 end
 
 local function HasEUIRounded()
@@ -412,14 +759,54 @@ local function SetNineSlice(obj, path, margin, wrap)
     end
 end
 
-local function GetHalfSideSafe(region)
-    if not (region and region.GetSize) then return nil end
+-- WoW 12.1 (D3D12) 引擎铁律：绝不对整图 MaskTexture 调用 SetTextureSliceMargins（哪怕传 0,0,0,0）！
+-- 只要对一个 MaskTexture 调过一次 SetTextureSliceMargins，引擎就会永久激活其 9 宫格着色器路径，
+-- 导致部分 CASC 技能图标（例如「极速再生」FileDataID 1850550）在动作条整格空白、在 Tooltip 碎成左上残片。
+local function SetWholeMask(obj, path)
+    if not obj then return end
+    if obj.SetBlockingLoadsRequested then
+        pcall(obj.SetBlockingLoadsRequested, obj, true)
+    end
+    pcall(obj.SetTexture, obj, path, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+end
+
+local function GetSizeSafe(region)
+    if not (region and region.GetSize) then return nil, nil end
     local ok, w, h = pcall(region.GetSize, region)
-    if not ok then return nil end
+    if not ok then return nil, nil end
     w = F.PlainNumber(w, nil)
     h = F.PlainNumber(h, nil)
-    if not (w and h) or w <= 0 or h <= 0 then return nil end
+    if not (w and h) or w <= 0 or h <= 0 then return nil, nil end
+    return w, h
+end
+
+local function GetHalfSideSafe(region)
+    local w, h = GetSizeSafe(region)
+    if not (w and h) then return nil end
     return math_min(w, h) * 0.5
+end
+
+-- 为正方形/近正方形图标计算 64x64 整图圆角遮罩（aura-masks/round-1..16.tga）编号，
+-- 与 EllesmereUI.RoundAuraCorners 使用同一算法：绝不对动态游戏图标使用 9 宫格切片遮罩，
+-- 且让圆角弧略微嵌进 1px 描边内沿，做到零缝隙、零锯齿、零空白。
+local function ComputeWholeIconShape(innerRadius, w, h, edge)
+    local ins = edge or 0
+    local bodyW = math_max(2, (w or 36) - 2 * ins)
+    local bodyH = math_max(2, (h or 36) - 2 * ins)
+    local inner = math_max(1, innerRadius or 4)
+    local outerR = inner + ins
+    local shape = math_min(16, math_max(1, math_ceil(64 * inner / math_max(2, bodyW + bodyH))))
+    if ins > 0 and shape > 1 and (shape - 1) * math_min(bodyW, bodyH) / 32 >= outerR - 3 * ins then
+        shape = shape - 1
+    end
+    return shape
+end
+
+function ST.SetWholeIconMask(mask, innerRadius, w, h, edge)
+    if not (mask and HasEUIRounded()) then return nil end
+    local shape = ComputeWholeIconShape(innerRadius, w, h, edge)
+    SetWholeMask(mask, EUI_AURA_MASK_DIR .. "round-" .. shape .. ".tga")
+    return shape
 end
 
 local function SeatPixelLayer(bf, host, k)
@@ -433,6 +820,7 @@ local function SeatPixelLayer(bf, host, k)
     l = F.PlainNumber(l, nil); t = F.PlainNumber(t, nil)
     r = F.PlainNumber(r, nil); b = F.PlainNumber(b, nil)
     if not (l and t and r and b) then return end
+    if (r - l) <= 0.01 or (t - b) <= 0.01 then return end
     l, t, r, b = l * k, t * k, r * k, b * k
     local dl = math_floor(l + 0.5) - l
     local dt = math_floor(t + 0.5) - t
@@ -459,38 +847,221 @@ function ST.ResolveMaskPath(radius)
 end
 
 -- 统一重塑宿主正文遮罩（严格遵循 WoW 引擎：先从全部贴图分离 -> 改贴图与锚点 -> 重新绑定）
-local function ReseatHostBodyMask(host, st, reqRadius, insetPx)
-    if not (host and st and st.mask) then return end
-    local r = math_max(1, math_min(16, math_floor((reqRadius or 6) + 0.5)))
-    local half = GetHalfSideSafe(host)
-    if half and half >= 1 then
-        local cap = math_max(1, math_floor(half - (insetPx or 0) - 0.5))
-        if r > cap then r = cap end
-    end
+-- 图标宿主（st.iconMode == true 且纵横比 <= 1.65）使用独立的纯净 st.wholeMask（64x64 整图 aura-masks/round-N.tga，
+-- 终生不碰 SetTextureSliceMargins）；条形/面板宿主使用独立的 st.sliceMask（9 宫格 rounded-N.tga），两者绝不混用。
+ReseatHostBodyMask = function(host, st, reqRadius, insetPx)
+    if not (host and st and host.CreateMaskTexture) then return end
     local ins = insetPx or 0
-    if st.maskActualR == r and st.maskInset == ins then return end
+    local w, h = GetSizeSafe(host)
+    local half = (w and h) and (math_min(w, h) * 0.5) or nil
+    local useWhole = st.iconMode == true and HasEUIRounded()
+    if useWhole and w and h and math_max(w, h) > math_min(w, h) * 1.65 then
+        useWhole = false
+    end
+
+    local rFloat = math_max(1, math_min(16, reqRadius or 6))
+    if half and half >= 1 then
+        local cap = math_max(1, half - ins - 0.5)
+        if rFloat > cap then rFloat = cap end
+    end
+    local r = math_max(1, math_min(16, math_floor(rFloat + 0.5)))
+    local shapeKey, wholeShape
+    if useWhole then
+        if not (w and h) then
+            st.maskSizePending = true
+        else
+            st.maskSizePending = nil
+        end
+        wholeShape = ComputeWholeIconShape(rFloat, w or 36, h or 36, ins)
+        shapeKey = "W:" .. wholeShape
+    else
+        st.maskSizePending = nil
+        shapeKey = "S:" .. r
+    end
+    st.maskReqR = reqRadius
+
+    local targetMask
+    if useWhole then
+        if not st.wholeMask then
+            st.wholeMask = host:CreateMaskTexture()
+        end
+        targetMask = st.wholeMask
+    else
+        if not st.sliceMask then
+            st.sliceMask = host:CreateMaskTexture()
+        end
+        targetMask = st.sliceMask
+    end
+
+    if st.mask == targetMask and st.maskShapeKey == shapeKey and st.maskInset == ins then return end
+    local oldMask = st.mask
+    st.maskShapeKey = shapeKey
     st.maskActualR = r
     st.maskInset = ins
+    st.mask = targetMask
 
-    local m = st.mask
-    for tex in _G.pairs(st.masked) do
-        if tex and tex.RemoveMaskTexture then pcall(tex.RemoveMaskTexture, tex, m) end
+    for tex in pairs(st.masked) do
+        if oldMask then DetachMaskTrack(tex, oldMask) end
+        if targetMask ~= oldMask then DetachMaskTrack(tex, targetMask) end
+        if oldMask and pendingMasks[tex] and pendingMasks[tex].mask == oldMask then
+            pendingMasks[tex] = nil
+        end
+        if oldMask and stalledMasks[tex] == oldMask then
+            stalledMasks[tex] = nil
+        end
     end
-    local maskPath, _, actualR = ST.ResolveMaskPath(r)
-    SetNineSlice(m, maskPath, actualR, "CLAMPTOBLACKADDITIVE")
-    m:ClearAllPoints()
-    if ins > 0 then
-        m:SetPoint("TOPLEFT", host, "TOPLEFT", ins, -ins)
-        m:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -ins, ins)
+    if useWhole then
+        SetWholeMask(targetMask, EUI_AURA_MASK_DIR .. "round-" .. wholeShape .. ".tga")
     else
-        m:SetAllPoints(host)
+        local maskPath, _, actualR = ST.ResolveMaskPath(r)
+        SetNineSlice(targetMask, maskPath, actualR, "CLAMPTOBLACKADDITIVE")
+    end
+    targetMask:ClearAllPoints()
+    if ins > 0 then
+        targetMask:SetPoint("TOPLEFT", host, "TOPLEFT", ins, -ins)
+        targetMask:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -ins, ins)
+    else
+        targetMask:SetAllPoints(host)
     end
     for tex in pairs(st.masked) do
-        if tex and tex.AddMaskTexture then AttachMaskSafely(tex, m) end
+        if tex and tex.AddMaskTexture then
+            AttachMaskSafely(tex, targetMask, host, false, isIconTex[tex] == true, keepLoadedTex[tex] == true)
+        end
+    end
+    if st.roundedSwipeCDs then
+        SyncRoundedCooldownSwipe(host, st)
     end
 end
 
-local function FitPixelRoundedBorder(host, st)
+-- 统一的空心描边孔洞保护：任一遮罩/填充未加载完前先隐藏 fill，绝不画成未挖空的实心方块盖住图标或卡片文字
+function ST.CancelBorderHole(keyObj)
+    if not keyObj then return end
+    borderHoleSeq = borderHoleSeq + 1
+    borderHoleTokens[keyObj] = borderHoleSeq
+    pendingBorderHoles[keyObj] = nil
+    stalledBorderHoles[keyObj] = nil
+end
+
+function ST.AttachBorderHole(keyObj, fillTex, holeMask, outerMask, host, onReady)
+    if not (keyObj and fillTex and holeMask) then return false end
+    if host then EnsureHostShowHook(host) end
+    borderHoleSeq = borderHoleSeq + 1
+    local token = borderHoleSeq
+    borderHoleTokens[keyObj] = token
+    pendingBorderHoles[keyObj] = nil
+    stalledBorderHoles[keyObj] = nil
+
+    local lf = TextureLoadState(fillTex)
+    local lh = TextureLoadState(holeMask)
+    local lo = outerMask and TextureLoadState(outerMask) or true
+    if lf == true and lh == true and lo == true then
+        if outerMask and fillTex.AddMaskTexture then
+            pcall(fillTex.AddMaskTexture, fillTex, outerMask)
+        end
+        if fillTex.AddMaskTexture then
+            pcall(fillTex.AddMaskTexture, fillTex, holeMask)
+        end
+        fillTex:Show()
+        if onReady then pcall(onReady, keyObj) end
+        return true
+    end
+    fillTex:Hide()
+    pendingBorderHoles[keyObj] = {
+        fill = fillTex,
+        hole = holeMask,
+        outer = outerMask,
+        host = host,
+        token = token,
+        onReady = onReady,
+        tries = 0,
+    }
+    EnsureMaskWaitFrame():Show()
+    return false
+end
+
+SyncRoundedCooldownSwipe = function(host, st)
+    if not (host and st and st.roundedSwipeCDs and HasEUIRounded()) then return end
+    local rad = st.roundedSwipeRadius or st.maskReqR or st.radius or 0
+    if rad <= 0 then return end
+    local w, h = GetSizeSafe(host)
+    if not (w and h) then return end
+    local ins = st.maskInset or 0
+    local bodyW = math_max(2, w - 2 * ins)
+    local bodyH = math_max(2, h - 2 * ins)
+    local inner = math_max(1, math_min(16, st.maskReqR or rad))
+    local half = math_min(bodyW, bodyH) * 0.5
+    if half >= 1 and inner > half then inner = half end
+    local gx = math_min(16, math_max(1, math_ceil(32 * inner / bodyW))) - 1
+    local gy = math_min(16, math_max(1, math_ceil(32 * inner / bodyH))) - 1
+    local uvKey = gx * 32 + gy
+    local uvS = st._swipeStart
+    local uvE = st._swipeEnd
+    if not uvS then
+        uvS = { x = 0, y = 0 }
+        uvE = { x = 1, y = 1 }
+        st._swipeStart = uvS
+        st._swipeEnd = uvE
+    end
+    uvS.x, uvS.y = gx / 16, gy / 16
+    uvE.x, uvE.y = (gx + 1) / 16, (gy + 1) / 16
+    for cd, lastKey in pairs(st.roundedSwipeCDs) do
+        if cd and cd.SetSwipeTexture and cd.SetTexCoordRange
+            and not (cd.IsForbidden and cd:IsForbidden()) then
+            if lastKey ~= uvKey or roundedSwipes[cd] ~= host then
+                pcall(cd.SetSwipeTexture, cd, EUI_AURA_SWIPE)
+                pcall(cd.SetTexCoordRange, cd, uvS, uvE)
+                st.roundedSwipeCDs[cd] = uvKey
+                roundedSwipes[cd] = host
+            end
+        end
+    end
+end
+
+function ST.ApplyRoundedCooldownSwipe(host, cd, radius)
+    if not (host and cd and cd.SetSwipeTexture and cd.SetTexCoordRange and HasEUIRounded()) then return end
+    if cd.IsForbidden and cd:IsForbidden() then return end
+    local r = math_floor((radius or 6) + 0.5)
+    local st = roundState[host]
+    if not st then
+        st = { masked = setmetatable({}, { __mode = "k" }) }
+        roundState[host] = st
+    end
+    EnsureHostShowHook(host)
+    if r <= 0 then
+        ST.ClearRoundedCooldownSwipe(cd)
+        if st.roundedSwipeCDs then
+            st.roundedSwipeCDs[cd] = nil
+            if next(st.roundedSwipeCDs) == nil then
+                st.roundedSwipeCDs = nil
+                st.roundedSwipeRadius = nil
+            end
+        end
+        return
+    end
+    if not st.roundedSwipeCDs then
+        st.roundedSwipeCDs = setmetatable({}, { __mode = "k" })
+    end
+    if st.roundedSwipeCDs[cd] == nil then
+        st.roundedSwipeCDs[cd] = -1
+    end
+    st.roundedSwipeRadius = r
+    SyncRoundedCooldownSwipe(host, st)
+end
+
+function ST.ClearRoundedCooldownSwipe(cd, fallbackSwipe)
+    if not cd then return end
+    if not roundedSwipes[cd] then return end
+    roundedSwipes[cd] = nil
+    if cd.IsForbidden and cd:IsForbidden() then return end
+    if cd.SetSwipeTexture then
+        pcall(cd.SetSwipeTexture, cd, fallbackSwipe or "")
+    end
+    if cd.SetTexCoordRange then
+        pcall(cd.SetTexCoordRange, cd, SWIPE_UV_ZERO, SWIPE_UV_ONE)
+    end
+end
+
+FitPixelRoundedBorder = function(host, st)
     local bf = st and st.borderFrame
     if not (bf and bf:IsShown() and st.borderReqRadius and st.borderReqRadius > 0) then return end
     local rad = st.borderReqRadius
@@ -523,13 +1094,14 @@ local function FitPixelRoundedBorder(host, st)
     end
     if rPx > 16 then rPx = 16 elseif rPx < 2 then rPx = 2 end
 
-    if bf._fittedRPx ~= rPx then
+    if bf._fittedRPx ~= rPx or (not bf._holeAttached and not pendingBorderHoles[bf]) then
         local fill = bf._tex
         local hole = bf._innerHole
         if not hole then
             hole = bf:CreateMaskTexture()
             bf._innerHole = hole
         end
+        ST.CancelBorderHole(bf)
         -- 严格先分离孔遮罩，再重设外圈圆角贴图与内孔 1px 物理内缩同心反遮罩，杜绝圆角发粗发虚
         if bf._holeAttached and fill.RemoveMaskTexture then
             pcall(fill.RemoveMaskTexture, fill, hole)
@@ -541,17 +1113,21 @@ local function FitPixelRoundedBorder(host, st)
         hole:ClearAllPoints()
         hole:SetPoint("TOPLEFT", bf, "TOPLEFT", 1, -1)
         hole:SetPoint("BOTTOMRIGHT", bf, "BOTTOMRIGHT", -1, 1)
-        pcall(fill.AddMaskTexture, fill, hole)
-        bf._holeAttached = true
         bf._fittedRPx = rPx
+        ST.AttachBorderHole(bf, fill, hole, nil, host, function(frame)
+            frame._holeAttached = true
+        end)
     end
 
     -- 同步把宿主内部贴图遮罩精确内缩 1 物理像素（px = 1/k），使填充边缘恰好藏在 1px 清晰圆角细框内侧：
     -- 0 渗色灰晕、0 锯齿、0 缝隙！
-    if st.mask and st.radius and st.radius > 0 then
+    if st.radius and st.radius > 0 then
         local pxHost = 1 / k
-        local innerBodyR = math_max(1, math_min(16, math_floor((rPx - 1) / k)))
+        local innerBodyR = math_max(1, math_min(16, (rPx - 1) / k))
         ReseatHostBodyMask(host, st, innerBodyR, pxHost)
+    end
+    if st.roundedSwipeCDs then
+        SyncRoundedCooldownSwipe(host, st)
     end
 end
 
@@ -561,12 +1137,33 @@ local function EnsureScaleWatcher()
     scaleWatchFrame:RegisterEvent("UI_SCALE_CHANGED")
     scaleWatchFrame:RegisterEvent("DISPLAY_SIZE_CHANGED")
     scaleWatchFrame:SetScript("OnEvent", function()
-        for host, st in _G.pairs(activePixelBorders) do
+        for host, st in pairs(activePixelBorders) do
             if host and st and st.borderFrame and st.borderFrame:IsShown() then
                 FitPixelRoundedBorder(host, st)
             end
         end
     end)
+end
+
+function ST.SetHostIconMode(host, enabled)
+    if not host then return end
+    local st = roundState[host]
+    if not st then
+        st = { masked = setmetatable({}, { __mode = "k" }) }
+        roundState[host] = st
+    end
+    local want = enabled == true
+    if st.iconMode ~= want then
+        st.iconMode = want
+        st.maskShapeKey = nil
+        if st.radius and st.radius > 0 then
+            if st.borderFrame and st.borderFrame:IsShown() and st.borderReqRadius and st.borderReqRadius > 0 and HasEUIRounded() then
+                FitPixelRoundedBorder(host, st)
+            else
+                ReseatHostBodyMask(host, st, st.radius, st.maskInset or 0)
+            end
+        end
+    end
 end
 
 function ST.EnsureRoundedMask(host, radius)
@@ -577,77 +1174,162 @@ function ST.EnsureRoundedMask(host, radius)
         st = { masked = setmetatable({}, { __mode = "k" }) }
         roundState[host] = st
     end
+    EnsureHostShowHook(host)
     if r <= 0 then
-        if st.mask then
-            for tex in pairs(st.masked) do
-                pendingMasks[tex] = nil
-                maskedTexHost[tex] = nil
-                if tex and tex.RemoveMaskTexture then pcall(tex.RemoveMaskTexture, tex, st.mask) end
-            end
-            st.masked = setmetatable({}, { __mode = "k" })
+        for tex in pairs(st.masked) do
+            pendingMasks[tex] = nil
+            stalledMasks[tex] = nil
+            maskedTexHost[tex] = nil
+            isIconTex[tex] = nil
+            keepLoadedTex[tex] = nil
+            if st.mask then DetachMaskTrack(tex, st.mask) end
+            if st.wholeMask and st.wholeMask ~= st.mask then DetachMaskTrack(tex, st.wholeMask) end
+            if st.sliceMask and st.sliceMask ~= st.mask then DetachMaskTrack(tex, st.sliceMask) end
         end
+        st.masked = setmetatable({}, { __mode = "k" })
         st.radius = 0
         st.maskActualR = nil
+        st.maskShapeKey = nil
         st.maskInset = nil
+        st.maskReqR = nil
+        st.maskSizePending = nil
         return nil
     end
-    if not st.mask then
-        st.mask = host:CreateMaskTexture()
-        st.mask:SetAllPoints(host)
-    end
-    if st.radius ~= r or not st.maskActualR then
+    if st.radius ~= r or not st.mask or not st.maskShapeKey then
         st.radius = r
-        if st.borderFrame and st.borderFrame:IsShown() and st.borderReqRadius and st.borderReqRadius > 0 then
+        if st.borderFrame and st.borderFrame:IsShown() and st.borderReqRadius and st.borderReqRadius > 0 and HasEUIRounded() then
             FitPixelRoundedBorder(host, st)
-        else
+        end
+        if not st.mask or not st.maskShapeKey then
             ReseatHostBodyMask(host, st, r, 0)
         end
     end
     return st.mask
 end
 
-function ST.MaskTexture(host, tex, radius)
+function ST.MaskTexture(host, tex, radius, opts)
     if not (host and tex and tex.AddMaskTexture) then return end
+    local isIcon = (opts and opts.isIcon == true) or isIconTex[tex] == true
+    local keepIfLoaded = (opts and opts.keepIfLoaded == true) or keepLoadedTex[tex] == true
+    if opts and opts.isIcon ~= nil then isIconTex[tex] = opts.isIcon == true or nil end
+    if opts and opts.keepIfLoaded ~= nil then keepLoadedTex[tex] = opts.keepIfLoaded == true or nil end
     local mask = ST.EnsureRoundedMask(host, radius)
     local st = roundState[host]
     if not (mask and st) then return end
     maskedTexHost[tex] = host
-    if not hookedMaskedTex[tex] and tex.SetTexture and not (tex.IsForbidden and tex:IsForbidden()) then
-        hookedMaskedTex[tex] = true
-        _G.hooksecurefunc(tex, "SetTexture", function(self)
-            local h = maskedTexHost[self]
-            local curSt = h and roundState[h]
-            if curSt and curSt.mask and curSt.masked[self] then
-                AttachMaskSafely(self, curSt.mask)
-            end
-        end)
-    end
+    EnsureTexHooks(tex)
+    local pend = pendingMasks[tex]
     if not st.masked[tex] then
         st.masked[tex] = true
-        AttachMaskSafely(tex, mask)
-    elseif pendingMasks[tex] then
-        AttachMaskSafely(tex, mask)
+        AttachMaskSafely(tex, mask, host, false, isIcon, keepIfLoaded)
+    elseif (pend and pend.mask ~= mask) or stalledMasks[tex] or (not pend and attachedMask[tex] ~= mask) then
+        AttachMaskSafely(tex, mask, host, false, isIcon, keepIfLoaded)
     end
+end
+
+-- 专用于正方形/近正方形动态图标（动作条、冷却管理器、BUFF、Roll 条、拾取、装备一览、武器特效等）：
+-- 自动启用 64x64 整图圆角遮罩（无 9 宫格切片）+ 2 帧可见稳态保护。
+function ST.MaskIcon(host, tex, radius, opts)
+    if not (host and tex and tex.AddMaskTexture) then return end
+    if not (opts and opts.keepHostMode) then
+        ST.SetHostIconMode(host, true)
+    end
+    ST.MaskTexture(host, tex, radius, {
+        isIcon = true,
+        keepIfLoaded = opts and opts.keepIfLoaded == true or false,
+    })
+end
+
+-- 供自带独立 MaskTexture 的模块（Theme / TooltipStyle / WeaponProcs / CoreHUD / XPBar）复用同一套安全等待与唤醒机制
+function ST.AttachCustomMask(host, tex, mask, opts)
+    if not (tex and mask and tex.AddMaskTexture) then return end
+    local isIcon = opts and opts.isIcon == true or false
+    local keepIfLoaded = opts and opts.keepIfLoaded == true or false
+    local fromSwap = opts and opts.fromSwap == true or false
+    local prev = customMaskSpec[tex]
+    if prev and prev.mask and prev.mask ~= mask then
+        DetachMaskTrack(tex, prev.mask)
+    end
+    customMaskSpec[tex] = {
+        host = host,
+        mask = mask,
+        isIcon = isIcon,
+        keepIfLoaded = keepIfLoaded,
+    }
+    if host then
+        EnsureHostShowHook(host)
+        local set = hostCustomTex[host]
+        if not set then
+            set = setmetatable({}, { __mode = "k" })
+            hostCustomTex[host] = set
+        end
+        set[tex] = true
+    end
+    EnsureTexHooks(tex)
+    local pend = pendingMasks[tex]
+    if fromSwap or (pend and pend.mask ~= mask) or stalledMasks[tex] or (not pend and attachedMask[tex] ~= mask) then
+        AttachMaskSafely(tex, mask, host, fromSwap, isIcon, keepIfLoaded)
+    end
+end
+
+function ST.DetachCustomMask(tex, mask)
+    if not tex then return end
+    local spec = customMaskSpec[tex]
+    local m = mask or (spec and spec.mask)
+    if spec then
+        if spec.host and hostCustomTex[spec.host] then
+            hostCustomTex[spec.host][tex] = nil
+        end
+        customMaskSpec[tex] = nil
+    end
+    pendingMasks[tex] = nil
+    stalledMasks[tex] = nil
+    if m then DetachMaskTrack(tex, m) end
+end
+
+-- 全局 C 函数（如 SetPortraitTexture）改图不会走 tex:SetTexture 钩子，调用此接口显式通知重新走安全稳态流程
+function ST.NotifyTextureChanged(tex)
+    if not tex then return end
+    OnMaskedTexChanged(tex)
 end
 
 function ST.ClearRoundedMask(host)
     local st = host and roundState[host]
     if not st then return end
-    if st.mask then
-        for tex in pairs(st.masked) do
-            pendingMasks[tex] = nil
-            maskedTexHost[tex] = nil
-            if tex and tex.RemoveMaskTexture then pcall(tex.RemoveMaskTexture, tex, st.mask) end
-        end
-        st.masked = setmetatable({}, { __mode = "k" })
+    for tex in pairs(st.masked) do
+        pendingMasks[tex] = nil
+        stalledMasks[tex] = nil
+        maskedTexHost[tex] = nil
+        isIconTex[tex] = nil
+        keepLoadedTex[tex] = nil
+        if st.mask then DetachMaskTrack(tex, st.mask) end
+        if st.wholeMask and st.wholeMask ~= st.mask then DetachMaskTrack(tex, st.wholeMask) end
+        if st.sliceMask and st.sliceMask ~= st.mask then DetachMaskTrack(tex, st.sliceMask) end
     end
-    if st.borderFrame then st.borderFrame:Hide() end
+    st.masked = setmetatable({}, { __mode = "k" })
+    if st.borderFrame then
+        ST.CancelBorderHole(st.borderFrame)
+        st.borderFrame:Hide()
+    end
+    if st.roundedSwipeCDs then
+        for cd in pairs(st.roundedSwipeCDs) do
+            ST.ClearRoundedCooldownSwipe(cd)
+        end
+        st.roundedSwipeCDs = nil
+    end
+    st.roundedSwipeRadius = nil
     activePixelBorders[host] = nil
     st.radius = 0
     st.borderReqRadius = 0
     st.maskActualR = nil
+    st.maskShapeKey = nil
     st.maskInset = nil
+    st.maskReqR = nil
+    st.maskSizePending = nil
 end
+
+-- 导出给其它直接管遮罩的模块复用（如 TooltipStyle）
+ST.TextureLoadState = TextureLoadState
 
 -- 为任意框体建立 1:1 物理像素锐利圆角 1px 同心描边（不修改宿主边框或 NineSlice）
 function ST.ApplyRoundedBorder(host, radius, r, g, b, a, levelOffset)
@@ -658,11 +1340,15 @@ function ST.ApplyRoundedBorder(host, radius, r, g, b, a, levelOffset)
         st = { masked = setmetatable({}, { __mode = "k" }) }
         roundState[host] = st
     end
+    EnsureHostShowHook(host)
     if rad <= 0 then
         st.borderReqRadius = 0
         activePixelBorders[host] = nil
-        if st.borderFrame then st.borderFrame:Hide() end
-        if st.mask and st.radius and st.radius > 0 then
+        if st.borderFrame then
+            ST.CancelBorderHole(st.borderFrame)
+            st.borderFrame:Hide()
+        end
+        if st.radius and st.radius > 0 then
             ReseatHostBodyMask(host, st, st.radius, 0)
         end
         return nil

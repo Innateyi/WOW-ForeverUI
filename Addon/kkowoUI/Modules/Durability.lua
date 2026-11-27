@@ -810,7 +810,7 @@ local function RenderUnifiedPanel(stats, refText)
     local rad = ST and ST.GetCornerRadius(8) or 8
 
     local chromeSig = string_format("%.2f:%d:%d:%d:%.2f:%.2f:%.2f:%s",
-        bgAlpha, showBg and 1 or 0, db.showTopLine ~= false and 1 or 0, rad, ar, ag, ab, fontSig)
+        bgAlpha, showBg and 1 or 0, db.showTopLine == true and 1 or 0, rad, ar, ag, ab, fontSig)
     local chromeDirty = (card._chromeSig ~= chromeSig)
     if chromeDirty then
         card._chromeSig = chromeSig
@@ -828,7 +828,7 @@ local function RenderUnifiedPanel(stats, refText)
                 ST.MaskTexture(card, card._glassSheen, rad)
                 ST.ApplyRoundedBorder(card, rad, 0.20, 0.24, 0.32, math_max(0.42, bgAlpha * 1.15), 5)
             end
-            if db.showTopLine ~= false then
+            if db.showTopLine == true then
                 card._topLine:SetColorTexture(ar, ag, ab, 0.72)
                 card._topLine:Show()
             else

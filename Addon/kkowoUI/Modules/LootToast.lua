@@ -195,8 +195,9 @@ local function AcquireToast()
     icon:SetAllPoints(iconWrap)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     if ST then
-        ST.MaskTexture(iconWrap, icon, 4)
+        ST.SetHostIconMode(iconWrap, true)
         ST.ApplyRoundedBorder(iconWrap, 4, 0.08, 0.10, 0.14, 0.85, 3)
+        ST.MaskIcon(iconWrap, icon, 4)
     end
     t._iconWrap = iconWrap
     t._icon = icon
@@ -657,7 +658,7 @@ end
 function mod:OnThemeChanged()
     local function restyle(list)
         for _, t in ipairs(list) do
-            F.Theme.StylePanel(t, 0.88, 0.78)
+            F.Theme.StylePanel(t, 0.80, 0.72)
             F.Theme.ApplyFont(t._name, 11, "")
             F.Theme.ApplyFont(t._right, 11, "")
         end

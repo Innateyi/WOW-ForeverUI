@@ -309,10 +309,15 @@ local function RefreshOverlayChrome()
     overlay._iconBox:SetShown(showIcon)
     if showIcon then
         overlay._iconBox:SetSize(h + 2, h + 2)
-        ST.ClearRoundedMask(overlay._iconBox)
         if rad > 0 then
-            ST.MaskTexture(overlay._iconBox, overlay._iconTex, math_min(rad, 5))
-            ST.ApplyRoundedBorder(overlay._iconBox, math_min(rad, 5), 0.02, 0.02, 0.03, 0.96, 4)
+            local iRad = math_min(rad, 5)
+            ST.SetHostIconMode(overlay._iconBox, true)
+            ST.ApplyRoundedBorder(overlay._iconBox, iRad, 0.02, 0.02, 0.03, 0.96, 4)
+            ST.MaskIcon(overlay._iconBox, overlay._iconTex, iRad, { keepIfLoaded = true })
+            overlay._lastIconRad = iRad
+        elseif overlay._lastIconRad and overlay._lastIconRad > 0 then
+            ST.ClearRoundedMask(overlay._iconBox)
+            overlay._lastIconRad = 0
         end
     end
 
@@ -320,7 +325,6 @@ local function RefreshOverlayChrome()
     overlay._barHost:SetPoint("TOPLEFT", overlay, "TOPLEFT", showIcon and (iconW + 2) or 0, 0)
     overlay._barHost:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", 0, 0)
 
-    ST.ClearRoundedMask(overlay._barHost)
     if rad > 0 then
         ST.MaskTexture(overlay._barHost, overlay._bg, rad)
         local fillTex = overlay._bar:GetStatusBarTexture()
@@ -330,6 +334,10 @@ local function RefreshOverlayChrome()
             ST.MaskTexture(overlay._barHost, overlay._spark._spark, rad)
         end
         ST.ApplyRoundedBorder(overlay._barHost, rad, 0.02, 0.02, 0.03, 0.96, 6)
+        overlay._lastBarRad = rad
+    elseif overlay._lastBarRad and overlay._lastBarRad > 0 then
+        ST.ClearRoundedMask(overlay._barHost)
+        overlay._lastBarRad = 0
     end
 
     overlay._nameFS:ClearAllPoints()
@@ -384,6 +392,13 @@ local function BuildCastbarOverlay()
     sb:SetMinMaxValues(0, 1)
     sb:SetValue(0)
     sb:EnableMouse(false)
+    if sb.SetSnapToPixelGrid then pcall(sb.SetSnapToPixelGrid, sb, false) end
+    if sb.SetTexelSnappingBias then pcall(sb.SetTexelSnappingBias, sb, 0) end
+    local sbFill = sb:GetStatusBarTexture()
+    if sbFill then
+        if sbFill.SetSnapToPixelGrid then pcall(sbFill.SetSnapToPixelGrid, sbFill, false) end
+        if sbFill.SetTexelSnappingBias then pcall(sbFill.SetTexelSnappingBias, sbFill, 0) end
+    end
     f._bar = sb
 
     -- 延迟安全区（圆角裁切在条尾）
@@ -585,10 +600,13 @@ local function SpawnGhostFeedback(kind)
     ghostFrame:ClearAllPoints()
     ghostFrame:SetSize(w, h)
     ghostFrame:SetPoint("CENTER", bh, "CENTER", 0, 0)
-    ST.ClearRoundedMask(ghostFrame)
     if rad > 0 then
         ST.MaskTexture(ghostFrame, ghostFrame._fill, rad)
         ST.ApplyRoundedBorder(ghostFrame, rad, 0.02, 0.02, 0.03, 0.95, 4)
+        ghostFrame._lastRad = rad
+    elseif ghostFrame._lastRad and ghostFrame._lastRad > 0 then
+        ST.ClearRoundedMask(ghostFrame)
+        ghostFrame._lastRad = 0
     end
 
     M.StopFrameAnims(ghostFrame)
@@ -648,7 +666,8 @@ local function StartCast(isChannel)
     BuildCastbarOverlay()
     local fn = isChannel and _G.UnitChannelInfo or _G.UnitCastingInfo
     if not fn then return end
-    local name, _, tex, startMS, endMS, _, castID, notInt, spellID = fn("player")
+    local okC, name, _, tex, startMS, endMS, _, castID, notInt, spellID = pcall(fn, "player")
+    if not okC then return end
     if not isChannel then
         -- UnitCastingInfo 返回值: name, text, texture, startTimeMS, endTimeMS, isTradeSkill, castID, notInterruptible, spellId
     else

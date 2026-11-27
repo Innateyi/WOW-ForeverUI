@@ -69,6 +69,13 @@ local function MakeThinBar(parent, w, h)
     sb:SetStatusBarTexture(ST.TEX.FLAT)
     sb:SetMinMaxValues(0, 1)
     sb:SetValue(0)
+    if sb.SetSnapToPixelGrid then pcall(sb.SetSnapToPixelGrid, sb, false) end
+    if sb.SetTexelSnappingBias then pcall(sb.SetTexelSnappingBias, sb, 0) end
+    local sbFill = sb:GetStatusBarTexture()
+    if sbFill then
+        if sbFill.SetSnapToPixelGrid then pcall(sbFill.SetSnapToPixelGrid, sbFill, false) end
+        if sbFill.SetTexelSnappingBias then pcall(sbFill.SetTexelSnappingBias, sbFill, 0) end
+    end
     f._bar = sb
 
     local aim = sb:CreateTexture(nil, "ARTWORK", nil, 2)

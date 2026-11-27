@@ -46,6 +46,13 @@ local flashOverlays = setmetatable({}, { __mode = "k" })
 local hookedCDs = setmetatable({}, { __mode = "k" })
 local cdLastDur = setmetatable({}, { __mode = "k" })
 local hiddenEUIBorders = setmetatable({}, { __mode = "k" })
+local cdmWraps = setmetatable({}, { __mode = "k" })
+local cdmHiddenBorderTarget = setmetatable({}, { __mode = "k" })
+local cdmBorderTargetToBtn = setmetatable({}, { __mode = "kv" })
+local tbbHiddenBorderTarget = setmetatable({}, { __mode = "k" })
+local tbbBorderTargetToWrap = setmetatable({}, { __mode = "kv" })
+local hookedApplyBorderStyle = false
+local hookedIconMask = setmetatable({}, { __mode = "k" })
 local lastPressFX = setmetatable({}, { __mode = "k" })
 local tbbBars = {}
 local tbbSeen = setmetatable({}, { __mode = "k" })
@@ -56,12 +63,13 @@ local lootFeedIconWraps = setmetatable({}, { __mode = "k" })
 local hookedUseAction = false
 local hookedEAB = false
 local hookedCDM = false
+local hookedTBB = false
 local slotToBtn = {}
 local trackedCDs = {}
 
 local EAB_BAR_NAMES = {
     "EABBar_MainBar", "EABBar_Bar1", "EABBar_Bar2", "EABBar_Bar3", "EABBar_Bar4",
-    "EABBar_Bar5", "EABBar_Bar6", "EABBar_Bar7", "EABBar_Bar8",
+    "EABBar_Bar5", "EABBar_Bar6", "EABBar_Bar7", "EABBar_Bar8", "EABBar_Bar9", "EABBar_Bar10",
     "EABBar_StanceBar", "EABBar_PetBar",
 }
 
@@ -103,17 +111,29 @@ local function HideEUIBorder(frame)
     if not IsSafe(frame) then return end
     local EUI = _G.EllesmereUI
     local PP = EUI and EUI.PP
-    if PP and PP.HideBorder and not ppHiddenBorders[frame] then
-        if pcall(PP.HideBorder, frame) then ppHiddenBorders[frame] = true end
+    if PP and PP.HideBorder then
+        if not ppHiddenBorders[frame] then
+            local b = PP.GetBorders and PP.GetBorders(frame) or nil
+            local wasShown = true
+            if b and b.IsShown then
+                local okS, s = pcall(b.IsShown, b)
+                wasShown = not okS or s == true
+            end
+            if wasShown then ppHiddenBorders[frame] = true end
+        end
+        pcall(PP.HideBorder, frame)
     end
     local bd = EUI and EUI._bdBorderData and EUI._bdBorderData[frame]
-    if bd and bd.Hide and not bdHiddenBorders[frame] then
-        local wasShown = true
-        if bd.IsShown then
-            local okS, s = pcall(bd.IsShown, bd)
-            wasShown = not okS or s == true
+    if bd and bd.Hide then
+        if not bdHiddenBorders[frame] then
+            local wasShown = true
+            if bd.IsShown then
+                local okS, s = pcall(bd.IsShown, bd)
+                wasShown = not okS or s == true
+            end
+            if wasShown then bdHiddenBorders[frame] = true end
         end
-        if wasShown and pcall(bd.Hide, bd) then bdHiddenBorders[frame] = true end
+        pcall(bd.Hide, bd)
     end
 end
 
@@ -137,16 +157,134 @@ local function GetEABNS()
     return EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIActionBars or nil
 end
 
+local function GetCDMNS()
+    local EUI = _G.EllesmereUI
+    return EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUICooldownManager or nil
+end
+
+local function GetCDMFrameContext(btn)
+    local cdmNS = GetCDMNS()
+    if not cdmNS then return nil, nil, nil, nil end
+    local hi = cdmNS._hookInternals
+    local fd = hi and hi.hookFrameData and hi.hookFrameData[btn] or nil
+    local fc = cdmNS._ecmeFC and cdmNS._ecmeFC[btn] or nil
+    local barKey = fc and fc.barKey or nil
+    local barData = barKey and cdmNS.barDataByKey and cdmNS.barDataByKey[barKey] or nil
+    return cdmNS, fd, fc, barData
+end
+
+local function IsTextureObj(obj)
+    return obj ~= nil and obj.GetObjectType ~= nil and obj:GetObjectType() == "Texture"
+end
+
 local function FindButtonIcon(btn)
-    if btn.icon and btn.icon.GetObjectType and btn.icon:GetObjectType() == "Texture" then
-        return btn.icon
-    end
-    if btn.Icon and btn.Icon.GetObjectType and btn.Icon:GetObjectType() == "Texture" then
-        return btn.Icon
+    if not btn then return nil end
+    if IsTextureObj(btn._tex) then return btn._tex end
+    if IsTextureObj(btn.icon) then return btn.icon end
+    if IsTextureObj(btn.Icon) then return btn.Icon end
+    -- EUI CDM 兼容：部分暴雪查看器按钮的 .Icon 是容器框体，真正的贴图在 .Icon.Icon
+    if btn.Icon and type(btn.Icon) == "table" and IsTextureObj(btn.Icon.Icon) then
+        return btn.Icon.Icon
     end
     local nm = btn.GetName and F.PlainString(btn:GetName(), nil)
-    if nm and _G[nm .. "Icon"] then return _G[nm .. "Icon"] end
+    if nm and IsTextureObj(_G[nm .. "Icon"]) then return _G[nm .. "Icon"] end
     return nil
+end
+
+local function IsCDMBuffIcon(btn, fd, barData)
+    if not btn then return false end
+    local vf = btn.viewerFrame
+    if vf and (vf == _G.BuffIconCooldownViewer or vf == _G.BuffBarCooldownViewer) then
+        return true
+    end
+    if fd and fd._isBuffViewerFrame then return true end
+    if barData and (barData.barType == "buffs" or barData.barType == "custom_buff" or barData.key == "buffs") then
+        return true
+    end
+    return false
+end
+
+local function ShouldYieldCDMButton(cdmNS, btn, fd, fc, barData)
+    if btn._isEmptySlotFrame then return true end
+    if fd and (fd._blizzArt or fd._osnOn) then return true end
+    if cdmNS and type(cdmNS.CdmBlizzIcons) == "function" then
+        local okB, isBlizz = pcall(cdmNS.CdmBlizzIcons)
+        if okB and isBlizz then return true end
+    end
+    if fc and (fc.shapeApplied or (fc.auraRound and fc.auraRound.on)) then return true end
+    if barData then
+        if barData.onlyShowNumbers or barData.chargesOnly then return true end
+        local shape = barData.iconShape
+        if shape and shape ~= "none" and shape ~= "cropped" then return true end
+        local texKey = barData.borderTexture
+        if texKey and texKey ~= "solid" and texKey ~= "" then return true end
+    end
+    return false
+end
+
+local function ResolveCDMButtonBorder(cdmNS, btn, fd, barData)
+    if type(barData) ~= "table" then
+        return true, 0.06, 0.07, 0.09, 0.78, 13
+    end
+    local borderSz = F.PlainNumber(barData.borderSize, 1) or 1
+    local r = F.PlainNumber(barData.borderR, 0) or 0
+    local g = F.PlainNumber(barData.borderG, 0) or 0
+    local b = F.PlainNumber(barData.borderB, 0) or 0
+    local a = F.PlainNumber(barData.borderA, 1) or 1
+    if barData.borderClassColor then
+        r, g, b = F.Theme.GetClassColor()
+    end
+    local ss = nil
+    if cdmNS and type(cdmNS._ResolveCdmSS) == "function" then
+        local okS, res = pcall(cdmNS._ResolveCdmSS, btn)
+        if okS and type(res) == "table" then ss = res end
+    end
+    if ss then
+        if ss.borderSize ~= nil then borderSz = F.PlainNumber(ss.borderSize, borderSz) or borderSz end
+        if ss.borderR ~= nil then r = F.PlainNumber(ss.borderR, r) or r end
+        if ss.borderG ~= nil then g = F.PlainNumber(ss.borderG, g) or g end
+        if ss.borderB ~= nil then b = F.PlainNumber(ss.borderB, b) or b end
+    end
+    if fd and fd._activeBorderOn then
+        r = (ss and F.PlainNumber(ss.activeBorderR, nil)) or 1
+        g = (ss and F.PlainNumber(ss.activeBorderG, nil)) or 0.776
+        b = (ss and F.PlainNumber(ss.activeBorderB, nil)) or 0.376
+        a = (ss and F.PlainNumber(ss.activeBorderA, nil)) or 1
+    end
+    local levelOff = barData.borderBehind and -1 or 13
+    return (borderSz > 0 and a > 0.02), r, g, b, a, levelOff
+end
+
+local function GetCDMSwipeFallback(cdmNS)
+    if cdmNS and type(cdmNS.CdmSwipeFile) == "function" then
+        local ok, path = pcall(cdmNS.CdmSwipeFile)
+        if ok and type(path) == "string" then return path end
+    end
+    return ""
+end
+
+local function CleanupCDMButton(cdmNS, btn, cdMain)
+    ST.ClearRoundedMask(btn)
+    local wrap = cdmWraps[btn]
+    if wrap then
+        ST.ClearRoundedMask(wrap)
+        wrap:Hide()
+    end
+    if IsSafe(cdMain) then
+        ST.ClearRoundedCooldownSwipe(cdMain, GetCDMSwipeFallback(cdmNS))
+    end
+    local oldTarget = cdmHiddenBorderTarget[btn]
+    if oldTarget then
+        cdmHiddenBorderTarget[btn] = nil
+        if cdmBorderTargetToBtn[oldTarget] == btn then
+            cdmBorderTargetToBtn[oldTarget] = nil
+        end
+        RestoreEUIBorder(oldTarget)
+    end
+    if hiddenEUIBorders[btn] then
+        hiddenEUIBorders[btn] = nil
+    end
+    RestoreEUIBorder(btn)
 end
 
 local function GetButtonActionSlot(btn)
@@ -286,14 +424,93 @@ local function ResolveEABButtonBorder(eabNS, eabFD)
     return show, r, g, b, a
 end
 
+-- 暴雪原生 ActionBarButtonTemplate 自带 IconMask，被 EUI 置空/缩至 0.001x0.001 后一旦被 UpdateButtonArt 重新挂回就会把图标裁成纯空白。
+-- 每次圆角化时确保将其与 icon 分离，并对未置空的 UpdateButtonArt 挂延迟清理钩子。
+local function NeutralizeBlizzIconMask(btn, icon)
+    if not (btn and icon) then return end
+    local im = btn.IconMask
+    if im and icon.RemoveMaskTexture then
+        pcall(icon.RemoveMaskTexture, icon, im)
+    end
+    if im and not hookedIconMask[btn] and type(btn.UpdateButtonArt) == "function" then
+        hookedIconMask[btn] = true
+        _G.hooksecurefunc(btn, "UpdateButtonArt", function(self)
+            if not mod._active then return end
+            C_Timer.After(0, function()
+                if not (mod._active and IsSafe(self)) then return end
+                local ic = FindButtonIcon(self)
+                if ic and self.IconMask and ic.RemoveMaskTexture then
+                    pcall(ic.RemoveMaskTexture, ic, self.IconMask)
+                end
+            end)
+        end)
+    end
+end
+
 local function ApplyButtonRound(btn, enable)
     if not IsSafe(btn) then return end
-    local icon = FindButtonIcon(btn)
-    if not icon then return end
     local db = mod:GetDB()
     local rad = math_max(0, math_min(10, F.PlainNumber(db.iconRadius, ST.GetCornerRadius(6)) or 6))
-    local EUI = _G.EllesmereUI
-    local PP = EUI and EUI.PP
+
+    -- 冷却管理器（CDM）图标走独立子框体包装：
+    -- 1) 遮罩建在子框体 cdmWrap 上，不污染暴雪查看器 btn:GetRegions()，避免被 EUI HideBlizzardDecorations 刷回 WHITE8X8；
+    -- 2) 正确隐藏 EUI 的 fd.borderFrame 方形框，并沿用 EUI CDM 自身的边框颜色/职业色/层级（+13，位于文字与冷却下层）；
+    -- 3) 同步裁切 fd.bg 与 OutOfRange，并用 aura-swipe.tga 替代直接 AddMaskTexture 挂到 Cooldown，避免裁剪畸变与显示不完整；
+    -- 4) 自动跟随 LayoutCDMBar 的动态缩放、尺寸变化（含 cropped 40x32 矩形增益图标）与特殊形状让位。
+    if skinnedBtns[btn] == "cdm" then
+        local cdmNS, fd, fc, barData = GetCDMFrameContext(btn)
+        local icon = (fd and IsTextureObj(fd.tex) and fd.tex) or FindButtonIcon(btn)
+        local cdMain = (fd and fd.cooldown) or btn._cooldown or btn.Cooldown or btn.cooldown
+        if not (enable and rad > 0 and icon) or ShouldYieldCDMButton(cdmNS, btn, fd, fc, barData) then
+            CleanupCDMButton(cdmNS, btn, cdMain)
+            return
+        end
+
+        ST.ClearRoundedMask(btn)
+        local wrap = cdmWraps[btn]
+        if not wrap then
+            wrap = CreateFrame("Frame", nil, btn)
+            wrap:SetAllPoints(btn)
+            wrap:EnableMouse(false)
+            cdmWraps[btn] = wrap
+        end
+        local baseLvl = F.PlainNumber(btn.GetFrameLevel and btn:GetFrameLevel(), 5) or 5
+        wrap:SetFrameLevel(baseLvl)
+        wrap:Show()
+
+        local bdrTarget = (fd and fd.borderFrame) or btn
+        local prevTarget = cdmHiddenBorderTarget[btn]
+        if prevTarget and prevTarget ~= bdrTarget then
+            if cdmBorderTargetToBtn[prevTarget] == btn then
+                cdmBorderTargetToBtn[prevTarget] = nil
+            end
+            RestoreEUIBorder(prevTarget)
+        end
+        cdmHiddenBorderTarget[btn] = bdrTarget
+        cdmBorderTargetToBtn[bdrTarget] = btn
+        HideEUIBorder(bdrTarget)
+        hiddenEUIBorders[btn] = true
+
+        ST.SetHostIconMode(wrap, true)
+        local showBrd, br, bg, bb, ba, levelOff = ResolveCDMButtonBorder(cdmNS, btn, fd, barData)
+        if showBrd then
+            ST.ApplyRoundedBorder(wrap, rad, br, bg, bb, ba, levelOff)
+        else
+            ST.ApplyRoundedBorder(wrap, 0)
+        end
+
+        NeutralizeBlizzIconMask(btn, icon)
+        ST.MaskIcon(wrap, icon, rad, { keepIfLoaded = true })
+
+        local bgTex = (fd and fd.bg) or btn._bg
+        if bgTex then ST.MaskTexture(wrap, bgTex, rad) end
+        if btn.OutOfRange then ST.MaskTexture(wrap, btn.OutOfRange, rad) end
+        if IsSafe(cdMain) then ST.ApplyRoundedCooldownSwipe(wrap, cdMain, rad) end
+        return
+    end
+
+    local icon = FindButtonIcon(btn)
+    if not icon then return end
     local eabNS = GetEABNS()
     local eabFD = eabNS and eabNS._eabFD and eabNS._eabFD[btn] or nil
 
@@ -306,7 +523,20 @@ local function ApplyButtonRound(btn, enable)
             return
         end
 
-        ST.MaskTexture(btn, icon, rad)
+        -- 图标按钮宿主使用 64x64 整图圆角遮罩（aura-masks/round-N.tga，无 9 宫格切片），
+        -- 且先建立圆角描边再挂遮罩，避免先 0 缩进建遮罩、紧接着被描边重塑内缩导致二次卸挂。
+        ST.SetHostIconMode(btn, true)
+        HideEUIBorder(btn)
+        hiddenEUIBorders[btn] = true
+        local showBrd, br, bg, bb, ba = ResolveEABButtonBorder(eabNS, eabFD)
+        if showBrd and ba > 0.02 then
+            ST.ApplyRoundedBorder(btn, rad, br, bg, bb, ba, 6)
+        else
+            ST.ApplyRoundedBorder(btn, 0)
+        end
+
+        NeutralizeBlizzIconMask(btn, icon)
+        ST.MaskIcon(btn, icon, rad, { keepIfLoaded = true })
 
         -- 严格保留用户在 EUI 动作条里设置的空技能格底色与半透明度（绝不覆写颜色，仅做圆角裁切）
         if eabFD then
@@ -321,24 +551,10 @@ local function ApplyButtonRound(btn, enable)
         if btn.Flash then ST.MaskTexture(btn, btn.Flash, rad) end
         if btn.Border then ST.MaskTexture(btn, btn.Border, rad) end
 
-        -- 冷却扇形同样交由 StyleTokens 统一管理遮罩，半径变化或关闭时可随宿主同步重绑/卸载
+        -- 冷却扇形交由 StyleTokens 统一管理圆角扇形贴图（Cooldown 框体无 AddMaskTexture，须用 SetSwipeTexture + UV）
         local cdMain = btn.cooldown or btn.Cooldown
-        if IsSafe(cdMain) then ST.MaskTexture(btn, cdMain, rad) end
-        if IsSafe(btn.chargeCooldown) then ST.MaskTexture(btn, btn.chargeCooldown, rad) end
-
-        -- 隐藏 EUI 原生直角框，沿用用户自己在 EUI 里设置的边框颜色与透明度重绘圆角细框
-        if skinnedBtns[btn] == "ab" then
-            HideEUIBorder(btn)
-            hiddenEUIBorders[btn] = true
-            local showBrd, br, bg, bb, ba = ResolveEABButtonBorder(eabNS, eabFD)
-            if showBrd and ba > 0.02 then
-                ST.ApplyRoundedBorder(btn, rad, br, bg, bb, ba, 6)
-            else
-                ST.ApplyRoundedBorder(btn, 0)
-            end
-        else
-            ST.ApplyRoundedBorder(btn, rad, 0.06, 0.07, 0.09, 0.78, 6)
-        end
+        if IsSafe(cdMain) then ST.ApplyRoundedCooldownSwipe(btn, cdMain, rad) end
+        if IsSafe(btn.chargeCooldown) then ST.ApplyRoundedCooldownSwipe(btn, btn.chargeCooldown, rad) end
     else
         ST.ClearRoundedMask(btn)
         if hiddenEUIBorders[btn] then
@@ -374,6 +590,9 @@ local function RegisterActionBtn(btn, isActionSlot)
             if cd.HookScript and cd.HasScript and cd:HasScript("OnCooldownDone") then
                 cd:HookScript("OnCooldownDone", function(self)
                     if not (mod._active and mod:GetDB().cdFinishPulse ~= false) then return end
+                    -- 增益图标倒计时结束是 BUFF 消失，不是技能冷却就绪，绝不能对其做缩放回弹
+                    local _, fd, _, barData = GetCDMFrameContext(ownerBtn)
+                    if IsCDMBuffIcon(ownerBtn, fd, barData) then return end
                     local d = cdLastDur[self]
                     if d == nil or d > 2.0 then
                         cdLastDur[self] = nil
@@ -429,9 +648,10 @@ local function RoundLootFeedRow(r)
             iw:SetPoint("TOPLEFT", r.icon, "TOPLEFT", 0, 0)
             iw:SetPoint("BOTTOMRIGHT", r.icon, "BOTTOMRIGHT", 0, 0)
             iw:Show()
-            ST.MaskTexture(iw, r.icon, 4)
-            if r.iconBg then ST.MaskTexture(iw, r.iconBg, 4) end
+            ST.SetHostIconMode(iw, true)
             ST.ApplyRoundedBorder(iw, 4, 0.12, 0.14, 0.18, 0.80, 3)
+            ST.MaskIcon(iw, r.icon, 4)
+            if r.iconBg then ST.MaskTexture(iw, r.iconBg, 4) end
         end
     else
         ST.ClearRoundedMask(r)
@@ -460,22 +680,81 @@ local function ScanLootFeed()
     end
 end
 
--- 冷却管理器（CDM）图标：独立扫描，供 CDM 重排钩子单独调用（增益图标查看器在战斗中会频繁重排）
+-- 冷却管理器（CDM）图标：同时扫描暴雪查看器子框体与 EUI cdmBarIcons（含自定义/饰品/占位图标）
 local function ScanCDMIcons(onlyNew)
+    local seen = {}
+    local function VisitCDM(ch)
+        if not IsSafe(ch) or seen[ch] then return end
+        seen[ch] = true
+        if onlyNew and skinnedBtns[ch] then return end
+        if ch._isEmptySlotFrame then
+            if skinnedBtns[ch] == "cdm" then ApplyButtonRound(ch, false) end
+            return
+        end
+        local _, fd = GetCDMFrameContext(ch)
+        if (fd and IsTextureObj(fd.tex)) or FindButtonIcon(ch) then
+            RegisterActionBtn(ch, false)
+        end
+    end
+
     for _, cdmName in ipairs(CDM_ROOT_NAMES) do
         local root = _G[cdmName]
         if IsSafe(root) and root.GetChildren then
             for _, ch in ipairs({ root:GetChildren() }) do
-                if IsSafe(ch) and FindButtonIcon(ch) and not (onlyNew and skinnedBtns[ch]) then
-                    RegisterActionBtn(ch, false)
+                VisitCDM(ch)
+            end
+        end
+    end
+
+    local cdmNS = GetCDMNS()
+    local barIcons = cdmNS and (cdmNS.cdmBarIcons or (cdmNS._internals and cdmNS._internals.cdmBarIcons))
+    if type(barIcons) == "table" then
+        for _, list in pairs(barIcons) do
+            if type(list) == "table" then
+                for _, ch in ipairs(list) do
+                    VisitCDM(ch)
                 end
             end
         end
     end
 end
 
+local function FindTBBConfig(cdmNS, wrap)
+    if not (cdmNS and wrap) then return nil end
+    local bi = cdmNS._buffBarInternals
+    local frames = bi and bi.tbbFrames
+    if type(frames) ~= "table" or type(cdmNS.GetTrackedBuffBars) ~= "function" then return nil end
+    local okT, tbb = pcall(cdmNS.GetTrackedBuffBars)
+    local bars = okT and type(tbb) == "table" and tbb.bars or nil
+    if type(bars) ~= "table" then return nil end
+    for idx, fr in ipairs(frames) do
+        if fr == wrap then return bars[idx] end
+    end
+    return nil
+end
+
+local function ShouldYieldTrackedBar(cdmNS, wrap, cfg)
+    if wrap._blizzIconOverlay or wrap._classicArt or wrap._roundRadius then return true end
+    if cdmNS and type(cdmNS.CdmBlizzBars) == "function" then
+        local okB, isBlizz = pcall(cdmNS.CdmBlizzBars)
+        if okB and isBlizz then return true end
+    end
+    if type(cfg) == "table" then
+        local bSz = F.PlainNumber(cfg.borderSize, 0) or 0
+        local texKey = cfg.borderTexture
+        if bSz > 0 and texKey and texKey ~= "solid" and texKey ~= "" then return true end
+    end
+    return false
+end
+
+local function DisablePixelSnap(obj)
+    if not obj then return end
+    if obj.SetSnapToPixelGrid then pcall(obj.SetSnapToPixelGrid, obj, false) end
+    if obj.SetTexelSnappingBias then pcall(obj.SetTexelSnappingBias, obj, 0) end
+end
+
 -- 追踪冷却条（ECME_TBBWrap*）模块级圆角化（实时读取当前半径与开关状态，避免闭包捕获过期设置）
-local function RoundTrackedBar(wrap)
+local function RoundTrackedBar(wrap, forceDisable)
     if not (IsSafe(wrap) and IsSafe(wrap._bar)) then return end
     if not tbbSeen[wrap] then
         tbbSeen[wrap] = true
@@ -484,15 +763,35 @@ local function RoundTrackedBar(wrap)
     if not tbbHooked[wrap] and wrap.HookScript then
         tbbHooked[wrap] = true
         wrap:HookScript("OnShow", function(self)
-            if mod._active and mod:GetDB().roundCooldownManager ~= false then
+            if mod._active then
                 RoundTrackedBar(self)
             end
         end)
     end
     local sb = wrap._bar
+    local cdmNS = GetCDMNS()
+    local cfg = FindTBBConfig(cdmNS, wrap)
     local h = F.PlainNumber(sb.GetHeight and sb:GetHeight(), 20) or 20
     local globalRad = ST.GetCornerRadius(6)
-    local wantCDM = mod._active and mod:GetDB().roundCooldownManager ~= false
+    local wantCDM = (not forceDisable) and mod._active and mod:GetDB().roundCooldownManager ~= false and not ShouldYieldTrackedBar(cdmNS, wrap, cfg)
+    -- 无论是否圆角，只要启用模块就关闭追踪条主填充/渐变/光刃的像素网格吸附，
+    -- 消除 15~30s 低速冷却条按整像素逐格跳动的顿挫感（EUI 仅关闭了 spark 而漏掉了 fillTex）
+    if (not forceDisable) and mod._active then
+        local ft0 = sb.GetStatusBarTexture and sb:GetStatusBarTexture() or nil
+        DisablePixelSnap(sb)
+        DisablePixelSnap(ft0)
+        DisablePixelSnap(wrap._gradClip)
+        DisablePixelSnap(wrap._gradTex)
+        DisablePixelSnap(wrap._spark)
+        if type(wrap._threshOverlays) == "table" then
+            for _, ov in ipairs(wrap._threshOverlays) do
+                if IsSafe(ov) then
+                    DisablePixelSnap(ov)
+                    if ov.GetStatusBarTexture then DisablePixelSnap(ov:GetStatusBarTexture()) end
+                end
+            end
+        end
+    end
     local rad = math_min(globalRad, math_max(3, math_floor(h * 0.44)))
     if wantCDM and rad > 0 then
         local ft = sb.GetStatusBarTexture and sb:GetStatusBarTexture() or nil
@@ -500,27 +799,82 @@ local function RoundTrackedBar(wrap)
         if wrap._bg then ST.MaskTexture(sb, wrap._bg, rad) end
         if wrap._gradTex then ST.MaskTexture(sb, wrap._gradTex, rad) end
         if wrap._spark then ST.MaskTexture(sb, wrap._spark, rad) end
-        HideEUIBorder(sb)
-        ST.ApplyRoundedBorder(sb, rad, 0.08, 0.10, 0.14, 0.72, 6)
-
-        local icFrame = wrap._icon or wrap.icon
-        if IsSafe(icFrame) and icFrame.GetRegions then
-            local iRad = math_min(rad, 5)
-            for _, reg in ipairs({ icFrame:GetRegions() }) do
-                if reg and reg.GetObjectType and reg:GetObjectType() == "Texture" then
-                    ST.MaskTexture(icFrame, reg, iRad)
+        if type(wrap._threshOverlays) == "table" then
+            for _, ov in ipairs(wrap._threshOverlays) do
+                if IsSafe(ov) and ov.GetStatusBarTexture then
+                    local ovTex = ov:GetStatusBarTexture()
+                    if ovTex then ST.MaskTexture(sb, ovTex, rad) end
                 end
             end
+        end
+        HideEUIBorder(sb)
+        if IsSafe(wrap._barBorder) then
+            tbbHiddenBorderTarget[wrap] = wrap._barBorder
+            tbbBorderTargetToWrap[wrap._barBorder] = wrap
+            HideEUIBorder(wrap._barBorder)
+        end
+        local br, bg, bb, ba = 0.08, 0.10, 0.14, 0.72
+        if type(cfg) == "table" and (F.PlainNumber(cfg.borderSize, 0) or 0) > 0 then
+            br = F.PlainNumber(cfg.borderR, 0) or 0
+            bg = F.PlainNumber(cfg.borderG, 0) or 0
+            bb = F.PlainNumber(cfg.borderB, 0) or 0
+            ba = 0.90
+        end
+        ST.ApplyRoundedBorder(sb, rad, br, bg, bb, ba, 6)
+
+        local icFrame = wrap._icon or wrap.icon
+        if IsSafe(icFrame) and not icFrame._endMask and not icFrame._roundSide then
+            local iRad = math_min(rad, 5)
+            ST.SetHostIconMode(icFrame, true)
             HideEUIBorder(icFrame)
-            ST.ApplyRoundedBorder(icFrame, iRad, 0.08, 0.10, 0.14, 0.78, 5)
+            ST.ApplyRoundedBorder(icFrame, iRad, br, bg, bb, math_max(ba, 0.78), 5)
+            if IsTextureObj(icFrame._tex) then
+                ST.MaskIcon(icFrame, icFrame._tex, iRad)
+            elseif icFrame.GetRegions then
+                for _, reg in ipairs({ icFrame:GetRegions() }) do
+                    if IsTextureObj(reg) and not (reg.IsObjectType and reg:IsObjectType("MaskTexture")) then
+                        local layer = reg.GetDrawLayer and reg:GetDrawLayer() or nil
+                        if layer == "ARTWORK" or layer == "BACKGROUND" then
+                            ST.MaskIcon(icFrame, reg, iRad)
+                        end
+                    end
+                end
+            end
         end
     else
         ST.ClearRoundedMask(sb)
         RestoreEUIBorder(sb)
+        local bdr = tbbHiddenBorderTarget[wrap] or wrap._barBorder
+        tbbHiddenBorderTarget[wrap] = nil
+        if bdr and tbbBorderTargetToWrap[bdr] == wrap then
+            tbbBorderTargetToWrap[bdr] = nil
+        end
+        if IsSafe(bdr) then RestoreEUIBorder(bdr) end
         local icFrame = wrap._icon or wrap.icon
         if IsSafe(icFrame) then
             ST.ClearRoundedMask(icFrame)
             RestoreEUIBorder(icFrame)
+        end
+    end
+end
+
+local function ScanTrackedBuffBars()
+    local cdmNS = GetCDMNS()
+    local tbbList = cdmNS and cdmNS._buffBarInternals and cdmNS._buffBarInternals.tbbFrames
+    local seen = {}
+    if type(tbbList) == "table" then
+        for _, wrap in ipairs(tbbList) do
+            if wrap and not seen[wrap] then
+                seen[wrap] = true
+                RoundTrackedBar(wrap)
+            end
+        end
+    end
+    for i = 1, 30 do
+        local w = _G["ECME_TBBWrap" .. i]
+        if w and not seen[w] then
+            seen[w] = true
+            RoundTrackedBar(w)
         end
     end
 end
@@ -571,19 +925,9 @@ local function ScanButtons()
     -- 4) 冷却管理器图标 + 追踪冷却条（ECME_TBBWrap*）统一圆角（解决图 5 冷却条为直角）
     local db = mod:GetDB()
     local globalRad = ST.GetCornerRadius(6)
-    local EUI = _G.EllesmereUI
 
     ScanCDMIcons(false)
-
-    local cdmNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUICooldownManager
-    local tbbList = cdmNS and cdmNS._buffBarInternals and cdmNS._buffBarInternals.tbbFrames
-    if type(tbbList) == "table" then
-        for _, wrap in ipairs(tbbList) do RoundTrackedBar(wrap) end
-    end
-    for i = 1, 30 do
-        local w = _G["ECME_TBBWrap" .. i]
-        if w then RoundTrackedBar(w) end
-    end
+    ScanTrackedBuffBars()
 
     -- 4b) EUI Forever Essentials 拾取播报行（EUI_LootFeed）统一圆角化（解决图 6 拾取信息直角）
     ScanLootFeed()
@@ -705,7 +1049,9 @@ end
 local QueueScan = F.Debounce(0.20, function() if mod._active then ScanButtons() end end)
 local QueueCDCheck = F.Debounce(0.18, RefreshCooldownWatches)
 local QueueLootScan = F.Debounce(0.15, function() if mod._active then ScanLootFeed() end end)
-local QueueCDMScan = F.Debounce(0.20, function() if mod._active then ScanCDMIcons(true) end end)
+local QueueCDMScan = F.Debounce(0.12, function() if mod._active then ScanCDMIcons(true) end end)
+local QueueCDMResync = F.Debounce(0.08, function() if mod._active then ScanCDMIcons(false) end end)
+local QueueTBBScan = F.Debounce(0.10, function() if mod._active then ScanTrackedBuffBars() end end)
 local cdmLayoutHooked = setmetatable({}, { __mode = "k" })
 
 local function InstallEABHooks()
@@ -734,29 +1080,73 @@ local function InstallEABHooks()
             end
         end
     end
-    if not hookedCDM then
-        local EUI = _G.EllesmereUI
-        local cdmNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUICooldownManager
-        if cdmNS then
-            hookedCDM = true
+    local EUI = _G.EllesmereUI
+    if EUI and not hookedApplyBorderStyle and type(EUI.ApplyBorderStyle) == "function" then
+        hookedApplyBorderStyle = true
+        -- 兜底捕获 EUI 通过文件内局部上值调用 DecorateFrame / ApplyShapeToCDMIcon / ApplyTrackedBuffBarSettings
+        -- 重新刷回方形边框的所有路径（零污染，O(1) 弱表查表，已接管目标即时隐藏避免 1 帧方框闪烁）
+        _G.hooksecurefunc(EUI, "ApplyBorderStyle", function(target, _, _, _, _, _, _, _, _, _, _, scope)
+            if not (mod._active and target) then return end
+            if cdmBorderTargetToBtn[target] then
+                HideEUIBorder(target)
+                QueueCDMResync()
+                return
+            end
+            if tbbBorderTargetToWrap[target] then
+                HideEUIBorder(target)
+                QueueTBBScan()
+                return
+            end
+            if scope == "cdm" then
+                QueueCDMResync()
+            end
+        end)
+        if type(EUI.SetBorderStyleColor) == "function" then
+            _G.hooksecurefunc(EUI, "SetBorderStyleColor", function(target)
+                if mod._active and target and cdmBorderTargetToBtn[target] then
+                    QueueCDMResync()
+                end
+            end)
+        end
+    end
+    local cdmNS = GetCDMNS()
+    if cdmNS then
+        if not hookedTBB then
+            hookedTBB = true
             if type(cdmNS.BuildTrackedBuffBars) == "function" then
                 _G.hooksecurefunc(cdmNS, "BuildTrackedBuffBars", function()
-                    if mod._active then QueueScan() end
+                    if mod._active then QueueTBBScan() end
                 end)
             end
             local bi = cdmNS._buffBarInternals
             if bi and type(bi.ApplyTrackedBuffBarSettings) == "function" then
                 _G.hooksecurefunc(bi, "ApplyTrackedBuffBarSettings", function()
-                    if mod._active then QueueScan() end
+                    if mod._active then QueueTBBScan() end
                 end)
             end
         end
+        if not hookedCDM and (type(cdmNS.LayoutCDMBar) == "function" or type(cdmNS.RefreshCDMIconAppearance) == "function") then
+            hookedCDM = true
+            for _, fnName in ipairs({
+                "RefreshCDMIconAppearance",
+                "LayoutCDMBar",
+                "BuildAllCDMBars",
+                "CollectAndReanchor",
+            }) do
+                if type(cdmNS[fnName]) == "function" then
+                    _G.hooksecurefunc(cdmNS, fnName, function()
+                        if mod._active then QueueCDMResync() end
+                    end)
+                end
+            end
+        end
     end
-    -- 冷却管理器图标在重排时才会新建：挂在重排上补圆角，代替以前每次冷却事件都全量重扫
+    -- 冷却管理器图标在重排时才会新建：只挂 RefreshLayout（绝不挂 BuffIconCooldownViewer.Layout，避免暴雪内部调用污染）
     for _, cdmName in ipairs(CDM_ROOT_NAMES) do
         local root = _G[cdmName]
         if IsSafe(root) and not cdmLayoutHooked[root] then
-            for _, fnName in ipairs({ "RefreshLayout", "Layout" }) do
+            local hooks = (cdmName == "BuffIconCooldownViewer") and { "RefreshLayout" } or { "RefreshLayout", "Layout" }
+            for _, fnName in ipairs(hooks) do
                 if type(root[fnName]) == "function" then
                     cdmLayoutHooked[root] = true
                     _G.hooksecurefunc(root, fnName, function()
@@ -826,10 +1216,8 @@ function mod:OnDisable()
         if IsSafe(sb) then ST.ClearRoundedMask(sb) end
     end
     for _, wrap in ipairs(tbbBars) do
-        if IsSafe(wrap) and IsSafe(wrap._bar) then
-            ST.ClearRoundedMask(wrap._bar)
-            local icFrame = wrap._icon or wrap.icon
-            if IsSafe(icFrame) then ST.ClearRoundedMask(icFrame) end
+        if IsSafe(wrap) then
+            RoundTrackedBar(wrap, true)
         end
     end
     for _, r in ipairs(lootFeedRows) do

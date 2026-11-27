@@ -226,7 +226,8 @@ function M.AttachHealthTrail(healthBar, opts)
             local unit = self._unit
             C_Timer.After(self._delay or 0.16, function()
                 if not self._enabled or self._secretGen ~= gen then return end
-                local liveCur = (unit and _G.UnitHealth) and _G.UnitHealth(unit) or cur
+                local liveCur = (unit and _G.UnitHealth) and _G.UnitHealth(unit)
+                if type(liveCur) == "nil" then liveCur = cur end
                 if EASE_OUT_ENUM then
                     pcall(self._bar.SetValue, self._bar, liveCur, EASE_OUT_ENUM)
                 else
@@ -279,8 +280,10 @@ function M.AttachHealthTrail(healthBar, opts)
                 return
             end
         end
-        local hp = _G.UnitHealth and _G.UnitHealth(unit) or 0
-        local mx = _G.UnitHealthMax and _G.UnitHealthMax(unit) or 1
+        local hp = _G.UnitHealth and _G.UnitHealth(unit)
+        if type(hp) == "nil" then hp = 0 end
+        local mx = _G.UnitHealthMax and _G.UnitHealthMax(unit)
+        if type(mx) == "nil" then mx = 1 end
         self:SetValue(hp, mx, instant)
     end
 
@@ -372,6 +375,8 @@ function M.AttachEdgeSpark(statusBar, opts)
     local spark = host:CreateTexture(nil, "OVERLAY", nil, 5)
     spark:SetTexture(opts.texture or ST.TEX.SPARK_BLADE)
     spark:SetBlendMode("ADD")
+    if spark.SetSnapToPixelGrid then pcall(spark.SetSnapToPixelGrid, spark, false) end
+    if spark.SetTexelSnappingBias then pcall(spark.SetTexelSnappingBias, spark, 0) end
     local w = opts.width or 18
     local extraH = opts.extraHeight or 6
     spark:SetWidth(w)

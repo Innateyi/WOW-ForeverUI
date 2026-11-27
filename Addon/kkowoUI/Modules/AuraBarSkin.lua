@@ -151,9 +151,8 @@ local function SkinAuraButton(btn, isDebuff)
         bgHost:EnableMouse(false)
         bgHost:SetFrameLevel(lvl)
 
-        local bg = btn:CreateTexture(nil, "BACKGROUND", nil, -6)
-        bg:SetPoint("TOPLEFT", icon, "TOPLEFT", -1, 1)
-        bg:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 1, -1)
+        local bg = bgHost:CreateTexture(nil, "BACKGROUND", nil, -6)
+        bg:SetAllPoints(bgHost)
         bg:SetColorTexture(0.03, 0.035, 0.045, 0.72)
 
         ov.wrap = wrap
@@ -200,8 +199,9 @@ local function SkinAuraButton(btn, isDebuff)
     local r, g, b, a = ResolveBorderColor(btn, isDebuff)
     if rad > 0 then
         SetSquareBorder(ov, false)
-        ST.MaskTexture(ov.wrap, icon, rad)
+        ST.SetHostIconMode(ov.wrap, true)
         ST.ApplyRoundedBorder(ov.wrap, rad, r, g, b, a, 4)
+        ST.MaskIcon(ov.wrap, icon, rad)
     else
         ST.ClearRoundedMask(ov.wrap)
         SetSquareBorder(ov, true, r, g, b, a)

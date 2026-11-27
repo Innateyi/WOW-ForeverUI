@@ -5,7 +5,7 @@
 local ADDON_NAME, F = ...
 
 F.NAME = ADDON_NAME
-F.VERSION = "1.5.0"
+F.VERSION = "1.5.1"
 F.MEDIA = "Interface\\AddOns\\" .. ADDON_NAME .. "\\Media\\"
 F.PREFIX = "|cffdca77f[kkowoUI]|r "
 

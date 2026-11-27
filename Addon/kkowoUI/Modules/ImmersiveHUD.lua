@@ -132,6 +132,18 @@ do
     end
 
     local seenBuf = {}
+    local euiBarKeyOf = setmetatable({}, { __mode = "k" })
+    local function IsExternalHiddenOrGated(f)
+        if not f then return false end
+        if f._visHidden == true then return true end
+        local barKey = euiBarKeyOf[f]
+        if barKey then
+            local _, gated = EUIBarRest(barKey)
+            if gated then return true end
+        end
+        return false
+    end
+
     local function CollectTargets()
         local db = mod:GetDB()
         for i = #targetBuf, 1, -1 do targetBuf[i] = nil end
@@ -139,6 +151,7 @@ do
         local function addFrame(f, rest)
             if not f or seenBuf[f] then return end
             if (f.IsForbidden and f:IsForbidden()) or not (f.IsShown and f:IsShown()) then return end
+            if f._visHidden == true then return end
             -- 不抢占被 EUI 自身 visibility="never" 隐藏（alpha==0 且未由本模块接管）的框体
             local a = F.PlainNumber(f:GetAlpha(), 1)
             if managed[f] or animTargets[f] ~= nil or a > 0.02 then
@@ -155,6 +168,7 @@ do
             for _, key in ipairs(EUI_BAR_KEYS) do
                 local f = _G["EABBar_" .. key]
                 if f then
+                    euiBarKeyOf[f] = key
                     local rest, gated = EUIBarRest(key)
                     if not gated and rest > 0.02 then addFrame(f, rest) end
                 end
@@ -164,7 +178,7 @@ do
             local cdm = ModuleNS("EllesmereUICooldownManager")
             if cdm and type(cdm.cdmBarFrames) == "table" then
                 for _, f in pairs(cdm.cdmBarFrames) do
-                    if type(f) == "table" then addFrame(f) end
+                    if type(f) == "table" and f._visHidden ~= true then addFrame(f) end
                 end
             end
             for i = 1, 30 do addByName("ECME_TBBWrap" .. i) end
@@ -284,6 +298,16 @@ do
         return mdb and mdb.combatFade == true
     end
 
+    local function ReleaseManagedFrame(f, instant)
+        if not f then return end
+        if IsYieldedToCombatFade(f) or IsExternalHiddenOrGated(f) then
+            animTargets[f] = nil
+            return
+        end
+        local shown = f.IsShown and f:IsShown()
+        FadeFrameTo(f, restAlpha[f] or 1.0, instant or not shown)
+    end
+
     local function RestoreAllManaged(instant)
         local toRestore = {}
         for frame in pairs(managed) do
@@ -294,11 +318,7 @@ do
             toRestore[frame] = true
         end
         for frame in pairs(toRestore) do
-            if IsYieldedToCombatFade(frame) then
-                animTargets[frame] = nil
-            else
-                FadeFrameTo(frame, restAlpha[frame] or 1.0, instant)
-            end
+            ReleaseManagedFrame(frame, instant)
         end
         if instant then
             for k in pairs(animTargets) do animTargets[k] = nil end
@@ -341,15 +361,11 @@ do
             local over = f.IsMouseOver and f:IsMouseOver()
             FadeFrameTo(f, over and rest or math_min(rest, idleA), instant)
         end
-        -- 被用户在选项中取消勾选（或已隐藏 / 被父框体代淡）的框体立即恢复
+        -- 被用户在选项中取消勾选（或已隐藏 / 被父框体代淡 / 交还 EUI 隐藏或悬停控制）的框体立即交还
         for f in pairs(managed) do
             if not activeSetBuf[f] then
-                if IsYieldedToCombatFade(f) then
-                    animTargets[f] = nil
-                else
-                    FadeFrameTo(f, restAlpha[f] or 1.0, instant)
-                end
                 managed[f] = nil
+                ReleaseManagedFrame(f, instant)
             end
         end
 
@@ -366,11 +382,11 @@ do
                     activeSetBuf[f] = true
                     if not managed[f] then managed[f] = true end
                 end
-                -- 期间被隐藏 / 被父框体代淡 / 变成 EUI「悬停才显示」的框体交还原透明度
+                -- 期间被隐藏 / 被父框体代淡 / 变成 EUI「悬停才显示」或隐藏的框体安全交还
                 for f in pairs(managed) do
                     if not activeSetBuf[f] then
                         managed[f] = nil
-                        FadeFrameTo(f, restAlpha[f] or 1.0, false)
+                        ReleaseManagedFrame(f, false)
                     end
                 end
                 for f in pairs(managed) do
@@ -433,22 +449,35 @@ do
     local chatWatchToken = 0
 
     local function ChatEditFocused()
+        if _G.ChatEdit_GetActiveWindow then
+            local okA, win = pcall(_G.ChatEdit_GetActiveWindow)
+            if okA and win ~= nil then return true end
+        end
         local eb = _G.ChatFrame1EditBox
         if not (eb and eb.HasFocus) then return false end
         local ok, f = pcall(eb.HasFocus, eb)
         return ok and not F.IsSecret(f) and f == true
     end
 
-    local function ChatMouseOver(chatNS)
-        local overlay = chatNS and chatNS._chatHoverOverlay
-        local areas = { overlay, _G.GeneralDockManager, _G.ChatFrame1 }
-        for _, f in ipairs(areas) do
-            if f and f.IsMouseOver then
-                local ok, over = pcall(f.IsMouseOver, f)
-                if ok and not F.IsSecret(over) and over == true then return true end
-            end
+    local function IsFrameMouseOver(f)
+        if not (f and f.IsMouseOver) then return false end
+        if f.IsShown then
+            local okS, shown = pcall(f.IsShown, f)
+            if not okS or F.IsSecret(shown) or shown ~= true then return false end
         end
-        return false
+        local ok, over = pcall(f.IsMouseOver, f)
+        return ok and not F.IsSecret(over) and over == true
+    end
+
+    local function ChatMouseOver(chatNS)
+        return IsFrameMouseOver(chatNS and chatNS._chatHoverOverlay)
+            or IsFrameMouseOver(chatNS and chatNS._chatBgExt)
+            or IsFrameMouseOver(chatNS and chatNS._chatTabStrip)
+            or IsFrameMouseOver(chatNS and chatNS._sidebarFrame)
+            or IsFrameMouseOver(_G.kkowoUI_ChatUnifiedPanel)
+            or IsFrameMouseOver(_G.kkowoUI_ChatBar)
+            or IsFrameMouseOver(_G.GeneralDockManager)
+            or IsFrameMouseOver(_G.ChatFrame1)
     end
 
     local function OnEUIChatIdleReset()
@@ -462,7 +491,11 @@ do
         local E = chatNS and chatNS.ECHAT
         if not (E and type(E.StartIdleFadeNow) == "function") then return end
         local my = chatWatchToken
-        local cfg = type(E.DB) == "function" and E.DB() or nil
+        local cfg = nil
+        if type(E.DB) == "function" then
+            local okDB, c = pcall(E.DB)
+            if okDB and type(c) == "table" then cfg = c end
+        end
         local maxWatch = (cfg and F.PlainNumber(cfg.idleFadeDelay, nil) or 15) + 1
         local started = _G.GetTime()
         local awaySince = nil
@@ -556,6 +589,7 @@ do
     end
 
     function mod:OnDisable()
+        chatWatchToken = chatWatchToken + 1
         local EUI = _G.EllesmereUI
         if unlockHooked and EUI and EUI.UnregisterUnlockModeListener then
             pcall(EUI.UnregisterUnlockModeListener, EUI, "kkowoUI_ImmersiveHUD")

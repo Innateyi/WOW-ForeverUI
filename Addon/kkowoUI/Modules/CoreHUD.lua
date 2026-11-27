@@ -46,6 +46,9 @@ local mod = F.RegisterModule("coreHUD", {
         orbSize = 44,
         scale = 1.0,
         textInsideBars = true,
+        -- 双翼血/蓝文字格式（默认 EUI 风格「数字 | 百分比」）与对齐位置（默认紧贴中央图标两侧）
+        wingTextFormat = "num_pct", -- "num_pct" | "pct_num" | "mirror" | "num" | "pct"
+        wingTextAnchor = "inner",   -- "inner" | "center" | "outer"
         -- 默认启用新版即自动隐藏对应 EUI 原生框体（仅在需要同屏对比时可开启保留）
         keepOriginalEUI = false,
         -- 双翼 / 宠物 / 目标条可点击：左键选中、右键单位菜单（安全按钮，战斗中同样可用）
@@ -185,28 +188,58 @@ end
 
 local SCALE_TO_100 = _G.CurveConstants and _G.CurveConstants.ScaleTo100 or nil
 
-local function AbbreviateSafe(val)
+local function AbbreviateSafe(val, valueType)
     local EUI = _G.EllesmereUI
     if EUI and type(EUI.AbbreviateValue) == "function" then
-        local ok, s = pcall(EUI.AbbreviateValue, val, "health")
-        if ok and s ~= nil then return s end
+        local ok, s = pcall(EUI.AbbreviateValue, val, valueType or "health")
+        if ok and type(s) ~= "nil" then return s end
     end
     if _G.AbbreviateNumbers then
         local ok, s = pcall(_G.AbbreviateNumbers, val)
-        if ok and s ~= nil then return s end
+        if ok and type(s) ~= "nil" then return s end
     end
+    local p = F.PlainNumber(val, nil)
+    if p then return F.FormatShortNumber(p) end
     return val
 end
 
-local function SetHealthText(fs, unit, compact)
+local function ResolveWingTextModes()
+    local fmt = mod:GetDB().wingTextFormat or "num_pct"
+    if fmt == "mirror" then
+        return "num_pct", "pct_num"
+    elseif fmt == "pct_num" or fmt == "num" or fmt == "pct" then
+        return fmt, fmt
+    end
+    return "num_pct", "num_pct"
+end
+
+local function UnitExistsSafe(unit)
+    if not _G.UnitExists then return false end
+    local ok, ex = pcall(_G.UnitExists, unit)
+    return ok and (not F.IsSecret(ex)) and ex == true
+end
+
+local function SetHealthText(fs, unit, mode)
     if not fs then return end
-    if not (_G.UnitExists and _G.UnitExists(unit)) then
+    if not UnitExistsSafe(unit) then
         fs:SetText("")
         return
     end
-    if _G.UnitIsDead and _G.UnitIsDead(unit) then
-        fs:SetText(compact and "0%" or "0% - 死亡")
-        return
+    local m = (mode == true and "pct") or (type(mode) == "string" and mode) or "num_pct"
+    if _G.UnitIsDead then
+        local okD, dead = pcall(_G.UnitIsDead, unit)
+        if okD and not F.IsSecret(dead) and dead == true then
+            if m == "pct" then
+                fs:SetText("0%")
+            elseif m == "num" then
+                fs:SetText("死亡")
+            elseif m == "pct_num" then
+                fs:SetText("0% | 死亡")
+            else
+                fs:SetText("死亡 | 0%")
+            end
+            return
+        end
     end
     local hp = _G.UnitHealth and _G.UnitHealth(unit)
     local mx = _G.UnitHealthMax and _G.UnitHealthMax(unit)
@@ -214,14 +247,24 @@ local function SetHealthText(fs, unit, compact)
     local pMx = F.PlainNumber(mx, nil)
     if pHp and pMx and pMx > 0 then
         local pct = math_floor(pHp / pMx * 100 + 0.5)
-        if compact then
+        if m == "pct" then
             fs:SetFormattedText("%d%%", pct)
+        elseif m == "num" then
+            fs:SetFormattedText("%s", AbbreviateSafe(pHp, "health"))
+        elseif m == "pct_num" then
+            fs:SetFormattedText("%d%% | %s", pct, AbbreviateSafe(pHp, "health"))
         else
-            fs:SetFormattedText("%d%% - %s", pct, F.FormatShortNumber(pHp))
+            fs:SetFormattedText("%s | %d%%", AbbreviateSafe(pHp, "health"), pct)
         end
         return
     end
     -- 12.x 保密值 C 端安全通路：直接由 C 端格式化，绝不在 Lua 中对保密值做运算或分支
+    if m == "num" then
+        if type(hp) ~= "nil" then
+            pcall(fs.SetFormattedText, fs, "%s", AbbreviateSafe(hp, "health"))
+        end
+        return
+    end
     if _G.UnitHealthPercent then
         local okP, pct
         if SCALE_TO_100 ~= nil then
@@ -229,53 +272,97 @@ local function SetHealthText(fs, unit, compact)
         else
             okP, pct = pcall(_G.UnitHealthPercent, unit)
         end
-        if okP and pct ~= nil then
-            if compact then
+        if okP and type(pct) ~= "nil" then
+            if m == "pct" then
                 if pcall(fs.SetFormattedText, fs, "%d%%", pct) then return end
-            elseif hp ~= nil then
-                local hpStr = AbbreviateSafe(hp)
-                if pcall(fs.SetFormattedText, fs, "%d%% - %s", pct, hpStr) then return end
+            elseif type(hp) ~= "nil" then
+                local hpStr = AbbreviateSafe(hp, "health")
+                if m == "pct_num" then
+                    if pcall(fs.SetFormattedText, fs, "%d%% | %s", pct, hpStr) then return end
+                else
+                    if pcall(fs.SetFormattedText, fs, "%s | %d%%", hpStr, pct) then return end
+                end
             end
             if pcall(fs.SetFormattedText, fs, "%d%%", pct) then return end
         end
     end
-    if hp ~= nil then
-        pcall(fs.SetFormattedText, fs, "%s", AbbreviateSafe(hp))
+    if type(hp) ~= "nil" then
+        pcall(fs.SetFormattedText, fs, "%s", AbbreviateSafe(hp, "health"))
     end
 end
 
-local function SetPowerText(fs, unit, powerType)
+local function SetPowerText(fs, unit, powerType, mode)
     if not fs then return end
-    if not (_G.UnitExists and _G.UnitExists(unit)) then
+    if not UnitExistsSafe(unit) then
         fs:SetText("")
         return
     end
+    local m = (type(mode) == "string" and mode) or "num_pct"
+    -- 怒气/能量/集中等上限通常为 100，默认仅显示数值避免冗余 "80 | 80%"；法力（蓝）完整显示数字与百分比
+    local effMode = (powerType == 0) and m or ((m == "pct") and "pct" or "num")
     local cur = _G.UnitPower and _G.UnitPower(unit, powerType)
     local mx = _G.UnitPowerMax and _G.UnitPowerMax(unit, powerType)
     local pCur = F.PlainNumber(cur, nil)
     local pMx = F.PlainNumber(mx, nil)
-    if pCur and pMx and pMx > 0 then
-        if powerType == 0 then
-            fs:SetFormattedText("%d%%", math_floor(pCur / pMx * 100 + 0.5))
+    if pCur and pMx then
+        if pMx <= 0 then
+            fs:SetText("")
+            return
+        end
+        local pct = math_floor(pCur / pMx * 100 + 0.5)
+        if effMode == "pct" then
+            fs:SetFormattedText("%d%%", pct)
+        elseif effMode == "num" then
+            if powerType == 0 then
+                fs:SetFormattedText("%s", AbbreviateSafe(pCur, "power"))
+            else
+                fs:SetFormattedText("%d", math_floor(pCur + 0.5))
+            end
+        elseif effMode == "pct_num" then
+            fs:SetFormattedText("%d%% | %s", pct, AbbreviateSafe(pCur, "power"))
         else
-            fs:SetFormattedText("%d", math_floor(pCur + 0.5))
+            fs:SetFormattedText("%s | %d%%", AbbreviateSafe(pCur, "power"), pct)
         end
         return
     end
     -- 12.x 保密值 C 端安全通路
-    if powerType == 0 and _G.UnitPowerPercent then
+    if effMode == "num" then
+        if type(cur) ~= "nil" then
+            if powerType == 0 then
+                pcall(fs.SetFormattedText, fs, "%s", AbbreviateSafe(cur, "power"))
+            else
+                pcall(fs.SetFormattedText, fs, "%d", cur)
+            end
+        end
+        return
+    end
+    if _G.UnitPowerPercent then
         local okP, pct
         if SCALE_TO_100 ~= nil then
             okP, pct = pcall(_G.UnitPowerPercent, unit, powerType, true, SCALE_TO_100)
         else
             okP, pct = pcall(_G.UnitPowerPercent, unit, powerType)
         end
-        if okP and pct ~= nil and pcall(fs.SetFormattedText, fs, "%d%%", pct) then
-            return
+        if okP and type(pct) ~= "nil" then
+            if effMode == "pct" then
+                if pcall(fs.SetFormattedText, fs, "%d%%", pct) then return end
+            elseif type(cur) ~= "nil" then
+                local ppStr = AbbreviateSafe(cur, "power")
+                if effMode == "pct_num" then
+                    if pcall(fs.SetFormattedText, fs, "%d%% | %s", pct, ppStr) then return end
+                else
+                    if pcall(fs.SetFormattedText, fs, "%s | %d%%", ppStr, pct) then return end
+                end
+            end
+            if pcall(fs.SetFormattedText, fs, "%d%%", pct) then return end
         end
     end
-    if cur ~= nil then
-        pcall(fs.SetFormattedText, fs, "%d", cur)
+    if type(cur) ~= "nil" then
+        if powerType == 0 then
+            pcall(fs.SetFormattedText, fs, "%s", AbbreviateSafe(cur, "power"))
+        else
+            pcall(fs.SetFormattedText, fs, "%d", cur)
+        end
     end
 end
 
@@ -321,9 +408,6 @@ local topTargetFrame = nil
 local petEventFrame = nil
 
 local UnitNameColor -- 敌对玩家红名（定义在数据刷新段）
-local playerCache = {}
-local petCache = {}
-local targetCache = {}
 
 -- 挥砍计时运行时（仅挥砍进行中启动 OnUpdate，归零即 Hide，平时 0 CPU）
 local swingState = {
@@ -1127,8 +1211,9 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
         slot._lastRad = rad
         ST.ClearRoundedMask(slot)
         if rad > 0 then
+            ST.SetHostIconMode(slot, true)
             ST.MaskTexture(slot, slot._bg, rad)
-            ST.MaskTexture(slot, slot._icon, rad)
+            ST.MaskIcon(slot, slot._icon, rad)
             if slot._timerShade then ST.MaskTexture(slot, slot._timerShade, rad) end
         end
     end
@@ -2037,16 +2122,16 @@ local function BuildCoreHUD()
     local hpText = textLayer:CreateFontString(nil, "OVERLAY")
     ST.ApplyText(hpText, 11, 0.98, 0.99, 1.00, 1)
     hpText:SetShadowOffset(1, -1)
-    hpText:SetPoint("LEFT", hpWing, "LEFT", 8, 0)
-    hpText:SetJustifyH("LEFT")
+    hpText:SetPoint("RIGHT", hpWing, "RIGHT", -15, 0)
+    hpText:SetJustifyH("RIGHT")
     hpText:SetWordWrap(false)
     f._hpText = hpText
 
     local ppText = textLayer:CreateFontString(nil, "OVERLAY")
     ST.ApplyText(ppText, 11, 0.96, 0.98, 1.00, 1)
     ppText:SetShadowOffset(1, -1)
-    ppText:SetPoint("RIGHT", ppWing, "RIGHT", -8, 0)
-    ppText:SetJustifyH("RIGHT")
+    ppText:SetPoint("LEFT", ppWing, "LEFT", 15, 0)
+    ppText:SetJustifyH("LEFT")
     ppText:SetWordWrap(false)
     f._ppText = ppText
 
@@ -2073,6 +2158,7 @@ local function BuildCoreHUD()
     orbBg:SetVertexColor(0.04, 0.045, 0.065, 0.96)
 
     local orbMask = orb:CreateMaskTexture()
+    if orbMask.SetBlockingLoadsRequested then pcall(orbMask.SetBlockingLoadsRequested, orbMask, true) end
     orbMask:SetPoint("TOPLEFT", orb, "TOPLEFT", 4, -4)
     orbMask:SetPoint("BOTTOMRIGHT", orb, "BOTTOMRIGHT", -4, 4)
     orbMask:SetTexture(ST.TEX.CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
@@ -2081,14 +2167,14 @@ local function BuildCoreHUD()
     local orbIconPrev = orb:CreateTexture(nil, "ARTWORK", nil, 0)
     orbIconPrev:SetPoint("TOPLEFT", orb, "TOPLEFT", 4, -4)
     orbIconPrev:SetPoint("BOTTOMRIGHT", orb, "BOTTOMRIGHT", -4, 4)
-    orbIconPrev:AddMaskTexture(orbMask)
+    ST.AttachCustomMask(orb, orbIconPrev, orbMask, { isIcon = true, keepIfLoaded = true })
     orbIconPrev:Hide()
     orb._iconPrev = orbIconPrev
 
     local orbIcon = orb:CreateTexture(nil, "ARTWORK", nil, 1)
     orbIcon:SetPoint("TOPLEFT", orb, "TOPLEFT", 4, -4)
     orbIcon:SetPoint("BOTTOMRIGHT", orb, "BOTTOMRIGHT", -4, 4)
-    orbIcon:AddMaskTexture(orbMask)
+    ST.AttachCustomMask(orb, orbIcon, orbMask, { isIcon = true, keepIfLoaded = true })
     orb._icon = orbIcon
 
     -- 切换技能瞬间内核高光闪耀层
@@ -2589,12 +2675,13 @@ local function AcquirePetFeedButton(index)
     local bg = btn:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(0.05, 0.055, 0.075, 0.94)
+    ST.SetHostIconMode(btn, true)
     ST.MaskTexture(btn, bg, 5)
 
     local icon = btn:CreateTexture(nil, "ARTWORK")
     icon:SetAllPoints()
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    ST.MaskTexture(btn, icon, 5)
+    ST.MaskIcon(btn, icon, 5)
     btn._icon = icon
 
     local cnt = btn:CreateFontString(nil, "OVERLAY")
@@ -2753,9 +2840,10 @@ local function BuildPetHUD()
     local ibTex = iconBox:CreateTexture(nil, "ARTWORK")
     ibTex:SetPoint("TOPLEFT", iconBox, "TOPLEFT", 2, -2)
     ibTex:SetPoint("BOTTOMRIGHT", iconBox, "BOTTOMRIGHT", -2, 2)
-    ST.MaskTexture(iconBox, ibBg, 5)
-    ST.MaskTexture(iconBox, ibTex, 5)
+    ST.SetHostIconMode(iconBox, true)
     ST.ApplyRoundedBorder(iconBox, 5, 0.02, 0.022, 0.03, 0.95, 4)
+    ST.MaskTexture(iconBox, ibBg, 5)
+    ST.MaskIcon(iconBox, ibTex, 5, { keepIfLoaded = true })
     iconBox._tex = ibTex
     if isHunter then
         iconBox:SetScript("OnEnter", function(self)
@@ -2886,13 +2974,14 @@ local function BuildTopTargetHUD()
     pBg:SetTexture(ST.TEX.CIRCLE_MASK)
     pBg:SetVertexColor(0.04, 0.045, 0.06, 0.96)
     local pMask = port:CreateMaskTexture()
+    if pMask.SetBlockingLoadsRequested then pcall(pMask.SetBlockingLoadsRequested, pMask, true) end
     pMask:SetPoint("TOPLEFT", port, "TOPLEFT", 2, -2)
     pMask:SetPoint("BOTTOMRIGHT", port, "BOTTOMRIGHT", -2, 2)
     pMask:SetTexture(ST.TEX.CIRCLE_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
     local pTex = port:CreateTexture(nil, "ARTWORK")
     pTex:SetPoint("TOPLEFT", port, "TOPLEFT", 2, -2)
     pTex:SetPoint("BOTTOMRIGHT", port, "BOTTOMRIGHT", -2, 2)
-    pTex:AddMaskTexture(pMask)
+    ST.AttachCustomMask(port, pTex, pMask, { isIcon = true, keepIfLoaded = true })
     local pRing = port:CreateTexture(nil, "OVERLAY", nil, 4)
     pRing:SetAllPoints()
     pRing:SetTexture(ST.TEX.CIRCLE_RING)
@@ -2947,8 +3036,10 @@ end
 
 local function UpdatePlayerHealth(instant)
     if coreFrame and coreFrame:IsShown() then
-        local hp = _G.UnitHealth and _G.UnitHealth("player") or 0
-        local mx = _G.UnitHealthMax and _G.UnitHealthMax("player") or 1
+        local hp = _G.UnitHealth and _G.UnitHealth("player")
+        if type(hp) == "nil" then hp = 0 end
+        local mx = _G.UnitHealthMax and _G.UnitHealthMax("player")
+        if type(mx) == "nil" then mx = 1 end
         pcall(coreFrame._hpWing._bar.SetMinMaxValues, coreFrame._hpWing._bar, 0, mx)
         pcall(coreFrame._hpWing._bar.SetValue, coreFrame._hpWing._bar, hp)
         UpdateBarSparkVis(coreFrame._hpWing, hp, mx)
@@ -2956,7 +3047,8 @@ local function UpdatePlayerHealth(instant)
             coreFrame._hpWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
             coreFrame._hpWing._trail:SetValue(hp, mx, instant)
         end
-        SetHealthText(coreFrame._hpText, "player", false)
+        local hpMode = ResolveWingTextModes()
+        SetHealthText(coreFrame._hpText, "player", hpMode)
     end
     if euiTrailPlayer then
         euiTrailPlayer:SetEnabled(mod._active and mod:GetDB().enhanceEUIFrames ~= false and mod:GetDB().showTrail ~= false)
@@ -2967,8 +3059,10 @@ end
 local function UpdatePlayerPower(instant)
     if not (coreFrame and coreFrame:IsShown()) then return end
     local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("player"), 0) or 0
-    local cur = _G.UnitPower and _G.UnitPower("player", pType) or 0
-    local mx = _G.UnitPowerMax and _G.UnitPowerMax("player", pType) or 1
+    local cur = _G.UnitPower and _G.UnitPower("player", pType)
+    if type(cur) == "nil" then cur = 0 end
+    local mx = _G.UnitPowerMax and _G.UnitPowerMax("player", pType)
+    if type(mx) == "nil" then mx = 1 end
     pcall(coreFrame._ppWing._bar.SetMinMaxValues, coreFrame._ppWing._bar, 0, mx)
     pcall(coreFrame._ppWing._bar.SetValue, coreFrame._ppWing._bar, cur)
     UpdateBarSparkVis(coreFrame._ppWing, cur, mx)
@@ -2978,13 +3072,14 @@ local function UpdatePlayerPower(instant)
     end
     local r1, g1, b1, r2, g2, b2 = ST.GetPowerGradient(pType)
     ST.ApplyBarGradient(coreFrame._ppWing._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
-    SetPowerText(coreFrame._ppText, "player", pType)
+    local _, ppMode = ResolveWingTextModes()
+    SetPowerText(coreFrame._ppText, "player", pType, ppMode)
 end
 
 local function UpdatePetHUD(instant)
     if not petFrame then return end
     local db = mod:GetDB()
-    local exists = _G.UnitExists and _G.UnitExists("pet")
+    local exists = UnitExistsSafe("pet")
     if not (mod._active and db.showPetFrame ~= false and exists) then
         HidePetFeedMenu()
         petFrame:Hide()
@@ -2996,8 +3091,10 @@ local function UpdatePetHUD(instant)
         if lastIdleAlpha then petFrame:SetAlpha(lastIdleAlpha) end
         if SyncClickLayers then SyncClickLayers() end
     end
-    local hp = _G.UnitHealth and _G.UnitHealth("pet") or 0
-    local mx = _G.UnitHealthMax and _G.UnitHealthMax("pet") or 1
+    local hp = _G.UnitHealth and _G.UnitHealth("pet")
+    if type(hp) == "nil" then hp = 0 end
+    local mx = _G.UnitHealthMax and _G.UnitHealthMax("pet")
+    if type(mx) == "nil" then mx = 1 end
     pcall(petFrame._hpBar._bar.SetMinMaxValues, petFrame._hpBar._bar, 0, mx)
     pcall(petFrame._hpBar._bar.SetValue, petFrame._hpBar._bar, hp)
     if petFrame._hpBar._trail then
@@ -3008,8 +3105,10 @@ local function UpdatePetHUD(instant)
     ST.ApplyBarGradient(petFrame._hpBar._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
 
     local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("pet"), 2) or 2
-    local pCur = _G.UnitPower and _G.UnitPower("pet", pType) or 0
-    local pMx = _G.UnitPowerMax and _G.UnitPowerMax("pet", pType) or 1
+    local pCur = _G.UnitPower and _G.UnitPower("pet", pType)
+    if type(pCur) == "nil" then pCur = 0 end
+    local pMx = _G.UnitPowerMax and _G.UnitPowerMax("pet", pType)
+    if type(pMx) == "nil" then pMx = 1 end
     pcall(petFrame._ppBar._bar.SetMinMaxValues, petFrame._ppBar._bar, 0, pMx)
     pcall(petFrame._ppBar._bar.SetValue, petFrame._ppBar._bar, pCur)
     local pr1, pg1, pb1, pr2, pg2, pb2 = ST.GetPowerGradient(pType)
@@ -3037,6 +3136,7 @@ local function UpdatePetHUD(instant)
         petFrame._iconBox._tex:SetTexCoord(0, 1, 0, 1)
     elseif _G.SetPortraitTexture then
         pcall(_G.SetPortraitTexture, petFrame._iconBox._tex, "pet")
+        ST.NotifyTextureChanged(petFrame._iconBox._tex)
         petFrame._iconBox._tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     end
 end
@@ -3059,14 +3159,16 @@ end
 local function UpdateTargetOfTarget()
     if not (topTargetFrame and topTargetFrame._totBar) then return end
     local tot = topTargetFrame._totBar
-    if not (_G.UnitExists and _G.UnitExists("targettarget")) then
+    if not UnitExistsSafe("targettarget") then
         tot._nameText:SetText("")
         tot:Hide()
         return
     end
     tot:Show()
-    local hp = _G.UnitHealth and _G.UnitHealth("targettarget") or 0
-    local mx = _G.UnitHealthMax and _G.UnitHealthMax("targettarget") or 1
+    local hp = _G.UnitHealth and _G.UnitHealth("targettarget")
+    if type(hp) == "nil" then hp = 0 end
+    local mx = _G.UnitHealthMax and _G.UnitHealthMax("targettarget")
+    if type(mx) == "nil" then mx = 1 end
     pcall(tot._bar.SetMinMaxValues, tot._bar, 0, mx)
     pcall(tot._bar.SetValue, tot._bar, hp)
     local r1, g1, b1, r2, g2, b2 = ST.GetUnitGradient("targettarget")
@@ -3086,7 +3188,7 @@ end
 local function UpdateTopTargetHUD(instant)
     if topTargetFrame then
         local db = mod:GetDB()
-        local exists = _G.UnitExists and _G.UnitExists("target")
+        local exists = UnitExistsSafe("target")
         if not (mod._active and db.enableTopTarget ~= false and exists) then
             topTargetFrame:Hide()
         else
@@ -3097,8 +3199,10 @@ local function UpdateTopTargetHUD(instant)
             else
                 topTargetFrame:Show()
             end
-            local hp = _G.UnitHealth and _G.UnitHealth("target") or 0
-            local mx = _G.UnitHealthMax and _G.UnitHealthMax("target") or 1
+            local hp = _G.UnitHealth and _G.UnitHealth("target")
+            if type(hp) == "nil" then hp = 0 end
+            local mx = _G.UnitHealthMax and _G.UnitHealthMax("target")
+            if type(mx) == "nil" then mx = 1 end
             pcall(topTargetFrame._hpBar._bar.SetMinMaxValues, topTargetFrame._hpBar._bar, 0, mx)
             pcall(topTargetFrame._hpBar._bar.SetValue, topTargetFrame._hpBar._bar, hp)
             UpdateBarSparkVis(topTargetFrame._hpBar, hp, mx)
@@ -3110,14 +3214,17 @@ local function UpdateTopTargetHUD(instant)
             ST.ApplyBarGradient(topTargetFrame._hpBar._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
 
             local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("target"), 0) or 0
-            local pCur = _G.UnitPower and _G.UnitPower("target", pType) or 0
-            local pMx = _G.UnitPowerMax and _G.UnitPowerMax("target", pType) or 1
+            local pCur = _G.UnitPower and _G.UnitPower("target", pType)
+            if type(pCur) == "nil" then pCur = 0 end
+            local pMx = _G.UnitPowerMax and _G.UnitPowerMax("target", pType)
+            if type(pMx) == "nil" then pMx = 1 end
             pcall(topTargetFrame._ppBar._bar.SetMinMaxValues, topTargetFrame._ppBar._bar, 0, pMx)
             pcall(topTargetFrame._ppBar._bar.SetValue, topTargetFrame._ppBar._bar, pCur)
             local pr1, pg1, pb1, pr2, pg2, pb2 = ST.GetPowerGradient(pType)
             ST.ApplyBarGradient(topTargetFrame._ppBar._bar, pr1, pg1, pb1, pr2, pg2, pb2, 0.98, false)
 
-            SetHealthText(topTargetFrame._hpText, "target", false)
+            local hpMode = ResolveWingTextModes()
+            SetHealthText(topTargetFrame._hpText, "target", hpMode)
             local rawName = _G.UnitName and _G.UnitName("target")
             local tName = F.PlainString(rawName, nil)
             local tLvl = _G.UnitLevel and F.PlainNumber(_G.UnitLevel("target"), nil)
@@ -3131,6 +3238,7 @@ local function UpdateTopTargetHUD(instant)
 
             if _G.SetPortraitTexture and topTargetFrame._portrait then
                 pcall(_G.SetPortraitTexture, topTargetFrame._portrait._tex, "target")
+                ST.NotifyTextureChanged(topTargetFrame._portrait._tex)
             end
             UpdateTargetOfTarget()
         end
@@ -3502,24 +3610,60 @@ local function ApplyLayoutAndTheme()
             coreFrame._ppWing:ClearAllPoints()
             coreFrame._ppWing:SetPoint("LEFT", coreFrame, "CENTER", orbHalfGap, -6)
 
-            -- 数值文字位置：默认精致内嵌到血条与资源条内部（让双翼上方极度清爽，不与上方常驻 BUFF 争空间）
+            -- 数值文字位置：默认紧贴中央图标两侧内嵌到血/蓝条内部（支持条内居中与外侧两端，以及条外上方）
+            local showOrb = (db.showOrb ~= false)
+            local orbOverlap = showOrb and math_max(0, math_floor(orbSz * 0.5 + 0.5) - orbHalfGap) or 0
+            local innerPad = orbOverlap + (showOrb and 7 or 8)
+            local outerPad = 8
+            local textAnchor = db.wingTextAnchor or "inner"
+            local availW = math_max(48, wingW - innerPad - outerPad)
+            local centerShift = math_floor(orbOverlap * 0.5)
+
             local inFontSz = math_max(9, math_min(12, math_floor(barH - 7)))
             coreFrame._hpText:ClearAllPoints()
             coreFrame._ppText:ClearAllPoints()
             if insideBars then
                 ST.ApplyText(coreFrame._hpText, inFontSz, 0.98, 0.99, 1.00, 1)
                 ST.ApplyText(coreFrame._ppText, inFontSz, 0.96, 0.98, 1.00, 1)
-                coreFrame._hpText:SetPoint("LEFT", coreFrame._hpWing, "LEFT", 8, 0)
-                coreFrame._ppText:SetPoint("RIGHT", coreFrame._ppWing, "RIGHT", -8, 0)
-                coreFrame._hpText:SetWidth(math_max(48, wingW - orbHalfGap - 8))
-                coreFrame._ppText:SetWidth(math_max(40, wingW - orbHalfGap - 8))
+                coreFrame._hpText:SetWidth(availW)
+                coreFrame._ppText:SetWidth(availW)
+                if textAnchor == "outer" then
+                    coreFrame._hpText:SetJustifyH("LEFT")
+                    coreFrame._ppText:SetJustifyH("RIGHT")
+                    coreFrame._hpText:SetPoint("LEFT", coreFrame._hpWing, "LEFT", outerPad, 0)
+                    coreFrame._ppText:SetPoint("RIGHT", coreFrame._ppWing, "RIGHT", -outerPad, 0)
+                elseif textAnchor == "center" then
+                    coreFrame._hpText:SetJustifyH("CENTER")
+                    coreFrame._ppText:SetJustifyH("CENTER")
+                    coreFrame._hpText:SetPoint("CENTER", coreFrame._hpWing, "CENTER", -centerShift, 0)
+                    coreFrame._ppText:SetPoint("CENTER", coreFrame._ppWing, "CENTER", centerShift, 0)
+                else
+                    coreFrame._hpText:SetJustifyH("RIGHT")
+                    coreFrame._ppText:SetJustifyH("LEFT")
+                    coreFrame._hpText:SetPoint("RIGHT", coreFrame._hpWing, "RIGHT", -innerPad, 0)
+                    coreFrame._ppText:SetPoint("LEFT", coreFrame._ppWing, "LEFT", innerPad, 0)
+                end
             else
                 ST.ApplyText(coreFrame._hpText, 12, 0.96, 0.97, 0.99, 1)
                 ST.ApplyText(coreFrame._ppText, 12, 0.94, 0.96, 0.99, 1)
-                coreFrame._hpText:SetPoint("BOTTOMLEFT", coreFrame._hpWing, "TOPLEFT", 2, 9)
-                coreFrame._ppText:SetPoint("BOTTOMRIGHT", coreFrame._ppWing, "TOPRIGHT", -2, 9)
                 coreFrame._hpText:SetWidth(0)
                 coreFrame._ppText:SetWidth(0)
+                if textAnchor == "outer" then
+                    coreFrame._hpText:SetJustifyH("LEFT")
+                    coreFrame._ppText:SetJustifyH("RIGHT")
+                    coreFrame._hpText:SetPoint("BOTTOMLEFT", coreFrame._hpWing, "TOPLEFT", 2, 9)
+                    coreFrame._ppText:SetPoint("BOTTOMRIGHT", coreFrame._ppWing, "TOPRIGHT", -2, 9)
+                elseif textAnchor == "center" then
+                    coreFrame._hpText:SetJustifyH("CENTER")
+                    coreFrame._ppText:SetJustifyH("CENTER")
+                    coreFrame._hpText:SetPoint("BOTTOM", coreFrame._hpWing, "TOP", -centerShift, 9)
+                    coreFrame._ppText:SetPoint("BOTTOM", coreFrame._ppWing, "TOP", centerShift, 9)
+                else
+                    coreFrame._hpText:SetJustifyH("RIGHT")
+                    coreFrame._ppText:SetJustifyH("LEFT")
+                    coreFrame._hpText:SetPoint("BOTTOMRIGHT", coreFrame._hpWing, "TOPRIGHT", -innerPad, 9)
+                    coreFrame._ppText:SetPoint("BOTTOMLEFT", coreFrame._ppWing, "TOPLEFT", innerPad, 9)
+                end
             end
 
             coreFrame._swingWing:SetSize(wingW - 4, 5)
@@ -3801,11 +3945,30 @@ function mod:OnEnable()
     end
     self:RegisterUnitEvent("UNIT_POWER_FREQUENT", "player", "target", OnPowerEvent)
     self:RegisterUnitEvent("UNIT_POWER_UPDATE", "player", "target", OnPowerEvent)
+    self:RegisterUnitEvent("UNIT_MAXPOWER", "player", "target", function(_, _, unit)
+        if unit == "player" then
+            UpdatePlayerPower(true)
+            UpdateUpperRightClassPower()
+            UpdateIdleFade(false)
+        elseif unit == "target" then
+            UpdateTopTargetHUD(true)
+        end
+    end)
     self:RegisterUnitEvent("UNIT_DISPLAYPOWER", "player", function()
         UpdatePlayerPower(true)
         UpdateUpperRightClassPower()
         UpdateIdleFade(false)
     end)
+    if not mod._numFmtHooked and EUI and type(EUI.RegisterNumberFormatCallback) == "function" then
+        mod._numFmtHooked = true
+        pcall(EUI.RegisterNumberFormatCallback, function()
+            if mod._active then
+                UpdatePlayerHealth(true)
+                UpdatePlayerPower(true)
+                UpdateTopTargetHUD(true)
+            end
+        end)
+    end
 
     -- 宠物事件走独立事件帧，避免与 player/target 的 UNIT_HEALTH 在同一模块事件帧上互相覆盖
     if not petEventFrame then
@@ -4098,6 +4261,35 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         tooltip = "在中央能量球正上方居中显示猎人守护、姿态、光环、追踪等常驻状态（超 6 个自动 +N 折叠，脱战右键可取消）。",
         getValue = function() return db.showPermanentBuffs ~= false end,
         setValue = function(v) db.showPermanentBuffs = v == true; UpdateCombatAuras() end,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "dropdown",
+        text = "双翼血 / 蓝数值格式",
+        tooltip = "控制双翼血条、蓝条（以及顶部目标血条）的数值与百分比显示，中间用竖线分隔，与 EUI 风格一致；怒气/能量/集中等自动仅显示数值。",
+        values = {
+            num_pct = "数字 | 百分比（推荐）",
+            pct_num = "百分比 | 数字",
+            mirror  = "镜像（左 数字 | %，右 % | 数字）",
+            num     = "仅显示数字",
+            pct     = "仅显示百分比",
+        },
+        order = { "num_pct", "pct_num", "mirror", "num", "pct" },
+        getValue = function() return db.wingTextFormat or "num_pct" end,
+        setValue = function(v) db.wingTextFormat = v; ApplyLayoutAndTheme() end,
+    }, {
+        type = "dropdown",
+        text = "双翼血 / 蓝数值对齐位置",
+        tooltip = "默认紧贴中央图标两侧显示（左血右蓝），也可切换为双翼条内居中或外侧两端。",
+        values = {
+            inner  = "紧贴中央图标两侧（推荐）",
+            center = "双翼条内居中",
+            outer  = "双翼外侧两端",
+        },
+        order = { "inner", "center", "outer" },
+        getValue = function() return db.wingTextAnchor or "inner" end,
+        setValue = function(v) db.wingTextAnchor = v; ApplyLayoutAndTheme() end,
     })
     y = y - h
 

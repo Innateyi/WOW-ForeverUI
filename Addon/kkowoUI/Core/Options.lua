@@ -17,7 +17,7 @@ local GROUPS = {
         pages = { "任务增强", "经验与地图" },
         pageMap = {
             ["任务增强"]   = { "questAuto", "questBar", "questXP" },
-            ["经验与地图"] = { "xpBar", "nodeReminder", "zoneLabels", "worldNames" },
+            ["经验与地图"] = { "xpBar", "nodeReminder", "zoneLabels", "polestarNav", "worldNames" },
         },
     },
     {
@@ -184,7 +184,7 @@ local function SetAddOnEnabledSafely(name, enabled)
         or ((ca and ca.DisableAddOn) or _G.DisableAddOn)
     if not fn then return end
     local getState = ca and ca.GetAddOnEnableState
-    local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+    local guid = _G.UnitGUID and F.PlainString(_G.UnitGUID("player"), nil) or nil
     if guid then
         pcall(fn, name, guid)
     end
@@ -317,7 +317,7 @@ local function DisableDeadAddons(verbose)
     local getState = ca and ca.GetAddOnEnableState
     local existsFn = ca and ca.DoesAddOnExist
     if not getState then return 0 end
-    local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+    local guid = _G.UnitGUID and F.PlainString(_G.UnitGUID("player"), nil) or nil
     local function Exists(name)
         if not existsFn then return true end
         local okEx, ex = pcall(existsFn, name)

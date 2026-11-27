@@ -173,7 +173,7 @@ local function CreateRow(parent)
     local icon = iconBox:CreateTexture(nil, "ARTWORK")
     icon:SetAllPoints(iconBox)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    ST.MaskTexture(iconBox, icon, 4)
+    ST.MaskIcon(iconBox, icon, 4)
     row._iconBox = iconBox
     row._icon = icon
 

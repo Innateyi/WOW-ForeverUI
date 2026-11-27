@@ -18,6 +18,7 @@ PATCH_LIST = [
     'vss_kkowo_rename.py',      # 先改名为 VamoosesSlipstream_kkowo（DD 不再认得、不会覆盖），再打跑尸开关
     'vss_corpse_toggle.py',
     'polestar_zhcn_fill.py',
+    'polestar_nav_optimize.py',
 ]
 
 

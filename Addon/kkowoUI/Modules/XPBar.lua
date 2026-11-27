@@ -450,8 +450,12 @@ local function ApplyNineSlice(obj, texPath, radius, wrap)
     end
 end
 
-local function AttachMask(tex, mask)
-    if tex and mask and tex.AddMaskTexture then
+local function AttachMask(tex, mask, host)
+    if not (tex and mask and tex.AddMaskTexture) then return end
+    local ST = F.StyleTokens
+    if ST and ST.AttachCustomMask then
+        ST.AttachCustomMask(host, tex, mask)
+    else
         pcall(tex.AddMaskTexture, tex, mask)
     end
 end
@@ -537,27 +541,34 @@ local function BuildPillTrack(frame)
 
     -- 半透明深邃暗玻底槽（使用 FLAT_TEX + VertexColor 确保与 MaskTexture 100% 兼容）
     local trackBg = frame:CreateTexture(nil, "BACKGROUND", nil, -5)
+    if trackBg.SetBlockingLoadsRequested then pcall(trackBg.SetBlockingLoadsRequested, trackBg, true) end
     trackBg:SetAllPoints(frame)
     trackBg:SetTexture(F.Theme.FLAT_TEX)
     trackBg:SetVertexColor(0.04, 0.05, 0.085, 0.66)
-    AttachMask(trackBg, frame._pillMask)
+    AttachMask(trackBg, frame._pillMask, frame)
     frame._trackBg = trackBg
 end
 
 local function CreatePillRim(parent, targetFrame)
     local host = targetFrame or parent
     local rim = parent:CreateTexture(nil, "OVERLAY", nil, 1)
+    if rim.SetBlockingLoadsRequested then pcall(rim.SetBlockingLoadsRequested, rim, true) end
     rim:SetAllPoints(host)
     if UseEUIRounded() and host._pillMask and parent.CreateMaskTexture then
         local hole = parent:CreateMaskTexture()
         if hole then
             rim:SetTexture(F.Theme.FLAT_TEX)
             rim:SetVertexColor(1, 1, 1, 0.14)
-            AttachMask(rim, host._pillMask)
             ApplyNineSlice(hole, EUI_ROUND_INV2, 2, "CLAMPTOWHITE")
             hole:SetPoint("TOPLEFT", host, "TOPLEFT", 1, -1)
             hole:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -1, 1)
-            AttachMask(rim, hole)
+            local ST = F.StyleTokens
+            if ST and ST.AttachBorderHole then
+                ST.AttachBorderHole(rim, rim, hole, host._pillMask, host)
+            else
+                AttachMask(rim, host._pillMask, host)
+                AttachMask(rim, hole, host)
+            end
             return rim
         end
     end
@@ -569,7 +580,7 @@ end
 local function ShowXPTooltip(anchor)
     local owner = xpHitBox or anchor or xpFrame
     if not owner then return end
-    local level = _G.UnitLevel("player") or 1
+    local level = _G.UnitLevel and F.PlainNumber(_G.UnitLevel("player"), 1) or 1
     local eqIlvl, overallIlvl = GetPlayerItemLevel()
     local cur = F.PlainNumber(_G.UnitXP("player"), 0)
     local max = math_max(1, F.PlainNumber(_G.UnitXPMax("player"), 1))
@@ -579,7 +590,8 @@ local function ShowXPTooltip(anchor)
     local gained, perHour, sessionSec, levelSec = UpdateSession(cur, max)
 
     -- 智能上下避让：经验条位于屏幕上侧时提示框朝下展开，彻底杜绝遮挡图标/等级/经验条
-    local _, cy = owner:GetCenter()
+    local _, rawCy = owner:GetCenter()
+    local cy = F.PlainNumber(rawCy, nil)
     local screenH = (_G.UIParent and _G.UIParent.GetHeight and F.PlainNumber(_G.UIParent:GetHeight(), 768)) or 768
     if cy and cy > screenH * 0.5 then
         GameTooltip:SetOwner(owner, "ANCHOR_BOTTOM", 0, -6)
@@ -856,7 +868,7 @@ end
 
 local function UpdateEmblemStats()
     if not (mod._active and emblemFrame and emblemFrame:IsShown()) then return end
-    local level = _G.UnitLevel("player") or 1
+    local level = _G.UnitLevel and F.PlainNumber(_G.UnitLevel("player"), 1) or 1
     if emblemLevelFS then
         emblemLevelFS:SetText(tostring(level))
     end
@@ -880,7 +892,7 @@ local function UpdateXP()
         return
     end
     local db = mod:GetDB()
-    local level = _G.UnitLevel("player") or 1
+    local level = _G.UnitLevel and F.PlainNumber(_G.UnitLevel("player"), 1) or 1
     local maxLevel = (_G.GetMaxLevelForPlayerExpansion and _G.GetMaxLevelForPlayerExpansion())
         or _G.MAX_PLAYER_LEVEL or 60
     if db.hideAtMaxLevel and level >= maxLevel then
@@ -1099,21 +1111,21 @@ local function CreateFrames()
     restedBar:SetAllPoints(xpFrame)
     restedBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     restedBar._texBound = true
-    AttachMask(restedBar.GetStatusBarTexture and restedBar:GetStatusBarTexture(), xpFrame._pillMask)
+    AttachMask(restedBar.GetStatusBarTexture and restedBar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
 
     questBar = CreateFrame("StatusBar", nil, xpFrame)
     questBar:SetAllPoints(xpFrame)
     questBar:SetFrameLevel(restedBar:GetFrameLevel() + 1)
     questBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     questBar._texBound = true
-    AttachMask(questBar.GetStatusBarTexture and questBar:GetStatusBarTexture(), xpFrame._pillMask)
+    AttachMask(questBar.GetStatusBarTexture and questBar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
 
     xpBar = CreateFrame("StatusBar", nil, xpFrame)
     xpBar:SetAllPoints(xpFrame)
     xpBar:SetFrameLevel(questBar:GetFrameLevel() + 1)
     xpBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     xpBar._texBound = true
-    AttachMask(xpBar.GetStatusBarTexture and xpBar:GetStatusBarTexture(), xpFrame._pillMask)
+    AttachMask(xpBar.GetStatusBarTexture and xpBar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
 
     local ov = CreateFrame("Frame", nil, xpFrame)
     ov:SetAllPoints()
@@ -1143,7 +1155,7 @@ local function CreateFrames()
     xpPulse:SetTexture(F.Theme.FLAT_TEX)
     xpPulse:SetBlendMode("ADD")
     xpPulse:SetAlpha(0)
-    AttachMask(xpPulse, xpFrame._pillMask)
+    AttachMask(xpPulse, xpFrame._pillMask, xpFrame)
     xpPulse:Hide()
 
     xpPulseAG = xpPulse:CreateAnimationGroup()
@@ -1305,7 +1317,7 @@ local function CreateFrames()
     repBar:SetAllPoints(repFrame)
     repBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     repBar._texBound = true
-    AttachMask(repBar.GetStatusBarTexture and repBar:GetStatusBarTexture(), repFrame._pillMask)
+    AttachMask(repBar.GetStatusBarTexture and repBar:GetStatusBarTexture(), repFrame._pillMask, repFrame)
 
     local repTextLayer = CreateFrame("Frame", nil, repFrame)
     repTextLayer:SetAllPoints()

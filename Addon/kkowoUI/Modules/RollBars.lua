@@ -5,7 +5,9 @@
 local _, F = ...
 
 local _G = _G
-local ipairs, pcall = ipairs, pcall
+local ipairs, pairs, pcall, type = ipairs, pairs, pcall, type
+local math_floor, math_min = math.floor, math.min
+local table_sort = table.sort
 local CreateFrame = CreateFrame
 local GameTooltip = _G.GameTooltip
 local GetTime = GetTime
@@ -20,12 +22,32 @@ local mod = F.RegisterModule("rollBars", {
         width = 300,
         height = 30,
         spacing = 6,
+        growDir = "UP", -- "UP"（默认向上堆叠，避开下方核心 HUD / 常驻 BUFF）| "DOWN"
     },
 })
 
 local container = nil
 local bars = {}
-local MAX_BARS = 8
+local MAX_BARS = 12
+local nextSeq = 0
+local nativeHooksInstalled = false
+local hideNativePending = false
+
+local ApplyBarBorder -- 前向声明
+
+local function SyncBarLayers(bar, strata, barLvl)
+    if not bar then return end
+    bar:SetFrameStrata(strata)
+    bar:SetFrameLevel(barLvl)
+    if bar.status then bar.status:SetFrameLevel(barLvl + 1) end
+    if bar._ov then bar._ov:SetFrameLevel(barLvl + 3) end
+    if bar._iconBtn then bar._iconBtn:SetFrameLevel(barLvl + 4) end
+    local btnLvl = barLvl + 5
+    if bar.btnPass then bar.btnPass:SetFrameLevel(btnLvl) end
+    if bar.btnDis then bar.btnDis:SetFrameLevel(btnLvl) end
+    if bar.btnGreed then bar.btnGreed:SetFrameLevel(btnLvl) end
+    if bar.btnNeed then bar.btnNeed:SetFrameLevel(btnLvl) end
+end
 
 local function LayoutBars()
     if not container then
@@ -33,22 +55,39 @@ local function LayoutBars()
     end
     local db = mod:GetDB()
     local w, h, gap = db.width or 300, db.height or 30, db.spacing or 6
-    local shown = 0
+    local growDown = (db.growDir == "DOWN")
     local hasPreview = false
+    local visible = {}
     for _, bar in ipairs(bars) do
         if bar:IsShown() then
             if not bar.rollID then hasPreview = true end
-            bar:ClearAllPoints()
-            bar:SetSize(w, h)
-            bar:SetPoint("TOP", container, "TOP", 0, -shown * (h + gap))
-            shown = shown + 1
+            visible[#visible + 1] = bar
         end
     end
-    container:SetSize(w, math.max(h, shown * (h + gap)))
-    if hasPreview then
-        container:SetFrameStrata("FULLSCREEN_DIALOG")
-    else
-        container:SetFrameStrata("MEDIUM")
+    table_sort(visible, function(a, b)
+        return (a._seq or 0) < (b._seq or 0)
+    end)
+
+    -- 容器固定单条尺寸：
+    -- 1) 解锁模式锚框与第 1 条严格对齐，增减装备时剩余条不再整体跳动；
+    -- 2) 实战置 HIGH 层（高于 MEDIUM 层核心 HUD / 常驻 BUFF / 动作条，低于 DIALOG 拾取绑定弹窗与 TOOLTIP），杜绝多件装备重叠时点击被下层框体吞掉。
+    container:SetSize(w, h)
+    local strata = hasPreview and "FULLSCREEN_DIALOG" or "HIGH"
+    local baseLvl = hasPreview and 200 or 50
+    container:SetFrameStrata(strata)
+    container:SetFrameLevel(baseLvl)
+
+    local step = h + gap
+    local anchorPt = growDown and "TOP" or "BOTTOM"
+    for idx, bar in ipairs(visible) do
+        local offset = (idx - 1) * step
+        bar:ClearAllPoints()
+        bar:SetSize(w, h)
+        bar:SetPoint(anchorPt, container, anchorPt, 0, growDown and -offset or offset)
+        SyncBarLayers(bar, strata, baseLvl + 1)
+        if bar._borderColor then
+            ApplyBarBorder(bar, bar._borderColor[1], bar._borderColor[2], bar._borderColor[3])
+        end
     end
 end
 
@@ -65,11 +104,92 @@ local function EUILootRollsInUse()
 end
 
 local function HideNativeRollFrames()
-    for i = 1, 4 do
+    if not (mod._active and not EUILootRollsInUse()) then
+        return
+    end
+    local c = _G.GroupLootContainer
+    local maxN = (c and F.PlainNumber(c.maxIndex, 4)) or 4
+    if maxN < 4 then maxN = 4 end
+    for i = 1, maxN do
         local f = _G["GroupLootFrame" .. i]
-        if f and f:IsShown() then
-            f:Hide()
+        if f and f.IsShown and f:IsShown() then
+            pcall(f.Hide, f)
         end
+    end
+    if c and type(c.rollFrames) == "table" then
+        local bonus = _G.BonusRollFrame
+        for _, rf in pairs(c.rollFrames) do
+            if rf and rf ~= bonus and rf.IsShown and rf:IsShown() then
+                local nm = rf.GetName and F.PlainString(rf:GetName(), "") or ""
+                if nm:find("GroupLootFrame", 1, true) or rf.rollID ~= nil then
+                    pcall(rf.Hide, rf)
+                end
+            end
+        end
+    end
+end
+
+local function ScheduleHideNativeRollFrames()
+    if hideNativePending or not (mod._active and not EUILootRollsInUse()) then
+        return
+    end
+    if _G.C_Timer and _G.C_Timer.After then
+        hideNativePending = true
+        _G.C_Timer.After(0, function()
+            hideNativePending = false
+            HideNativeRollFrames()
+        end)
+    else
+        HideNativeRollFrames()
+    end
+end
+
+local function CloseBar(bar)
+    if not bar then return end
+    if GameTooltip and GameTooltip.IsOwned then
+        local owner = GameTooltip.GetOwner and GameTooltip:GetOwner()
+        if owner and (owner == bar or owner == bar._iconBtn
+            or owner == bar.btnPass or owner == bar.btnDis
+            or owner == bar.btnGreed or owner == bar.btnNeed) then
+            GameTooltip:Hide()
+        end
+    end
+    bar.rollID = nil
+    bar.endTime = nil
+    bar.bop = nil
+    bar:Hide()
+end
+
+local function CloseRollID(rollID)
+    local changed = false
+    for _, bar in ipairs(bars) do
+        if not rollID or bar.rollID == rollID then
+            if bar:IsShown() or bar.rollID ~= nil then
+                CloseBar(bar)
+                changed = true
+            end
+        end
+    end
+    if changed then
+        LayoutBars()
+    end
+end
+
+local function EnsureNativeHooks()
+    if nativeHooksInstalled then return end
+    nativeHooksInstalled = true
+    if type(_G.GroupLootContainer_AddFrame) == "function" then
+        _G.hooksecurefunc("GroupLootContainer_AddFrame", ScheduleHideNativeRollFrames)
+    end
+    if type(_G.GroupLootContainer_Update) == "function" then
+        _G.hooksecurefunc("GroupLootContainer_Update", ScheduleHideNativeRollFrames)
+    end
+    if type(_G.ConfirmLootRoll) == "function" then
+        _G.hooksecurefunc("ConfirmLootRoll", function(rollID)
+            if mod._active and not EUILootRollsInUse() and rollID then
+                CloseRollID(rollID)
+            end
+        end)
     end
 end
 
@@ -99,11 +219,17 @@ local function CreateRollButton(bar, host, iconFile, color, tip, rollAction, off
 
     btn:SetScript("OnClick", function()
         if bar.rollID and _G.RollOnLoot then
-            pcall(_G.RollOnLoot, bar.rollID, rollAction)
+            local rid = bar.rollID
+            local isBoP = bar.bop == true
+            local ok = pcall(_G.RollOnLoot, rid, rollAction)
+            -- 放弃或非拾取绑定物品：立刻收起该条，无需干等服务端延迟；拾取绑定由确认弹窗 ConfirmLootRoll 或 CANCEL_LOOT_ROLL 收起
+            if ok and (rollAction == 0 or not isBoP) then
+                CloseBar(bar)
+                LayoutBars()
+            end
         elseif not bar.rollID then
             -- 预览条没有 rollID：点任意按钮直接关闭预览
-            bar.endTime = nil
-            bar:Hide()
+            CloseBar(bar)
             LayoutBars()
         end
     end)
@@ -111,9 +237,9 @@ local function CreateRollButton(bar, host, iconFile, color, tip, rollAction, off
         if self:IsEnabled() then
             F.Theme.SetGlassState(self, true, false)
             tex:SetVertexColor(
-                math.min(1, cr * 0.45 + 0.55),
-                math.min(1, cg * 0.45 + 0.55),
-                math.min(1, cb * 0.45 + 0.55), 1.0)
+                math_min(1, cr * 0.45 + 0.55),
+                math_min(1, cg * 0.45 + 0.55),
+                math_min(1, cb * 0.45 + 0.55), 1.0)
         end
         GameTooltip:SetOwner(self, "ANCHOR_TOP", 0, 4)
         GameTooltip:SetText(tip, cr, cg, cb)
@@ -139,7 +265,7 @@ local function CreateRollButton(bar, host, iconFile, color, tip, rollAction, off
     return btn
 end
 
-local function ApplyBarBorder(bar, r, g, b)
+ApplyBarBorder = function(bar, r, g, b)
     if not bar then return end
     local ST = F.StyleTokens
     local rad = ST and ST.GetCornerRadius(6) or 0
@@ -151,7 +277,7 @@ local function ApplyBarBorder(bar, r, g, b)
         local ft = bar.status and bar.status:GetStatusBarTexture()
         if ft then ST.MaskTexture(bar, ft, rad) end
         ST.ApplyRoundedBorder(bar, rad, r * 0.68 + 0.10, g * 0.68 + 0.10, b * 0.68 + 0.10, 0.86, 6)
-        if bar._iconBtn and bar.icon then ST.MaskTexture(bar._iconBtn, bar.icon, 4) end
+        if bar._iconBtn and bar.icon then ST.MaskIcon(bar._iconBtn, bar.icon, 4) end
     else
         if ST then
             ST.ClearRoundedMask(bar)
@@ -166,22 +292,55 @@ local function ApplyBarBorder(bar, r, g, b)
     end
 end
 
-local function AcquireBar()
+local function ShowRollTooltip(bar, owner)
+    if not (bar and bar.rollID and GameTooltip) then return end
+    GameTooltip:SetOwner(owner or bar, "ANCHOR_LEFT")
+    pcall(GameTooltip.SetLootRollItem, GameTooltip, bar.rollID)
+    GameTooltip:Show()
+end
+
+local function AcquireBar(rollID)
+    if rollID ~= nil then
+        for _, b in ipairs(bars) do
+            if b:IsShown() and b.rollID == rollID then
+                return b, true
+            end
+        end
+    end
     for _, b in ipairs(bars) do
         if not b:IsShown() then
-            return b
+            return b, false
         end
     end
     if #bars >= MAX_BARS then
-        return bars[1]
+        local oldest = bars[1]
+        for i = 2, #bars do
+            local b = bars[i]
+            if (b.endTime or 0) < (oldest.endTime or 0) then
+                oldest = b
+            end
+        end
+        return oldest, false
     end
     local bar = CreateFrame("Frame", nil, container)
+    bar:EnableMouse(true)
+    bar:SetClampedToScreen(true)
     F.Theme.StylePanel(bar, 0.88, 0.85)
+    bar:SetScript("OnEnter", function(self) ShowRollTooltip(self, self) end)
+    bar:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     local sb = CreateFrame("StatusBar", nil, bar)
     sb:SetPoint("TOPLEFT", 32, -1)
     sb:SetPoint("BOTTOMRIGHT", -1, 1)
     sb:SetStatusBarTexture(F.Theme.GetBarTexture())
+    sb:EnableMouse(false)
+    if sb.SetSnapToPixelGrid then pcall(sb.SetSnapToPixelGrid, sb, false) end
+    if sb.SetTexelSnappingBias then pcall(sb.SetTexelSnappingBias, sb, 0) end
+    local sbFill = sb:GetStatusBarTexture()
+    if sbFill then
+        if sbFill.SetSnapToPixelGrid then pcall(sbFill.SetSnapToPixelGrid, sbFill, false) end
+        if sbFill.SetTexelSnappingBias then pcall(sbFill.SetTexelSnappingBias, sbFill, 0) end
+    end
     bar.status = sb
 
     local iconBtn = CreateFrame("Button", nil, bar)
@@ -194,18 +353,20 @@ local function AcquireBar()
     bar.icon = icon
 
     ApplyBarBorder(bar, 0.04, 0.045, 0.06)
-    iconBtn:SetScript("OnEnter", function(self)
-        if bar.rollID then
-            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-            pcall(GameTooltip.SetLootRollItem, GameTooltip, bar.rollID)
-            GameTooltip:Show()
+    iconBtn:SetScript("OnEnter", function(self) ShowRollTooltip(bar, self) end)
+    iconBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    iconBtn:SetScript("OnClick", function()
+        if bar.rollID and _G.IsModifiedClick and _G.IsModifiedClick() and _G.GetLootRollItemLink and _G.HandleModifiedItemClick then
+            local ok, link = pcall(_G.GetLootRollItemLink, bar.rollID)
+            if ok and link then pcall(_G.HandleModifiedItemClick, link) end
         end
     end)
-    iconBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     local ov = CreateFrame("Frame", nil, bar)
     ov:SetAllPoints()
+    ov:EnableMouse(false)
     ov:SetFrameLevel(sb:GetFrameLevel() + 2)
+    bar._ov = ov
     local timeFS = ov:CreateFontString(nil, "OVERLAY")
     F.Theme.ApplyFont(timeFS, 11, "", 0.78, 0.80, 0.85, 0.92)
     timeFS:SetPoint("RIGHT", bar, "RIGHT", -102, 0)
@@ -235,15 +396,13 @@ local function AcquireBar()
         if not self.endTime then return end
         local rem = self.endTime - GetTime()
         if rem <= 0 then
-            self.rollID = nil
-            self.endTime = nil
-            self:Hide()
+            CloseBar(self)
             LayoutBars()
             return
         end
         self.status:SetValue(rem)
         if self.timeFS then
-            local sec = math.floor(rem + 0.5)
+            local sec = math_floor(rem + 0.5)
             if self._lastSec ~= sec then
                 self._lastSec = sec
                 self.timeFS:SetText(sec .. "s")
@@ -251,18 +410,21 @@ local function AcquireBar()
         end
     end)
 
+    SyncBarLayers(bar, (container and container:GetFrameStrata()) or "HIGH", ((container and container:GetFrameLevel()) or 50) + 1)
     bar:Hide()
     bars[#bars + 1] = bar
-    return bar
+    return bar, false
 end
 
 local function EnsureContainer()
     if container then
         return
     end
+    local db = mod:GetDB()
     container = CreateFrame("Frame", "kkowoUI_RollBars", _G.UIParent)
-    container:SetSize(300, 30)
-    container:SetFrameStrata("MEDIUM")
+    container:SetSize(db.width or 300, db.height or 30)
+    container:SetFrameStrata("HIGH")
+    container:SetFrameLevel(50)
     F.Mover.Register({
         key = "RollBars",
         label = "Roll 点增强条",
@@ -286,17 +448,19 @@ function mod:OnStartRoll(_, rollID, rollTime)
     end
     EnsureContainer()
     HideNativeRollFrames()
-    if _G.C_Timer and _G.C_Timer.After then
-        _G.C_Timer.After(0, function()
-            if mod._active then HideNativeRollFrames() end
-        end)
-    end
-    local texture, name, _, quality, _, canNeed, canGreed, canDisenchant = _G.GetLootRollItemInfo(rollID)
-    if not name then
+    ScheduleHideNativeRollFrames()
+
+    local okInfo, texture, name, _, quality, bindOnPickUp, canNeed, canGreed, canDisenchant = pcall(_G.GetLootRollItemInfo, rollID)
+    if not (okInfo and name) then
         return
     end
-    local bar = AcquireBar()
+    local bar, existed = AcquireBar(rollID)
     bar.rollID = rollID
+    bar.bop = (bindOnPickUp == true)
+    if not existed then
+        nextSeq = nextSeq + 1
+        bar._seq = nextSeq
+    end
     local rt = F.PlainNumber(rollTime, 60000)
     if rt <= 0 then rt = 60000 end
     local dur = rt / 1000
@@ -308,38 +472,35 @@ function mod:OnStartRoll(_, rollID, rollTime)
     local qr, qg, qb = 0.7, 0.7, 0.7
     local getQualColor = (_G.C_Item and _G.C_Item.GetItemQualityColor) or _G.GetItemQualityColor
     if getQualColor then
-        local r, g, b = getQualColor(F.PlainNumber(quality, 1))
-        if r and g and b then qr, qg, qb = r, g, b end
+        local okQ, r, g, b = pcall(getQualColor, F.PlainNumber(quality, 1))
+        if okQ and r and g and b then qr, qg, qb = r, g, b end
     end
     bar.status:SetStatusBarColor(qr, qg, qb, 0.42)
-    ApplyBarBorder(bar, qr, qg, qb)
+    bar._borderColor = { qr, qg, qb }
     bar._lastSec = nil
     bar.icon:SetTexture(texture or 134400)
     bar.nameText:SetText(name)
     bar.nameText:SetTextColor(qr, qg, qb, 1)
 
-    bar.btnNeed:SetEnabled(canNeed == true); bar.btnNeed:SetAlpha(canNeed and 1 or 0.25)
-    bar.btnGreed:SetEnabled(canGreed == true); bar.btnGreed:SetAlpha(canGreed and 1 or 0.25)
-    bar.btnDis:SetEnabled(canDisenchant == true); bar.btnDis:SetAlpha(canDisenchant and 1 or 0.25)
+    bar.btnPass:SetEnabled(true); bar.btnPass:SetAlpha(1)
+    bar.btnNeed:SetEnabled(canNeed == true); bar.btnNeed:SetAlpha(canNeed == true and 1 or 0.25)
+    bar.btnGreed:SetEnabled(canGreed == true); bar.btnGreed:SetAlpha(canGreed == true and 1 or 0.25)
+    bar.btnDis:SetEnabled(canDisenchant == true); bar.btnDis:SetAlpha(canDisenchant == true and 1 or 0.25)
     bar:Show()
     LayoutBars()
 end
 
 function mod:OnCancelRoll(_, rollID)
-    for _, bar in ipairs(bars) do
-        if not rollID or bar.rollID == rollID then
-            bar.rollID = nil
-            bar.endTime = nil
-            bar:Hide()
-        end
-    end
-    LayoutBars()
+    CloseRollID(rollID)
 end
 
 function mod:ShowPreview()
     EnsureContainer()
-    local bar = AcquireBar()
+    local bar = AcquireBar(nil)
     bar.rollID = nil
+    bar.bop = false
+    nextSeq = nextSeq + 1
+    bar._seq = nextSeq
     bar.endTime = GetTime() + 12
     bar.status:SetStatusBarTexture(F.Theme.GetBarTexture())
     bar.status:SetMinMaxValues(0, 12)
@@ -351,7 +512,8 @@ function mod:ShowPreview()
     bar.nameText:SetTextColor(0.64, 0.21, 0.93, 1)
     -- 复用的条可能残留上一次真实掷骰的禁用状态 / 倒计时 / 品质边框色
     bar._lastSec = nil
-    ApplyBarBorder(bar, 0.64, 0.21, 0.93)
+    bar._borderColor = { 0.64, 0.21, 0.93 }
+    bar.btnPass:SetEnabled(true); bar.btnPass:SetAlpha(1)
     bar.btnNeed:SetEnabled(true); bar.btnGreed:SetEnabled(true); bar.btnDis:SetEnabled(true)
     bar.btnNeed:SetAlpha(1); bar.btnGreed:SetAlpha(1); bar.btnDis:SetAlpha(1)
     bar:Show()
@@ -360,6 +522,7 @@ end
 
 function mod:OnEnable()
     EnsureContainer()
+    EnsureNativeHooks()
     self:RegisterEvent("START_LOOT_ROLL", self.OnStartRoll)
     self:RegisterEvent("CANCEL_LOOT_ROLL", self.OnCancelRoll)
     self:RegisterEvent("CANCEL_ALL_LOOT_ROLLS", function() self:OnCancelRoll(nil, nil) end)
@@ -368,6 +531,10 @@ end
 
 function mod:OnDisable()
     self:OnCancelRoll(nil, nil)
+end
+
+function mod:OnThemeChanged()
+    LayoutBars()
 end
 
 function mod:BuildOptions(W, parent, y, enableSlot, blank)
@@ -382,7 +549,21 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     })
     y = y - h
 
-    _, h = W:WideButton(parent, "预览 Roll 点条（12 秒）", y, function() self:ShowPreview() end)
+    _, h = W:DualRow(parent, y, {
+        type = "dropdown",
+        text = "多件装备堆叠方向",
+        tooltip = "同时掉落多件装备时新条目的展开方向。默认向上堆叠，避免向下压到常驻 BUFF 图标与核心双翼 HUD。",
+        values = {
+            UP   = "向上堆叠（推荐）",
+            DOWN = "向下堆叠",
+        },
+        order = { "UP", "DOWN" },
+        getValue = function() return db.growDir == "DOWN" and "DOWN" or "UP" end,
+        setValue = function(v) db.growDir = (v == "DOWN") and "DOWN" or "UP"; LayoutBars() end,
+    }, blank)
+    y = y - h
+
+    _, h = W:WideButton(parent, "预览 Roll 点条（12 秒，可连点测多条）", y, function() self:ShowPreview() end)
     y = y - h
     return y
 end

@@ -182,13 +182,44 @@ local function AurasRestricted()
     return false
 end
 
+local function DisablePixelSnap(obj)
+    if not obj then return end
+    if obj.SetSnapToPixelGrid then pcall(obj.SetSnapToPixelGrid, obj, false) end
+    if obj.SetTexelSnappingBias then pcall(obj.SetTexelSnappingBias, obj, 0) end
+end
+
 local function FormatRemain(rem)
     if rem >= 5400 then
         return string_format("%dh", math_ceil(rem / 3600))
     elseif rem >= 90 then
         return string_format("%dm", math_ceil(rem / 60))
+    elseif rem < 10 then
+        return string_format("%.1f", math_max(0, rem))
     end
     return string_format("%d", math_max(0, math_ceil(rem)))
+end
+
+local tenthsFormatter = nil -- false = 客户端拒绝小数规则，退回 AuraKit 默认格式器
+local function GetProcDurationFormatter(AK)
+    if tenthsFormatter == nil then
+        tenthsFormatter = false
+        local SU = _G.C_StringUtil
+        local R = _G.Enum and _G.Enum.NumericRuleFormatRounding
+        if SU and SU.CreateNumericRuleFormatter and R and R.Nearest and R.Up then
+            local okF, nf = pcall(SU.CreateNumericRuleFormatter)
+            if okF and nf and nf.SetBreakpoints then
+                local okB = pcall(nf.SetBreakpoints, nf, {
+                    { threshold = 0,    format = "%.1f", rounding = R.Nearest },
+                    { threshold = 10,   format = "%d",   step = 1,    rounding = R.Up },
+                    { threshold = 90,   format = "%dm",  step = 60,   rounding = R.Up, components = { { div = 60 } } },
+                    { threshold = 5401, format = "%dh",  step = 3600, rounding = R.Up, components = { { div = 3600 } } },
+                })
+                if okB then tenthsFormatter = nf end
+            end
+        end
+    end
+    if tenthsFormatter then return tenthsFormatter end
+    return AK and AK.GetDurationFormatter and AK.GetDurationFormatter() or nil
 end
 
 ----------------------------------------------------------------------
@@ -329,16 +360,20 @@ local function ApplyShape(tex, radius, wrap)
     end
 end
 
-local function AddRoundMask(owner, tex, anchor, radius)
+local function AddRoundMask(owner, tex, anchor, radius, directOnly)
     if not (radius and radius > 0 and owner.CreateMaskTexture and tex.AddMaskTexture) then return nil end
     local m = owner:CreateMaskTexture()
     m:SetAllPoints(anchor)
     ApplyShape(m, radius, "CLAMPTOBLACKADDITIVE")
-    pcall(tex.AddMaskTexture, tex, m)
+    if not directOnly and ST and ST.AttachCustomMask then
+        ST.AttachCustomMask(owner, tex, m)
+    else
+        pcall(tex.AddMaskTexture, tex, m)
+    end
     return m
 end
 
-local function BuildRowRegions(host, L)
+local function BuildRowRegions(host, L, isEngine)
     local row = {}
     local px, r = L.px, L.radius
     local inner = math_max(1, r - 1)
@@ -355,7 +390,20 @@ local function BuildRowRegions(host, L)
         icon:SetPoint("TOPLEFT", ib, "TOPLEFT", px, -px)
         icon:SetPoint("BOTTOMRIGHT", ib, "BOTTOMRIGHT", -px, px)
         icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        AddRoundMask(host, icon, icon, (r > 0) and inner or 0)
+        local iconRad = (r > 0) and inner or 0
+        if isEngine then
+            -- 引擎按钮：等 EngineInitButton 给 icon 赋图后再挂 64x64 整图安全遮罩，避免空图/9宫格切片导致首次触发变空白
+            row._iconMaskRad = iconRad
+            row._iconW = math_max(2, L.iconW - 2 * px)
+            row._iconH = math_max(2, L.h - 2 * px)
+        elseif iconRad > 0 then
+            local iconWrap = CreateFrame("Frame", nil, host)
+            iconWrap:SetPoint("TOPLEFT", icon, "TOPLEFT", 0, 0)
+            iconWrap:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 0, 0)
+            iconWrap:EnableMouse(false)
+            row._iconWrap = iconWrap
+            ST.MaskIcon(iconWrap, icon, iconRad)
+        end
         row.iconBorder, row.icon = ib, icon
     end
 
@@ -366,7 +414,7 @@ local function BuildRowRegions(host, L)
     bd:SetVertexColor(bc[1], bc[2], bc[3], bc[4])
     local _, invPath = ST.ResolveMaskPath(r)
     if r > 0 and invPath and host.CreateMaskTexture then
-        -- 与 EUI 圆角描边同法：外圈圆角实心 + 内缩 1px 的反向圆角遮罩挖空中间
+        -- 与 EUI 圆角描边同法：外圈圆角实心 + 内缩 1px 的反向圆角遮罩挖空中间（走统一孔洞等待队列，避免首帧未加载画成实心色块）
         ApplyShape(bd, r)
         local hole = host:CreateMaskTexture()
         hole:SetPoint("TOPLEFT", bd, "TOPLEFT", px, -px)
@@ -375,7 +423,15 @@ local function BuildRowRegions(host, L)
         pcall(hole.SetTexture, hole, invPath, "CLAMPTOWHITE", "CLAMPTOWHITE")
         if hole.SetTextureSliceMargins then pcall(hole.SetTextureSliceMargins, hole, inner, inner, inner, inner) end
         if SLICE_STRETCH ~= nil and hole.SetTextureSliceMode then pcall(hole.SetTextureSliceMode, hole, SLICE_STRETCH) end
-        pcall(bd.AddMaskTexture, bd, hole)
+        -- 引擎光环按钮（isEngine）严禁挂任何 OnShow/OnSizeChanged 脚本钩子：
+        -- WoW 12.1 C++ AuraContainer 会以保密布尔值调用 button:SetShown(secret)，
+        -- 若按钮存在脚本处理器会直接抛出 "Cannot be called with secrets due to existing script handlers"。
+        -- bd 与 hole 均已开启阻塞加载（SetBlockingLoadsRequested），创建期直接绑定即可。
+        if not isEngine and ST and ST.AttachBorderHole then
+            ST.AttachBorderHole(bd, bd, hole, nil, host)
+        else
+            pcall(bd.AddMaskTexture, bd, hole)
+        end
     else
         -- 直角：四条 1px 边线
         bd:Hide()
@@ -404,20 +460,41 @@ local function BuildRowRegions(host, L)
     bar:SetStatusBarTexture(ST.TEX.FLAT)
     bar:SetMinMaxValues(0, 1)
     bar:SetValue(1)
+    bar:SetClipsChildren(true)
     if bar.EnableMouse then bar:EnableMouse(false) end
+    DisablePixelSnap(bar)
     local fill = bar:GetStatusBarTexture()
+    local spark = nil
+    local barLvl = F.PlainNumber(bar:GetFrameLevel(), 1) or 1
     if fill then
+        if fill.SetBlockingLoadsRequested then pcall(fill.SetBlockingLoadsRequested, fill, true) end
         -- 关掉像素吸附：否则慢速缩短的填充边缘按整像素跳格（15 秒的条每秒才缩约 10 像素），看起来一顿一顿的
-        if fill.SetSnapToPixelGrid then pcall(fill.SetSnapToPixelGrid, fill, false) end
-        if fill.SetTexelSnappingBias then pcall(fill.SetTexelSnappingBias, fill, 0) end
-        AddRoundMask(bar, fill, bar, (r > 0) and inner or 0)
+        DisablePixelSnap(fill)
+        AddRoundMask(bar, fill, bar, (r > 0) and inner or 0, isEngine)
+
+        -- 前沿柔和羽化光刃（与施法条同款 SparkBlade，纯锚定 fill 右沿，零 OnUpdate）：
+        -- 让低速倒计时在亚像素移动时通过羽化光晕平滑过渡相邻像素，观感对齐施法条
+        local sparkHost = CreateFrame("Frame", nil, bar)
+        sparkHost:SetAllPoints(bar)
+        sparkHost:SetClipsChildren(true)
+        sparkHost:SetFrameLevel(barLvl + 1)
+        if sparkHost.EnableMouse then sparkHost:EnableMouse(false) end
+        spark = sparkHost:CreateTexture(nil, "OVERLAY", nil, 5)
+        if spark.SetBlockingLoadsRequested then pcall(spark.SetBlockingLoadsRequested, spark, true) end
+        spark:SetTexture(ST.TEX.SPARK_BLADE)
+        spark:SetBlendMode("ADD")
+        spark:SetSize(16, L.h + 4)
+        spark:SetPoint("CENTER", fill, "RIGHT", -1, 0)
+        spark:SetVertexColor(1, 1, 1, 0.88)
+        DisablePixelSnap(spark)
+        AddRoundMask(sparkHost, spark, bar, (r > 0) and inner or 0, isEngine)
     end
 
-    -- 文字载体放在填充条之上
+    -- 文字载体放在填充条与光刃之上
     local carrier = CreateFrame("Frame", nil, host)
     carrier:SetPoint("TOPLEFT", bd, "TOPLEFT", 0, 0)
     carrier:SetPoint("BOTTOMRIGHT", bd, "BOTTOMRIGHT", 0, 0)
-    carrier:SetFrameLevel((F.PlainNumber(bar:GetFrameLevel(), 1) or 1) + 2)
+    carrier:SetFrameLevel(barLvl + 2)
     if carrier.EnableMouse then carrier:EnableMouse(false) end
 
     local timeFS = carrier:CreateFontString(nil, "OVERLAY")
@@ -443,7 +520,7 @@ local function BuildRowRegions(host, L)
     countFS:SetJustifyH("RIGHT")
     countFS:SetText("")
 
-    row.border, row.track, row.bar, row.carrier = bd, track, bar, carrier
+    row.border, row.track, row.bar, row.spark, row.carrier = bd, track, bar, spark, carrier
     row.time, row.name, row.count = timeFS, nameFS, countFS
     return row
 end
@@ -452,6 +529,13 @@ local function PaintRow(row, r, g, b)
     if not row then return end
     local lr, lg, lb = r * 0.70, g * 0.70, b * 0.70
     ST.ApplyBarGradient(row.bar, lr, lg, lb, math_min(1, r * 1.04), math_min(1, g * 1.04), math_min(1, b * 1.04), 0.96, false)
+    if row.spark then
+        row.spark:SetVertexColor(
+            math_min(1, r * 0.30 + 0.70),
+            math_min(1, g * 0.30 + 0.70),
+            math_min(1, b * 0.30 + 0.70),
+            0.88)
+    end
     -- 底槽 = 核心双翼血条的掉血底色：按条色轻染的半透明玻璃（深色条稍透一些），不是统一的近黑色块
     local a = (lr + lg + lb < 0.25) and 0.34 or 0.42
     row.track:SetVertexColor(lr * 0.16 + 0.06, lg * 0.16 + 0.06, lb * 0.16 + 0.08, a)
@@ -503,11 +587,16 @@ local function FillRow(row, it, now)
         row._max = dur
         row.bar:SetMinMaxValues(0, dur)
     end
-    row.bar:SetValue(math_min(rem, dur))
-    -- 倒计时文字每秒最多变一次：整秒没变就不重新格式化
-    local sec = math_ceil(rem)
-    if row._sec ~= sec then
-        row._sec = sec
+    local val = math_min(rem, dur)
+    row.bar:SetValue(val)
+    if row.spark then
+        local frac = val / dur
+        row.spark:SetShown(frac > 0.005 and frac < 0.995)
+    end
+    -- < 10s 按 0.1s 刷新（与施法条 / 追踪条同节奏）；>= 10s 每整秒最多刷新一次
+    local key = (rem < 10) and math_floor(rem * 10 + 0.5) or (1000 + math_ceil(rem))
+    if row._sec ~= key then
+        row._sec = key
         local t = FormatRemain(rem)
         if row._t ~= t then
             row._t = t
@@ -836,9 +925,12 @@ local function ReleaseEngine()
     local c = engine.container
     engine.container = nil
     engine.hiddenForPreview = false
-    for k in pairs(engine.styleKeys) do engine.styleKeys[k] = nil end
+    local AK = GetAK()
+    for k, styleKey in pairs(engine.styleKeys) do
+        if AK and type(AK.styles) == "table" then AK.styles[styleKey] = nil end
+        engine.styleKeys[k] = nil
+    end
     if c then
-        local AK = GetAK()
         if AK and AK.ReleaseContainer then
             pcall(AK.ReleaseContainer, c)
         else
@@ -854,12 +946,22 @@ local function EngineInitButton(button, d, style)
         local L = style.kkLayout
         if button.SetMouseClickEnabled then button:SetMouseClickEnabled(false) end
         if button.SetMouseMotionEnabled then button:SetMouseMotionEnabled(false) end
-        local row = BuildRowRegions(button, L)
+        local row = BuildRowRegions(button, L, true)
         d.kkRow = row
         PaintRow(row, GetColor(style.kkEntryKey))
         row.name:SetText(style.kkLabel or "")
         if row.icon then
             row.icon:SetTexture(style.kkIcon or 134400)
+            if row._iconMaskRad and row._iconMaskRad > 0 and button.CreateMaskTexture then
+                local m = button:CreateMaskTexture()
+                m:SetAllPoints(row.icon)
+                if not (ST and ST.SetWholeIconMask and ST.SetWholeIconMask(m, row._iconMaskRad, row._iconW or 16, row._iconH or 16, 0)) then
+                    ApplyShape(m, row._iconMaskRad, "CLAMPTOBLACKADDITIVE")
+                end
+                -- 引擎按钮严禁走 ST.AttachCustomMask（会给 button 挂 OnShow/OnSizeChanged 导致 SetShown(secret) 报错）；
+                -- 与 EllesmereUI AuraKit 同法：在创建窗口内直接绑定无 9 宫格切片的 64x64 整图遮罩。
+                pcall(row.icon.AddMaskTexture, row.icon, m)
+            end
             pcall(button.SetIcon, button, row.icon)
         end
         local opts = {}
@@ -873,7 +975,7 @@ local function EngineInitButton(button, d, style)
             if not okBar then okBar = pcall(button.SetDurationBar, button, row.bar) end
         end
         if not okBar then engine.initErr = "SetDurationBar 不可用（条不会随时间缩短，倒计时文字仍有效）" end
-        local fmt = AK.GetDurationFormatter and AK.GetDurationFormatter() or nil
+        local fmt = GetProcDurationFormatter(AK)
         if AK.SetDurationTextSafe and AK.BuildDurationTextOpts then
             AK.SetDurationTextSafe(button, row.time, AK.BuildDurationTextOpts(fmt))
         else
@@ -1004,7 +1106,7 @@ local function RestyleEngine()
     if not (AK and engine.container) then return end
     for _, styleKey in pairs(engine.styleKeys) do
         if AK.RestyleSoon then
-            AK.RestyleSoon(styleKey)
+            pcall(AK.RestyleSoon, styleKey)
         elseif AK.Restyle and not AurasRestricted() then
             pcall(AK.Restyle, styleKey)
         end
@@ -1032,10 +1134,13 @@ local function CurrentProcItems()
     return scanItems
 end
 
+local fastEnchantLive = false
+
 local function Render()
     if not (mod._active and layout) then return false end
     local now = GetTime()
     local live = false
+    fastEnchantLive = false
 
     -- 特效：预览 / 兼容扫描时自绘；引擎模式下由引擎绘制
     local procs = CurrentProcItems()
@@ -1064,6 +1169,7 @@ local function Render()
         if it.loop and it.exp <= now then it.exp = now + it.dur end
         if it.exp > now and not enchOff and (previewItems or EnchantVisible(it, now)) then
             visibleEnch[#visibleEnch + 1] = it
+            if (it.exp - now) <= 120 then fastEnchantLive = true end
         end
     end
     for i, it in ipairs(visibleEnch) do
@@ -1079,17 +1185,20 @@ end
 
 local function OnTick(self, elapsed)
     tickAccum = tickAccum + (elapsed or 0)
-    -- 特效条每帧平滑；只有附魔时 4 次/秒就够
-    local procLive = (previewItems ~= nil) or (not EngineActive() and #scanItems > 0)
-    if not procLive and tickAccum < 0.25 then return end
+    -- 特效条与剩余 ≤2 分钟的附魔每帧全速平滑；超长附魔条 20Hz 轻量刷新（彻底告别 4fps 顿挫）
+    local fast = (previewItems ~= nil) or (not EngineActive() and #scanItems > 0) or fastEnchantLive
+    if not fast and tickAccum < 0.05 then return end
     tickAccum = 0
     if not Render() then self:SetScript("OnUpdate", nil) end
 end
 
 local function Wake()
     if not driver then return end
-    Render()
-    driver:SetScript("OnUpdate", OnTick)
+    if Render() then
+        driver:SetScript("OnUpdate", OnTick)
+    else
+        driver:SetScript("OnUpdate", nil)
+    end
 end
 
 local function FullRefresh(immediate)

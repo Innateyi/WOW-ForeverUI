@@ -184,10 +184,17 @@ local function EvaluateHealth()
         return
     end
     local db = mod:GetDB()
-    local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-        or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
-    if (_G.UnitIsDeadOrGhost and _G.UnitIsDeadOrGhost("player"))
-        or (db.combatOnly == true and not inCombat) then
+    local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown()) == true
+    if not inCombat and _G.UnitAffectingCombat then
+        local okC, cbt = pcall(_G.UnitAffectingCombat, "player")
+        if okC and not F.IsSecret(cbt) and cbt == true then inCombat = true end
+    end
+    local isDead = false
+    if _G.UnitIsDeadOrGhost then
+        local okD, dead = pcall(_G.UnitIsDeadOrGhost, "player")
+        if okD and not F.IsSecret(dead) and dead == true then isDead = true end
+    end
+    if isDead or (db.combatOnly == true and not inCombat) then
         if isLowNow or inSecretMode then
             isLowNow = false
             inSecretMode = false
@@ -206,15 +213,17 @@ local function EvaluateHealth()
         if curve and _G.UnitHealthPercent then
             local ok, col = pcall(_G.UnitHealthPercent, "player", false, curve)
             if ok and col and col.GetRGBA then
-                local r, g, b = col:GetRGBA()
-                PaintEdgesColor(r, g, b, 1)
-                local maxA = math_max(0.25, math_min(1.0, F.PlainNumber(db.maxAlpha, 0.78) or 0.78))
-                if not inSecretMode then F.Theme.FadeTo(vignetteFrame, maxA * 0.70, 0) end
-                if not vignetteFrame:IsShown() then
-                    vignetteFrame:Show()
+                local okRgba, r, g, b = pcall(col.GetRGBA, col)
+                if okRgba then
+                    PaintEdgesColor(r, g, b, 1)
+                    local maxA = math_max(0.25, math_min(1.0, F.PlainNumber(db.maxAlpha, 0.78) or 0.78))
+                    if not inSecretMode then F.Theme.FadeTo(vignetteFrame, maxA * 0.70, 0) end
+                    if not vignetteFrame:IsShown() then
+                        vignetteFrame:Show()
+                    end
+                    if pulseAG and not pulseAG:IsPlaying() then pulseAG:Play() end
+                    inSecretMode = true
                 end
-                if pulseAG and not pulseAG:IsPlaying() then pulseAG:Play() end
-                inSecretMode = true
             end
         end
         return

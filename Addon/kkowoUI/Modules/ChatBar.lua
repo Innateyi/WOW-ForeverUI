@@ -98,7 +98,11 @@ local function GetEUIChatContext()
     local bg1 = d1 and d1.bg
     local chatNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIChat
     local echat = chatNS and chatNS.ECHAT
-    local ecfg = echat and echat.DB and echat.DB()
+    local ecfg = nil
+    if echat and type(echat.DB) == "function" then
+        local okDB, cfg = pcall(echat.DB)
+        if okDB and type(cfg) == "table" then ecfg = cfg end
+    end
     local pp = EUI and EUI.PP
     local onePx = (pp and pp.mult) or 1
     return EUI, cf1, bg1, chatNS, echat, ecfg, onePx, d1
@@ -536,7 +540,10 @@ local function OpenChatPrefix(prefix)
 end
 
 local function IsChatMessagingLocked()
-    return (_G.C_ChatInfo and _G.C_ChatInfo.InChatMessagingLockdown and _G.C_ChatInfo.InChatMessagingLockdown()) == true
+    local ci = _G.C_ChatInfo
+    if not (ci and ci.InChatMessagingLockdown) then return false end
+    local ok, locked = pcall(ci.InChatMessagingLockdown)
+    return ok and (not F.IsSecret(locked)) and locked == true
 end
 
 local function SwitchChatChannel(chatType, opts)

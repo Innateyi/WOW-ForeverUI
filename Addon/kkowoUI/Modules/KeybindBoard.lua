@@ -316,7 +316,7 @@ local function CreateKeyButton(parent, baseKey, label, w, h)
     icon:SetPoint("TOPLEFT", b, "TOPLEFT", 2, -2)
     icon:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", -2, 2)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    ST.MaskTexture(b, icon, 4)
+    ST.MaskIcon(b, icon, 5)
     icon:Hide()
     b._icon = icon
 
@@ -555,10 +555,11 @@ local function BuildBoard()
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", function(self) self:StartMoving() end)
     f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+    f:HookScript("OnHide", function(self) self:StopMovingOrSizing() end)
     F.Theme.RegisterEscapeClose(f)
 
     F.Theme.PaintPrettyCardOverlay(f, 0.322, 0.839, 0.412, 36, {
-        rounded = true, radius = 8, alpha = 0.95, haloAlpha = 0.22,
+        alpha = 0.95, haloAlpha = 0.22,
     })
 
     -- 标题栏
@@ -676,12 +677,13 @@ local function BuildBoard()
         local bg = sb:CreateTexture(nil, "BACKGROUND")
         bg:SetAllPoints()
         bg:SetColorTexture(0.06, 0.065, 0.085, 0.90)
+        ST.SetHostIconMode(sb, true)
         ST.MaskTexture(sb, bg, 5)
         local ic = sb:CreateTexture(nil, "ARTWORK")
         ic:SetPoint("TOPLEFT", sb, "TOPLEFT", 2, -2)
         ic:SetPoint("BOTTOMRIGHT", sb, "BOTTOMRIGHT", -2, 2)
         ic:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        ST.MaskTexture(sb, ic, 4)
+        ST.MaskIcon(sb, ic, 5)
         sb._icon = ic
 
         local kfs = sb:CreateFontString(nil, "OVERLAY")
@@ -769,6 +771,15 @@ function mod:OnDisable()
     inCombat = false
     pendingSlotCmd = nil
     if boardFrame then boardFrame:Hide() end
+end
+
+function mod:OnThemeChanged()
+    if boardFrame then
+        F.Theme.PaintPrettyCardOverlay(boardFrame, 0.322, 0.839, 0.412, 36, {
+            alpha = 0.95, haloAlpha = 0.22,
+        })
+        RefreshAllKeys()
+    end
 end
 
 -- 注册独立快捷命令 /kkkeys

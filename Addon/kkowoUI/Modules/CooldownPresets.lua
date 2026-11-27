@@ -21,6 +21,7 @@ local mod = F.RegisterModule("cdPresets", {
     order = 12,
     defaults = {
         enabled = true,
+        v1SmoothCooldownsSeeded = false,
     },
 })
 
@@ -176,11 +177,39 @@ local function Sync()
             end
             st.added[entry.key] = true
         elseif best and not st.added[entry.key] then
-            local bar = NewBar(ns, entry, best, PickGroup(ns, bars, st))
-            bars[#bars + 1] = bar
+            local gid = PickGroup(ns, bars, st)
+            local bar = NewBar(ns, entry, best, gid)
+            local newIdx = #bars + 1
+            bars[newIdx] = bar
+            -- 新加入已有分组时，把组锚点的存档坐标同步镜像给新成员，
+            -- 防止玩家日后禁用/删掉第 1 条导致新晋锚点缺坐标跳回默认 (0, 200)
+            if gid ~= 0 and type(ns.GetTBBPositions) == "function" and type(ns.TBBGroupAnchorIndex) == "function" then
+                local okA, anchorIdx = pcall(ns.TBBGroupAnchorIndex, gid)
+                local okP, tbbPos = pcall(ns.GetTBBPositions)
+                if okA and anchorIdx and anchorIdx ~= newIdx and okP and type(tbbPos) == "table" then
+                    local src = tbbPos[tostring(anchorIdx)]
+                    local dstKey = tostring(newIdx)
+                    if type(src) == "table" and not tbbPos[dstKey] then
+                        tbbPos[dstKey] = F.DeepCopy(src)
+                    end
+                end
+            end
             st.added[entry.key] = true
             changed = true
             added[#added + 1] = bar.customName or bar.name
+        end
+    end
+
+    -- EUI 追踪条默认只对 Buff 开启平滑插值，冷却条默认关闭（tbbSmooth.cooldowns == nil）：
+    -- 首次同步时仅在玩家从未改动过该项时设为 true，让预设冷却条获得 C 端平滑过渡（玩家之后在 EUI 里手动关掉绝不覆写）
+    local db = mod:GetDB()
+    if not db.v1SmoothCooldownsSeeded and type(ns.GetTBBSmoothSettings) == "function" then
+        local okS, sm = pcall(ns.GetTBBSmoothSettings)
+        if okS and type(sm) == "table" then
+            if sm.cooldowns == nil then
+                sm.cooldowns = true
+            end
+            db.v1SmoothCooldownsSeeded = true
         end
     end
 

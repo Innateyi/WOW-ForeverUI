@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 r"""
-kkowoUI — 全局 3D 团队标记图标部署脚本
-将 MarkBar 重绘的 512x512 无损多级 Mipmap BLP2 团队标记图集安装到客户端
+kkowoUI — 全局团队标记图标部署脚本
+将 MarkBar 重绘的 1024x1024 超高清 SDF 无损多级 Mipmap BLP2 团队标记图集安装到客户端
 E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame\UI-RaidTargetingIcons.blp
-以替换 3D 世界头顶标记、聊天频道 {rt1}-{rt8} 及全局单位框体/姓名板标记。
+以替换单位框体、姓名板与聊天频道 {rt1}-{rt8} 团队标记图标（注：12.x 引擎对角色自身 3D 世界头顶标记做了硬编码，不受松散贴图替换影响）。
 
 用法：
   python -I Tools/deploy_raid_markers.py --install
@@ -23,7 +23,7 @@ def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--install", action="store_true", help="安装全局团队标记图标覆盖")
-    group.add_argument("--uninstall", action="store_true", help="移除客户端覆盖，恢复暴雪原版 3D 标记")
+    group.add_argument("--uninstall", action="store_true", help="移除客户端覆盖，恢复暴雪原版团队标记")
     args = parser.parse_args()
 
     if args.install:
@@ -32,7 +32,7 @@ def main():
         os.makedirs(DST_DIR, exist_ok=True)
         shutil.copy2(SRC_BLP, DST_BLP)
         print(f"[INSTALLED] {DST_BLP} ({os.path.getsize(DST_BLP)} bytes)")
-        print("提示：重启魔兽世界客户端后，3D 世界头顶标记、单位框体与聊天标记图标将全部同步为新扁平矢量风格。")
+        print("提示：重启魔兽世界客户端后，单位框体、姓名板与聊天 {rt1}-{rt8} 团队标记图标将同步为新扁平矢量风格。")
     else:
         if os.path.isfile(DST_BLP):
             os.remove(DST_BLP)

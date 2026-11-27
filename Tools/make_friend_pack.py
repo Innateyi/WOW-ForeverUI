@@ -74,6 +74,8 @@ KKOWO_DROP = [
     ('modules', 'nameplateSmart', 'savedDistantNpc'),
     ('modules', 'nameplateMotion', 'savedEUICornerRadius'),
     ('modules', 'nameplateMotion', 'savedEUICornerRadiusAuras'),
+    ('modules', 'markBar', 'savedEUIRaidMarker'),
+    ('modules', 'cdPresets', 'v1SmoothCooldownsSeeded'),
     ('modules', 'lootToast', 'savedEUILootFeed'),
     ('modules', 'perfAutoTier', 'savedCVars'),
 ]
@@ -276,6 +278,10 @@ def main():
             icons = os.path.join(GAME, 'Interface', 'Icons')
             if os.path.isdir(icons):
                 add_tree(icons, f'{top}/payload/Interface/Icons')
+            # 1024x1024 超高清 SDF 3D 世界头顶标记图集（同步到 Interface\TargetingFrame）
+            raid_atlas = os.path.join(kkowo_src, 'Media', 'MarkBar', 'UI-RaidTargetingIcons.blp')
+            if os.path.isfile(raid_atlas):
+                z.write(raid_atlas, f'{top}/payload/Interface/TargetingFrame/UI-RaidTargetingIcons.blp')
             add_tree(os.path.join(wtf_acc, 'SavedVariables'), f'{top}/payload/WTF/Account/SavedVariables')
             for fn in ACC_FILES:
                 p = os.path.join(wtf_acc, fn)

@@ -329,7 +329,8 @@ end
 
 local function FormatTemplate(tpl, ctx)
     if type(tpl) ~= "string" or tpl == "" then return "" end
-    local manaStr = ctx and ctx.mana and (tostring(ctx.mana) .. "%") or (GetManaPct() and (tostring(GetManaPct()) .. "%") or "少量")
+    local mp = (ctx and ctx.mana) or GetManaPct()
+    local manaStr = mp and (tostring(mp) .. "%") or "少量"
     local tgt = (ctx and ctx.target and ctx.target ~= "") and ctx.target or nil
     if not tgt and _G.UnitExists then
         local okE, exists = pcall(_G.UnitExists, "target")
@@ -369,8 +370,11 @@ end
 local function SendEmoteMessage(text, isManual)
     if type(text) ~= "string" or text == "" then return false end
     local ci = _G.C_ChatInfo
-    if ci and ci.InChatMessagingLockdown and ci.InChatMessagingLockdown() then
-        return false
+    if ci and ci.InChatMessagingLockdown then
+        local okL, locked = pcall(ci.InChatMessagingLockdown)
+        if okL and not F.IsSecret(locked) and locked == true then
+            return false
+        end
     end
     local sendFn = (ci and ci.SendChatMessage) or _G.SendChatMessage
     if not sendFn then return false end
@@ -405,7 +409,8 @@ end
 local function PreviewLocalEmote(text)
     if type(text) ~= "string" or text == "" then return end
     local first, second
-    if _G.UnitName then first, second = _G.UnitName("player") end
+    local nameFn = _G.UnitNameUnmodified or _G.UnitName
+    if nameFn then first, second = nameFn("player") end
     first = F.PlainString(first, "你")
     second = F.PlainString(second, nil)
     local fullName = (second and second ~= "" and _G.EllesmereUI and _G.EllesmereUI.IS_FOREVER)
@@ -604,6 +609,7 @@ local function OpenTextEditor(catKey)
         f:RegisterForDrag("LeftButton")
         f:SetScript("OnDragStart", f.StartMoving)
         f:SetScript("OnDragStop", f.StopMovingOrSizing)
+        f:HookScript("OnHide", f.StopMovingOrSizing)
         f:Hide()
         F.Theme.StylePanel(f, 0.96, 0.92)
         F.Theme.SetBorderAccent(f, true)

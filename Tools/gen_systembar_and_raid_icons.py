@@ -5,11 +5,16 @@ kkowoUI — Ultra-Smooth Vector Icon & Global Raid Marker Generator
    rendered at 512x512 -> premultiplied-alpha Lanczos mipmap chain (128->64->32->16->8->4->2->1)
    encoded as lossless 32-bit BGRA BLP2 (colorEncoding=3, alphaDepth=8, hasMips=1).
    Zero DXT5 block noise, zero jaggedness at 16-28px in-game!
-2) Composites MarkBar's Mark1.tga..Mark8.tga into a 512x512 4x4 sprite sheet
-   UI-RaidTargetingIcons.blp (lossless BGRA BLP2 with full mipmaps) and deploys to:
+2) Redraws all 8 Raid Target Markers (Mark1..Mark8) using analytical Signed Distance Fields (SDF)
+   at 1024x1024 supersampled master -> 256x256 Mark1.tga..Mark8.tga AND 1024x1024 4x4 sprite sheet
+   UI-RaidTargetingIcons.blp (256x256 per cell, lossless BGRA BLP2 with full premultiplied-alpha
+   Lanczos mipmaps + RGB edge-color dilation on every mip level for zero halo & zero jaggedness
+   even when enlarged to 48-96px on nameplates or 3D overhead billboards!).
+   Deploys to:
+     - Addon/kkowoUI/Media/MarkBar/Mark1.tga .. Mark8.tga
      - Addon/kkowoUI/Media/MarkBar/UI-RaidTargetingIcons.blp
      - E:\Program Files\World of Warcraft\_forever_\Interface\TargetingFrame\UI-RaidTargetingIcons.blp
-3) Writes visual inspection contact sheets (PNG) to scratch directory for verification.
+3) Writes visual inspection contact sheets (PNG) to Tools/_preview for verification.
 """
 import math
 import os
@@ -386,19 +391,54 @@ LUCIDE_SPECS = [
 
 
 # ---------------------------------------------------------------------------
-#  Premultiplied-Alpha Mipmap Chain + Lossless BGRA BLP2 Encoder
+#  Premultiplied-Alpha Mipmap Chain + Edge RGB Dilation + Lossless BGRA BLP2
 # ---------------------------------------------------------------------------
-def build_mipmaps_rgba(master_rgba_f32: np.ndarray, base_size: int):
+def dilate_edge_rgb(rgb: np.ndarray, alpha: np.ndarray, iters: int = 10, thresh: float = 0.015) -> np.ndarray:
+    """
+    Bleeds edge RGB colors outward into fully transparent pixels (alpha <= thresh)
+    so GPU bilinear/trilinear filtering NEVER samples black (0,0,0) or white (1,1,1)
+    fringes when magnifying or minifying colored icons!
+    """
+    out = rgb.copy()
+    valid = alpha > thresh
+    if not np.any(valid) or np.all(valid):
+        return out
+    for _ in range(iters):
+        if np.all(valid):
+            break
+        acc = np.zeros_like(out)
+        cnt = np.zeros(alpha.shape, dtype=np.float32)
+        p_rgb = np.pad(out, ((1, 1), (1, 1), (0, 0)), mode="edge")
+        p_val = np.pad(valid.astype(np.float32), ((1, 1), (1, 1)), mode="constant", constant_values=0.0)
+        h, w = alpha.shape
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                weight = 1.0 if (dy == 0 or dx == 0) else 0.7071
+                nv = p_val[1 + dy : 1 + dy + h, 1 + dx : 1 + dx + w] * weight
+                acc += p_rgb[1 + dy : 1 + dy + h, 1 + dx : 1 + dx + w] * nv[:, :, None]
+                cnt += nv
+        fill = (~valid) & (cnt > 1e-6)
+        if not np.any(fill):
+            break
+        out[fill] = acc[fill] / cnt[fill, None]
+        valid = valid | fill
+    return out
+
+
+def build_mipmaps_rgba(master_rgba_f32: np.ndarray, base_size: int, white_bg: bool = True):
     """
     Downsamples float32 straight-alpha RGBA (HxWx4, [0..1]) into a full power-of-2 mip chain
-    [base_size, base_size//2, ..., 1] using premultiplied-alpha Lanczos filtering so transparent
-    borders NEVER produce dark fringes or jagged edges!
+    [base_size, base_size//2, ..., 1] using premultiplied-alpha Lanczos filtering.
+    For monochrome white icons (white_bg=True), transparent RGB is kept 1.0;
+    for colored icons (white_bg=False), edge RGB is dilated outward on every mip level
+    so GPU filtering produces zero white/black fringe halos at any scale!
     """
     pm = np.empty_like(master_rgba_f32)
     pm[:, :, :3] = master_rgba_f32[:, :, :3] * master_rgba_f32[:, :, 3:4]
     pm[:, :, 3] = master_rgba_f32[:, :, 3]
 
-    # Convert premultiplied float channels to 4 separate high-precision PIL F-mode planes
     planes = [Image.fromarray(pm[:, :, c], mode="F") for c in range(4)]
 
     mips = []
@@ -408,7 +448,12 @@ def build_mipmaps_rgba(master_rgba_f32: np.ndarray, base_size: int):
         arr = np.stack([np.asarray(r, dtype=np.float32) for r in resized], axis=-1)
         a = np.clip(arr[:, :, 3], 0.0, 1.0)
         safe_a = np.where(a > 1e-4, a, 1.0)
-        rgb = np.where(a[:, :, None] > 1e-4, np.clip(arr[:, :, :3] / safe_a[:, :, None], 0.0, 1.0), 1.0)
+        if white_bg:
+            rgb = np.where(a[:, :, None] > 1e-4, np.clip(arr[:, :, :3] / safe_a[:, :, None], 0.0, 1.0), 1.0)
+        else:
+            rgb = np.where(a[:, :, None] > 1e-4, np.clip(arr[:, :, :3] / safe_a[:, :, None], 0.0, 1.0), 0.0)
+            if sz >= 4:
+                rgb = dilate_edge_rgb(rgb, a, iters=max(3, min(12, sz // 16)))
         out = np.empty((sz, sz, 4), dtype=np.uint8)
         out[:, :, 0] = np.round(rgb[:, :, 0] * 255.0).astype(np.uint8)
         out[:, :, 1] = np.round(rgb[:, :, 1] * 255.0).astype(np.uint8)
@@ -419,6 +464,17 @@ def build_mipmaps_rgba(master_rgba_f32: np.ndarray, base_size: int):
             break
         sz //= 2
     return mips
+
+
+def write_tga_bgra(path: str, rgba_u8: np.ndarray):
+    """Writes uncompressed 32-bit BGRA TGA (top-left origin, alphaDepth=8)."""
+    h, w, _ = rgba_u8.shape
+    header = struct.pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0, w, h, 32, 0x28)
+    bgra = np.ascontiguousarray(rgba_u8[:, :, [2, 1, 0, 3]])
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(header)
+        f.write(bgra.tobytes())
 
 
 def write_blp2_bgra(path: str, mips_rgba: list):
@@ -484,50 +540,357 @@ def generate_lucide_icons():
     print(f"Saved preview: {preview_path}")
 
 
+# ---------------------------------------------------------------------------
+#  Analytical SDF Ultra-HD Raid Target Markers (Mark1..Mark8)
+#  Rendered at 1024x1024 master -> 256x256 TGAs + 1024x1024 4x4 BLP2 Atlas
+# ---------------------------------------------------------------------------
+RAID_MASTER = 1024
+RAID_CELL = 256
+_rc = (np.arange(RAID_MASTER, dtype=np.float32) + 0.5) / RAID_MASTER * 2.0 - 1.0
+RX, RY = np.meshgrid(_rc, _rc)
+
+
+def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
+    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _smin(a: np.ndarray, b: np.ndarray, k: float) -> np.ndarray:
+    h = np.clip(0.5 + 0.5 * (b - a) / k, 0.0, 1.0)
+    return b * (1.0 - h) + a * h - k * h * (1.0 - h)
+
+
+def _sd_polygon(x: np.ndarray, y: np.ndarray, pts) -> np.ndarray:
+    """Exact signed distance to a closed 2D polygon (negative inside, positive outside)."""
+    n = len(pts)
+    d2 = np.full_like(x, 1e12, dtype=np.float32)
+    sign = np.ones_like(x, dtype=np.float32)
+    for i in range(n):
+        ax, ay = pts[i]
+        bx, by = pts[(i + 1) % n]
+        ex, ey = bx - ax, by - ay
+        wx, wy = x - ax, y - ay
+        denom = ex * ex + ey * ey + 1e-12
+        t = np.clip((wx * ex + wy * ey) / denom, 0.0, 1.0)
+        qx = wx - ex * t
+        qy = wy - ey * t
+        d2 = np.minimum(d2, qx * qx + qy * qy)
+        # Winding flip test (Inigo Quilez exact polygon SDF)
+        c1 = y >= ay
+        c2 = y < by
+        c3 = ex * wy > ey * wx
+        cond = (c1 & c2 & c3) | ((~c1) & (~c2) & (~c3))
+        sign = np.where(cond, -sign, sign)
+    return sign * np.sqrt(d2)
+
+
+def _sd_ellipse_approx(x: np.ndarray, y: np.ndarray, cx: float, cy: float, rx: float, ry: float) -> np.ndarray:
+    px = (x - cx) / rx
+    py = (y - cy) / ry
+    k0 = np.hypot(px, py)
+    k1 = np.hypot(px / rx, py / ry) + 1e-8
+    return k0 * (k0 - 1.0) / k1
+
+
+def _over(dst_rgb, dst_a, src_rgb, src_a):
+    """Straight-alpha Porter-Duff src OVER dst."""
+    out_a = src_a + dst_a * (1.0 - src_a)
+    safe = np.where(out_a > 1e-6, out_a, 1.0)
+    out_rgb = np.where(
+        out_a[:, :, None] > 1e-6,
+        (src_rgb * src_a[:, :, None] + dst_rgb * (dst_a * (1.0 - src_a))[:, :, None]) / safe[:, :, None],
+        0.0,
+    )
+    return np.clip(out_rgb, 0.0, 1.0), np.clip(out_a, 0.0, 1.0)
+
+
+def _vgrad(y: np.ndarray, y0: float, y1: float, c_top, c_bot) -> np.ndarray:
+    t = np.clip((y - y0) / (y1 - y0), 0.0, 1.0)[:, :, None]
+    ct = np.array(c_top, dtype=np.float32) / 255.0
+    cb = np.array(c_bot, dtype=np.float32) / 255.0
+    return ct * (1.0 - t) + cb * t
+
+
+def _compose_marker_base(d_shape, d_shadow, fill_rgb, outline_col, outline_w=0.028, aa=0.0045):
+    """
+    Composes a crisp modern flat-vector marker with:
+      1) Soft subtle ambient drop shadow (for 3D world & bright/dark background separation)
+      2) Crisp dark outer contour (zero jaggedness, high readability when scaled up/down)
+      3) Smooth anti-aliased interior fill
+    """
+    h, w = d_shape.shape
+    rgb = np.zeros((h, w, 3), dtype=np.float32)
+    a = np.zeros((h, w), dtype=np.float32)
+
+    # 1) Soft drop shadow
+    sh_a = (1.0 - _smoothstep(-0.01, 0.115, d_shadow)) * 0.42
+    rgb, a = _over(rgb, a, np.zeros((h, w, 3), dtype=np.float32), sh_a)
+
+    # 2) Outer dark contour
+    d_out = d_shape - outline_w
+    out_a = 1.0 - _smoothstep(-aa, aa, d_out)
+    out_rgb = np.broadcast_to(np.array(outline_col, dtype=np.float32) / 255.0, (h, w, 3))
+    rgb, a = _over(rgb, a, out_rgb, out_a)
+
+    # 3) Main fill body
+    fill_a = 1.0 - _smoothstep(-aa, aa, d_shape)
+    rgb, a = _over(rgb, a, fill_rgb, fill_a)
+
+    # 4) Subtle upper-edge inner specular rim for modern vector polish
+    rim = _smoothstep(-0.08, -0.012, d_shape) * (1.0 - _smoothstep(-0.012, 0.005, d_shape))
+    top_bias = np.clip((-RY + 0.45) / 1.25, 0.0, 1.0)
+    spec_a = rim * top_bias * 0.22 * fill_a
+    rgb, a = _over(rgb, a, np.ones((h, w, 3), dtype=np.float32), spec_a)
+
+    return np.concatenate([rgb, a[:, :, None]], axis=-1)
+
+
+def render_raid_mark1():
+    """Mark1 — 星星 (Star): 5-pointed rounded golden star + luminous inner core."""
+    pts = []
+    ro, ri = 0.78, 0.32
+    cy = 0.045
+    for i in range(10):
+        ang = -math.pi * 0.5 + i * (math.pi / 5.0)
+        r = ro if (i % 2 == 0) else ri
+        pts.append((r * math.cos(ang), cy + r * math.sin(ang)))
+    d = _sd_polygon(RX, RY, pts) - 0.022
+    d_sh = _sd_polygon(RX, RY - 0.045, pts) - 0.022
+    fill = _vgrad(RY, -0.75, 0.75, (255, 224, 92), (236, 180, 40))
+    # Warm glowing center disc matching original Star design
+    d_core = sd_circle(RX, RY, 0.0, cy + 0.01, 0.245)
+    core_a = (1.0 - _smoothstep(-0.03, 0.045, d_core)) * 0.52
+    core_col = np.array([255, 248, 152], dtype=np.float32) / 255.0
+    fill = fill * (1.0 - core_a[:, :, None]) + core_col * core_a[:, :, None]
+    return _compose_marker_base(d, d_sh, fill, (74, 48, 10), outline_w=0.028)
+
+
+def render_raid_mark2():
+    """Mark2 — 大饼 (Circle): Vibrant orange concentric ring + deep espresso inner ring."""
+    d = sd_circle(RX, RY, 0.0, 0.0, 0.725)
+    d_sh = sd_circle(RX, RY - 0.045, 0.0, 0.0, 0.725)
+    fill = _vgrad(RY, -0.72, 0.72, (254, 188, 88), (236, 124, 40))
+    # Recessed espresso dark ring (between r=0.28 and r=0.49)
+    r_dist = np.hypot(RX, RY)
+    d_ring = np.abs(r_dist - 0.385) - 0.105
+    ring_a = 1.0 - _smoothstep(-0.005, 0.005, d_ring)
+    ring_col = _vgrad(RY, -0.50, 0.50, (66, 34, 14), (42, 20, 8))
+    fill = fill * (1.0 - ring_a[:, :, None]) + ring_col * ring_a[:, :, None]
+    # Bright center dot subtle lift
+    d_dot = sd_circle(RX, RY, 0.0, 0.0, 0.275)
+    dot_a = (1.0 - _smoothstep(-0.01, 0.01, d_dot)) * 0.14
+    fill = np.clip(fill + dot_a[:, :, None] * np.array([0.16, 0.12, 0.05], dtype=np.float32), 0.0, 1.0)
+    return _compose_marker_base(d, d_sh, fill, (58, 26, 8), outline_w=0.028)
+
+
+def render_raid_mark3():
+    """Mark3 — 菱形 (Diamond): Amethyst crystal diamond with clean faceted inner highlight."""
+    pts = [(0.0, -0.79), (0.63, 0.0), (0.0, 0.79), (-0.63, 0.0)]
+    d = _sd_polygon(RX, RY, pts) - 0.024
+    d_sh = _sd_polygon(RX, RY - 0.045, pts) - 0.024
+    fill = _vgrad(RY, -0.78, 0.78, (214, 140, 254), (162, 78, 232))
+    # Right-side subtle crystal facet darkening
+    right_facet = _smoothstep(-0.006, 0.006, RX)
+    fill = fill * (1.0 - 0.11 * right_facet[:, :, None])
+    # Inner bright lavender diamond facet
+    in_pts = [(0.0, -0.45), (0.35, -0.02), (0.0, 0.41), (-0.35, -0.02)]
+    d_in = _sd_polygon(RX, RY, in_pts) - 0.015
+    in_a = (1.0 - _smoothstep(-0.006, 0.006, d_in)) * 0.42
+    in_col = _vgrad(RY, -0.45, 0.41, (242, 196, 255), (210, 144, 252))
+    fill = fill * (1.0 - in_a[:, :, None]) + in_col * in_a[:, :, None]
+    return _compose_marker_base(d, d_sh, fill, (54, 20, 88), outline_w=0.028)
+
+
+def render_raid_mark4():
+    """Mark4 — 三角 (Triangle): Bright emerald inverted triangle + deep forest inner cutout."""
+    pts = [(-0.74, -0.56), (0.74, -0.56), (0.0, 0.74)]
+    d = _sd_polygon(RX, RY, pts) - 0.028
+    d_sh = _sd_polygon(RX, RY - 0.045, pts) - 0.028
+    fill = _vgrad(RY, -0.58, 0.76, (100, 244, 154), (42, 198, 108))
+    # Concentric dark forest-green inner triangle
+    in_pts = [(-0.40, -0.35), (0.40, -0.35), (0.0, 0.35)]
+    d_in = _sd_polygon(RX, RY, in_pts) - 0.014
+    in_a = 1.0 - _smoothstep(-0.005, 0.005, d_in)
+    in_col = _vgrad(RY, -0.35, 0.35, (14, 54, 32), (8, 34, 20))
+    fill = fill * (1.0 - in_a[:, :, None]) + in_col * in_a[:, :, None]
+    return _compose_marker_base(d, d_sh, fill, (10, 44, 24), outline_w=0.028)
+
+
+def render_raid_mark5():
+    """Mark5 — 月亮 (Moon): Luminous silver-blue crescent moon with clean symmetrical cusps."""
+    def moon_sdf(x, y):
+        d_outer = sd_circle(x, y, -0.02, 0.02, 0.725)
+        d_cut = sd_circle(x, y, 0.30, -0.14, 0.565)
+        # Mild smooth intersection so crescent cusps are crisp yet completely free of outline overshoot
+        return -_smin(-d_outer, d_cut, 0.014)
+
+    d = moon_sdf(RX, RY)
+    d_sh = moon_sdf(RX, RY - 0.045)
+    fill = _vgrad(RY, -0.72, 0.74, (238, 246, 255), (176, 198, 228))
+    # Soft inner specular along left outer curve
+    glow = np.clip(1.0 - np.hypot(RX + 0.36, RY + 0.16) / 0.65, 0.0, 1.0) * 0.18
+    fill = np.clip(fill + glow[:, :, None], 0.0, 1.0)
+    return _compose_marker_base(d, d_sh, fill, (34, 46, 66), outline_w=0.024)
+
+
+def render_raid_mark6():
+    """Mark6 — 方块 (Square): Vibrant sky-to-azure rounded square + navy recessed frame."""
+    d = sd_round_box(RX, RY, 0.0, 0.0, 0.68, 0.68, 0.155)
+    d_sh = sd_round_box(RX, RY - 0.045, 0.0, 0.0, 0.68, 0.68, 0.155)
+    fill = _vgrad(RY, -0.68, 0.68, (108, 218, 255), (36, 152, 240))
+    # Deep navy recessed square frame
+    d_navy = sd_round_box(RX, RY, 0.0, 0.0, 0.435, 0.435, 0.060)
+    navy_a = 1.0 - _smoothstep(-0.005, 0.005, d_navy)
+    navy_col = _vgrad(RY, -0.44, 0.44, (20, 56, 92), (14, 38, 66))
+    fill = fill * (1.0 - navy_a[:, :, None]) + navy_col * navy_a[:, :, None]
+    # Bright inner sky square
+    d_inner = sd_round_box(RX, RY, 0.0, 0.0, 0.265, 0.265, 0.036)
+    in_a = 1.0 - _smoothstep(-0.005, 0.005, d_inner)
+    in_col = _vgrad(RY, -0.27, 0.27, (106, 214, 255), (48, 168, 244))
+    fill = fill * (1.0 - in_a[:, :, None]) + in_col * in_a[:, :, None]
+    return _compose_marker_base(d, d_sh, fill, (14, 42, 74), outline_w=0.028)
+
+
+def render_raid_mark7():
+    """Mark7 — 红叉 (Cross): Bold crimson-coral rounded X + soft center highlight."""
+    arm = 0.465
+    thick = 0.205
+    d1 = sd_segment(RX, RY, -arm, -arm, arm, arm) - thick
+    d2 = sd_segment(RX, RY, -arm, arm, arm, -arm) - thick
+    d = np.minimum(d1, d2)
+    d1s = sd_segment(RX, RY - 0.045, -arm, -arm, arm, arm) - thick
+    d2s = sd_segment(RX, RY - 0.045, -arm, arm, arm, -arm) - thick
+    d_sh = np.minimum(d1s, d2s)
+    fill = _vgrad(RY, -0.68, 0.68, (252, 102, 108), (220, 48, 60))
+    # Subtle warm highlight at center crossing matching original design
+    d_cen = sd_circle(RX, RY, 0.0, 0.0, 0.14)
+    cen_a = (1.0 - _smoothstep(-0.03, 0.07, d_cen)) * 0.24
+    fill = fill * (1.0 - cen_a[:, :, None]) + np.array([1.0, 0.72, 0.74], dtype=np.float32) * cen_a[:, :, None]
+    return _compose_marker_base(d, d_sh, fill, (74, 14, 22), outline_w=0.028)
+
+
+def render_raid_mark8():
+    """Mark8 — 骷髅 (Skull): Crisp pearl-white modern flat skull with hollow eyes, nose & teeth."""
+    def skull_sdf(x, y):
+        # Upper cranium dome
+        d_top = _sd_ellipse_approx(x, y, 0.0, -0.15, 0.655, 0.565)
+        # Tapered cheek/jaw block
+        d_jaw = sd_round_box(x, y, 0.0, 0.36, 0.415, 0.355, 0.115)
+        # Smooth organic blend between cranium & jaw
+        return _smin(d_top, d_jaw, 0.12)
+
+    d = skull_sdf(RX, RY)
+    d_sh = skull_sdf(RX, RY - 0.045)
+    fill = _vgrad(RY, -0.72, 0.72, (252, 253, 255), (206, 214, 228))
+
+    # Eye sockets (slightly oval, clean deep dark charcoal)
+    d_eye_l = _sd_ellipse_approx(RX, RY, -0.255, -0.025, 0.158, 0.168)
+    d_eye_r = _sd_ellipse_approx(RX, RY,  0.255, -0.025, 0.158, 0.168)
+    d_eyes = np.minimum(d_eye_l, d_eye_r)
+
+    # Nose cavity (clean inverted teardrop / rounded triangle)
+    nose_pts = [(0.0, 0.115), (-0.095, 0.305), (0.095, 0.305)]
+    d_nose = _sd_polygon(RX, RY, nose_pts) - 0.018
+
+    # Three crisp vertical jaw teeth slots rising from bottom edge
+    d_t1 = sd_segment(RX, RY, -0.175, 0.49, -0.175, 0.80) - 0.036
+    d_t2 = sd_segment(RX, RY,  0.000, 0.49,  0.000, 0.80) - 0.036
+    d_t3 = sd_segment(RX, RY,  0.175, 0.49,  0.175, 0.80) - 0.036
+    d_teeth = np.minimum(np.minimum(d_t1, d_t2), d_t3)
+
+    d_features = np.minimum(np.minimum(d_eyes, d_nose), d_teeth)
+    feat_a = 1.0 - _smoothstep(-0.005, 0.005, d_features)
+    feat_col = np.array([17, 20, 28], dtype=np.float32) / 255.0
+    fill = fill * (1.0 - feat_a[:, :, None]) + feat_col * feat_a[:, :, None]
+
+    return _compose_marker_base(d, d_sh, fill, (16, 19, 26), outline_w=0.028)
+
+
+RAID_MARK_RENDERERS = [
+    render_raid_mark1,
+    render_raid_mark2,
+    render_raid_mark3,
+    render_raid_mark4,
+    render_raid_mark5,
+    render_raid_mark6,
+    render_raid_mark7,
+    render_raid_mark8,
+]
+
+
+def _downsample_premul(rgba_f32: np.ndarray, out_sz: int) -> np.ndarray:
+    """Premultiplied-alpha Lanczos downsample returning straight-alpha float32 (out_sz x out_sz x 4)."""
+    pm = np.empty_like(rgba_f32)
+    pm[:, :, :3] = rgba_f32[:, :, :3] * rgba_f32[:, :, 3:4]
+    pm[:, :, 3] = rgba_f32[:, :, 3]
+    planes = [Image.fromarray(pm[:, :, c], mode="F").resize((out_sz, out_sz), Image.Resampling.LANCZOS) for c in range(4)]
+    arr = np.stack([np.asarray(p, dtype=np.float32) for p in planes], axis=-1)
+    a = np.clip(arr[:, :, 3], 0.0, 1.0)
+    sa = np.where(a > 1e-4, a, 1.0)
+    rgb = np.where(a[:, :, None] > 1e-4, np.clip(arr[:, :, :3] / sa[:, :, None], 0.0, 1.0), 0.0)
+    rgb = dilate_edge_rgb(rgb, a, iters=10)
+    return np.concatenate([rgb, a[:, :, None]], axis=-1)
+
+
 def generate_raid_marker_atlas():
     """
-    Composites Mark1.tga..Mark8.tga (128x128 each) into Blizzard's 4x4 512x512 layout:
-      Row 0: Mark1 (Star), Mark2 (Circle), Mark3 (Diamond), Mark4 (Triangle)
-      Row 1: Mark5 (Moon), Mark6 (Square), Mark7 (Cross),   Mark8 (Skull)
-      Rows 2-3: Transparent
-    Writes both Addon/kkowoUI/Media/MarkBar/UI-RaidTargetingIcons.blp
-    and client loose override Interface/TargetingFrame/UI-RaidTargetingIcons.blp
+    Renders all 8 Raid Markers analytically at 1024x1024 master ->
+      1) 256x256 Mark1.tga .. Mark8.tga (edge-dilated, zero halo/jaggedness)
+      2) 1024x1024 4x4 UI-RaidTargetingIcons.blp (256x256 per cell, lossless BGRA BLP2,
+         11-level premultiplied Lanczos mip chain with RGB edge dilation on every mip!)
+         Row 0: Mark1 (Star), Mark2 (Circle), Mark3 (Diamond), Mark4 (Triangle)
+         Row 1: Mark5 (Moon), Mark6 (Square), Mark7 (Cross),   Mark8 (Skull)
+         Rows 2-3: Transparent
     """
-    atlas = np.zeros((512, 512, 4), dtype=np.float32)
-    for idx in range(1, 9):
-        src = os.path.join(MARK_DIR, f"Mark{idx}.tga")
-        im = Image.open(src).convert("RGBA")
-        if im.size != (128, 128):
-            im = im.resize((128, 128), Image.Resampling.LANCZOS)
-        arr = np.asarray(im, dtype=np.float32) / 255.0
-        # Slight optical padding (92% inside 128x128 cell) so mipmap bleeding never leaks across grid cells!
-        pad_sz = 118
-        off = (128 - pad_sz) // 2
-        pm = np.empty_like(arr)
-        pm[:, :, :3] = arr[:, :, :3] * arr[:, :, 3:4]
-        pm[:, :, 3] = arr[:, :, 3]
+    os.makedirs(MARK_DIR, exist_ok=True)
+    os.makedirs(PREVIEW_DIR, exist_ok=True)
+
+    atlas_master_cell = 512  # Build 2048x2048 master atlas -> 1024x1024 base mip for ultra-crisp Lanczos AA
+    atlas_master = np.zeros((atlas_master_cell * 4, atlas_master_cell * 4, 4), dtype=np.float32)
+    pad_sz = 468  # ~91.4% inside 512px master cell (generous 22px safety border per side -> zero mip cell bleed!)
+    off = (atlas_master_cell - pad_sz) // 2
+
+    for idx, fn in enumerate(RAID_MARK_RENDERERS, start=1):
+        master = fn()  # 1024x1024 float32 straight-alpha RGBA
+
+        # 1) Save 256x256 Mark{idx}.tga (4x4 supersampled + edge-dilated)
+        tga_f32 = _downsample_premul(master, RAID_CELL)
+        tga_u8 = np.round(np.clip(tga_f32, 0.0, 1.0) * 255.0).astype(np.uint8)
+        tga_path = os.path.join(MARK_DIR, f"Mark{idx}.tga")
+        write_tga_bgra(tga_path, tga_u8)
+        print(f"Raid Marker TGA: Mark{idx}.tga ({RAID_CELL}x{RAID_CELL}, {os.path.getsize(tga_path)} bytes)")
+
+        # 2) Place into 2048x2048 master atlas cell (premultiplied downsample to pad_sz)
+        pm = np.empty_like(master)
+        pm[:, :, :3] = master[:, :, :3] * master[:, :, 3:4]
+        pm[:, :, 3] = master[:, :, 3]
         planes = [Image.fromarray(pm[:, :, c], mode="F").resize((pad_sz, pad_sz), Image.Resampling.LANCZOS) for c in range(4)]
         shrunk = np.stack([np.asarray(p, dtype=np.float32) for p in planes], axis=-1)
         a = np.clip(shrunk[:, :, 3], 0.0, 1.0)
         sa = np.where(a > 1e-4, a, 1.0)
         rgb = np.where(a[:, :, None] > 1e-4, np.clip(shrunk[:, :, :3] / sa[:, :, None], 0.0, 1.0), 0.0)
-        cell = np.zeros((128, 128, 4), dtype=np.float32)
+
+        cell = np.zeros((atlas_master_cell, atlas_master_cell, 4), dtype=np.float32)
         cell[off : off + pad_sz, off : off + pad_sz, :3] = rgb
         cell[off : off + pad_sz, off : off + pad_sz, 3] = a
 
         row = (idx - 1) // 4
         col = (idx - 1) % 4
-        atlas[row * 128 : (row + 1) * 128, col * 128 : (col + 1) * 128] = cell
+        atlas_master[
+            row * atlas_master_cell : (row + 1) * atlas_master_cell,
+            col * atlas_master_cell : (col + 1) * atlas_master_cell,
+        ] = cell
 
-    mips = build_mipmaps_rgba(atlas, 512)
+    # Build full 1024 -> 512 -> ... -> 1 mip chain with colored edge RGB dilation on every level!
+    mips = build_mipmaps_rgba(atlas_master, 1024, white_bg=False)
 
     addon_blp = os.path.join(MARK_DIR, "UI-RaidTargetingIcons.blp")
     write_blp2_bgra(addon_blp, mips)
-    print(f"Addon Raid Atlas: {addon_blp} ({os.path.getsize(addon_blp)} bytes, {len(mips)} mips)")
+    print(f"Addon Raid Atlas: {addon_blp} (1024x1024, {os.path.getsize(addon_blp)} bytes, {len(mips)} mips)")
 
-    # Save visual preview of top 2 rows on dark slate bg
-    bg = Image.new("RGBA", (512, 256), (22, 25, 30, 255))
-    fg = Image.fromarray(mips[0][:256, :, :], mode="RGBA")
+    # Save visual preview of top 2 rows on dark slate bg (plus light bg comparison strip)
+    bg = Image.new("RGBA", (1024, 512), (22, 25, 30, 255))
+    fg = Image.fromarray(mips[0][:512, :, :], mode="RGBA")
     bg.alpha_composite(fg)
     preview_path = os.path.join(PREVIEW_DIR, "raid_markers_atlas_preview.png")
     bg.save(preview_path)

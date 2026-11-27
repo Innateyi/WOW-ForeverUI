@@ -738,12 +738,14 @@ function Theme.EnsurePrettyCardOverlay(host, opts)
 
     -- 2) 深黑曜石纵向微渐变底板（使用 FLAT_TEX 兼容圆角 MaskTexture，去除原版无的杂纹层以 100% 复刻 PrettyTooltip）
     local bg = ov:CreateTexture(nil, "BACKGROUND", nil, -7)
+    if bg.SetBlockingLoadsRequested then pcall(bg.SetBlockingLoadsRequested, bg, true) end
     bg:SetAllPoints()
     bg:SetTexture(Theme.FLAT_TEX)
     ov._bg = bg
 
     -- 3) 顶部柔和染色渐变带
     local header = ov:CreateTexture(nil, "BORDER", nil, 0)
+    if header.SetBlockingLoadsRequested then pcall(header.SetBlockingLoadsRequested, header, true) end
     header:SetHeight(24)
     header:SetPoint("TOPLEFT", ov, "TOPLEFT", 1, -1)
     header:SetPoint("TOPRIGHT", ov, "TOPRIGHT", -1, -1)
@@ -798,17 +800,37 @@ local function SyncPrettyRoundedState(ov, rounded, radius)
     local r = wantRound and math_max(3, math_min(12, radius or 8)) or 0
     if ov._roundRadius == r then return end
 
+    local ST = F.StyleTokens
+    local function detach(tex, mask)
+        if not (tex and mask) then return end
+        if ST and ST.DetachCustomMask then
+            ST.DetachCustomMask(tex, mask)
+        else
+            RemoveMaskSafe(tex, mask)
+        end
+    end
+    local function attach(tex, mask)
+        if not (tex and mask) then return end
+        if ST and ST.AttachCustomMask then
+            ST.AttachCustomMask(ov, tex, mask)
+        else
+            AddMaskSafe(tex, mask)
+        end
+    end
+
     -- 先卸载旧遮罩（若切换半径或切回直角；含内孔反遮罩，否则切半径时圆角孔洞不刷新）
+    if ST and ST.CancelBorderHole then ST.CancelBorderHole(ov) end
     if ov._bodyMask then
-        RemoveMaskSafe(ov._bg, ov._bodyMask)
-        RemoveMaskSafe(ov._header, ov._bodyMask)
-        for _, sh in ipairs(ov._shades or {}) do RemoveMaskSafe(sh, ov._bodyMask) end
+        detach(ov._bg, ov._bodyMask)
+        detach(ov._header, ov._bodyMask)
+        for _, sh in ipairs(ov._shades or {}) do detach(sh, ov._bodyMask) end
         if ov._roundBorder then RemoveMaskSafe(ov._roundBorder, ov._bodyMask) end
-        if ov._roundTopEdge then RemoveMaskSafe(ov._roundTopEdge, ov._bodyMask) end
+        if ov._roundTopEdge then detach(ov._roundTopEdge, ov._bodyMask) end
     end
     if ov._roundBorder and ov._roundHole then
         RemoveMaskSafe(ov._roundBorder, ov._roundHole)
     end
+    ov._roundHoleReady = false
 
     ov._roundRadius = r
     if r > 0 then
@@ -820,36 +842,46 @@ local function SyncPrettyRoundedState(ov, rounded, radius)
         if ov._bodyMask then
             ApplyNineSliceMask(ov._bodyMask, maskPath, r, "CLAMPTOBLACKADDITIVE")
             ov._bodyMask:SetAllPoints(ov)
-            AddMaskSafe(ov._bg, ov._bodyMask)
-            AddMaskSafe(ov._header, ov._bodyMask)
-            for _, sh in ipairs(ov._shades or {}) do AddMaskSafe(sh, ov._bodyMask) end
+            attach(ov._bg, ov._bodyMask)
+            attach(ov._header, ov._bodyMask)
+            for _, sh in ipairs(ov._shades or {}) do attach(sh, ov._bodyMask) end
         end
 
         if not ov._roundBorder then
             local rb = ov:CreateTexture(nil, "OVERLAY", nil, 1)
+            if rb.SetBlockingLoadsRequested then pcall(rb.SetBlockingLoadsRequested, rb, true) end
             rb:SetAllPoints(ov)
             rb:SetTexture(Theme.FLAT_TEX)
             ov._roundBorder = rb
             ov._roundHole = ov:CreateMaskTexture()
         end
         if ov._roundBorder and ov._bodyMask and ov._roundHole then
-            AddMaskSafe(ov._roundBorder, ov._bodyMask)
             ApplyNineSliceMask(ov._roundHole, holePath, math_max(1, r - 1), "CLAMPTOWHITE")
+            ov._roundHole:ClearAllPoints()
             ov._roundHole:SetPoint("TOPLEFT", ov, "TOPLEFT", 1, -1)
             ov._roundHole:SetPoint("BOTTOMRIGHT", ov, "BOTTOMRIGHT", -1, 1)
-            AddMaskSafe(ov._roundBorder, ov._roundHole)
-            ov._roundBorder:Show()
+            if ST and ST.AttachBorderHole then
+                ST.AttachBorderHole(ov, ov._roundBorder, ov._roundHole, ov._bodyMask, ov, function()
+                    ov._roundHoleReady = true
+                end)
+            else
+                AddMaskSafe(ov._roundBorder, ov._bodyMask)
+                AddMaskSafe(ov._roundBorder, ov._roundHole)
+                ov._roundHoleReady = true
+                ov._roundBorder:Show()
+            end
             for _, ln in ipairs(ov._edges) do ln:Hide() end
             -- 顶部柔和亮色圆角呼应条（保留 PrettyTooltip 顶部亮边基因）
             if not ov._roundTopEdge then
                 local te = ov:CreateTexture(nil, "OVERLAY", nil, 2)
+                if te.SetBlockingLoadsRequested then pcall(te.SetBlockingLoadsRequested, te, true) end
                 te:SetPoint("TOPLEFT", ov, "TOPLEFT", 0, 0)
                 te:SetPoint("TOPRIGHT", ov, "TOPRIGHT", 0, 0)
                 te:SetHeight(2)
                 te:SetTexture(Theme.FLAT_TEX)
                 ov._roundTopEdge = te
             end
-            AddMaskSafe(ov._roundTopEdge, ov._bodyMask)
+            attach(ov._roundTopEdge, ov._bodyMask)
             ov._roundTopEdge:Show()
             return
         end
@@ -921,7 +953,7 @@ function Theme.PaintPrettyCardOverlay(host, r, g, b, headerMaxH, opts)
     local hdrH = math_max(8, math_min(headerMaxH or 30, math_max(8, h - 2)))
     ov._header:SetHeight(hdrH)
 
-    if ov._roundRadius and ov._roundRadius > 0 and ov._roundBorder and ov._roundBorder:IsShown() then
+    if ov._roundRadius and ov._roundRadius > 0 and ov._roundBorder then
         ov._roundBorder:SetVertexColor(r * 0.46 + 0.08, g * 0.46 + 0.08, b * 0.46 + 0.08, 0.88)
         if ov._roundTopEdge then
             ov._roundTopEdge:SetVertexColor(r * 0.82, g * 0.82, b * 0.82, 0.72)

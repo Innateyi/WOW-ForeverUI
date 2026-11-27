@@ -992,6 +992,14 @@ local function CreateBar()
     barFrame:SetSize(420, 26)
     barFrame:SetFrameStrata("MEDIUM")
     barFrame:EnableMouse(true)
+    barFrame:HookScript("OnHide", function()
+        if barDragging then
+            barDragging = false
+            if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+                barFrame:StopMovingOrSizing()
+            end
+        end
+    end)
 
     for i, def in ipairs(BUTTON_DEFS) do
         local tpl = nil
@@ -1487,17 +1495,19 @@ function mod:OnEnable()
         db.v3NoCombatFadeMigrated = true
         db.combatFade = false
     end
-    CreateBar()
-    BindSecureButtons()
-    ApplyVisuals()
+    local function EnsureReadyAndShow()
+        if not mod._active then return end
+        CreateBar()
+        BindSecureButtons()
+        ApplyVisuals()
+        if barFrame then barFrame:Show() end
+    end
+    -- 栏内含安全按钮（CreateBar 含 SetAttribute + Show），战斗中会被拦截：统一顺延至脱战（与 OnDisable 复用同一 key）
+    F.RunOutOfCombat("FUI_SystemBarVis", EnsureReadyAndShow)
     SyncEUIFriendsButtonSoon()
     ScheduleLateMinimapButtonSync()
     InstallMicroAlertHooks()
     SuppressBlizzardMicroHelpTips(false)
-    -- 栏内含安全按钮，战斗中显示/隐藏会被拦截：顺延到脱战（同一 key 与 OnDisable 互相覆盖，以最后一次操作为准）
-    F.RunOutOfCombat("FUI_SystemBarVis", function()
-        if barFrame and mod._active then barFrame:Show() end
-    end)
 
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
         if barDragging and barFrame then

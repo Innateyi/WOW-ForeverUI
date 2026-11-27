@@ -324,11 +324,11 @@ function mod:OnQuestEvent(event)
                     Note("奖励物品信息加载中，请手动挑选。")
                     return
                 end
-                _G.GetQuestReward(best)
+                if _G.GetQuestReward then _G.GetQuestReward(best) end
                 return
             elseif n == 1 then
                 -- 单一可选奖励直接传 1，避免未选中直接点按钮报红字
-                _G.GetQuestReward(1)
+                if _G.GetQuestReward then _G.GetQuestReward(1) end
                 return
             end
             if not ClickIfReady(_G.QuestFrameCompleteQuestButton) and _G.GetQuestReward then
@@ -345,11 +345,11 @@ function mod:OnConfirmEvent(event, slotOrRoll, roll, ...)
         return
     end
     if event == "CONFIRM_LOOT_ROLL" and _G.ConfirmLootRoll then
-        _G.ConfirmLootRoll(slotOrRoll, roll)
-        if _G.StaticPopup_Hide then _G.StaticPopup_Hide("CONFIRM_LOOT_ROLL") end
+        pcall(_G.ConfirmLootRoll, slotOrRoll, roll)
+        if _G.StaticPopup_Hide then pcall(_G.StaticPopup_Hide, "CONFIRM_LOOT_ROLL") end
     elseif event == "LOOT_BIND_CONFIRM" and _G.ConfirmLootSlot then
-        _G.ConfirmLootSlot(slotOrRoll)
-        if _G.StaticPopup_Hide then _G.StaticPopup_Hide("LOOT_BIND") end
+        pcall(_G.ConfirmLootSlot, slotOrRoll)
+        if _G.StaticPopup_Hide then pcall(_G.StaticPopup_Hide, "LOOT_BIND") end
     end
 end
 

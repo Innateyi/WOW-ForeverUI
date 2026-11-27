@@ -139,7 +139,7 @@ local function IsEUIQuestItemButton(f)
         return false
     end
     local okAttr, attr = pcall(f.GetAttribute, f, "type")
-    return okAttr and attr == "item"
+    return okAttr and F.PlainString(attr, nil) == "item"
 end
 
 local function FindEUIItemLayer()
@@ -347,8 +347,8 @@ function mod:OnEnable()
     end
     -- 旧版账号级经验缓存已停用：清空以免 SavedVariables 无限增长
     local db = self:GetDB()
-    if type(db.cache) == "table" and next(db.cache) ~= nil then
-        db.cache = {}
+    if type(db.cache) == "table" then
+        db.cache = nil
     end
     self:RegisterEvent("QUEST_LOG_UPDATE", RefreshRows)
     self:RegisterEvent("QUEST_REMOVED", function(_, _, qid)

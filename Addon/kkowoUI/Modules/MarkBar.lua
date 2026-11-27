@@ -10,15 +10,15 @@
 local _, F = ...
 
 local _G = _G
-local ipairs, math_floor, math_max, pairs, pcall, tostring =
-    ipairs, math.floor, math.max, pairs, pcall, tostring
+local ipairs, math_floor, math_max, math_min, pairs, pcall, tostring, type =
+    ipairs, math.floor, math.max, math.min, pairs, pcall, tostring, type
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("markBar", {
     title = "快捷标记条",
-    desc = "现代重绘扁平矢量标记条（8 标记 + 清除/就位/倒数全矢量居中对齐），支持目标同步高亮与烟熏玻璃胶囊托底。",
+    desc = "现代重绘超高清 SDF 矢量标记条（8 标记 + 清除/就位/倒数全矢量居中对齐），支持目标同步高亮、头顶/姓名板标记尺寸调节与抗锯齿渲染。",
     group = "combat",
     order = 40,
     defaults = {
@@ -32,6 +32,8 @@ local mod = F.RegisterModule("markBar", {
         combatFade = false,
         v4NoCombatFadeMigrated = false,
         iconSize = 20,
+        overheadSize = 36,        -- 头顶 / 姓名板团队标记尺寸（默认 36px，接近角色自身头顶暴雪默认 3D 标记）
+        savedEUIRaidMarker = nil, -- 备份 EUI 姓名板原标记尺寸，关闭模块时无损还原
         pullSeconds = 10,
     },
 })
@@ -41,6 +43,14 @@ local RAID_ATLAS = MARK_DIR .. "UI-RaidTargetingIcons.blp"
 local globalIconHooked = false
 -- 记录被换成现代图集的贴图：GetTexture() 返回值会被引擎规范化（且 12.x 可能是机密值），不能拿路径字符串比较
 local replacedRaidTex = setmetatable({}, { __mode = "k" })
+local origBlizzRaidSize = setmetatable({}, { __mode = "k" })
+
+-- 关闭像素网格吸附与 texel 偏置：放大后的团队标记（尤其在移动的 3D 姓名板上）按子像素平滑采样，消除锯齿抖动
+local function DisablePixelSnap(tex)
+    if not tex then return end
+    if tex.SetSnapToPixelGrid then pcall(tex.SetSnapToPixelGrid, tex, false) end
+    if tex.SetTexelSnappingBias then pcall(tex.SetTexelSnappingBias, tex, 0) end
+end
 
 local function InstallGlobalRaidIconHook()
     if globalIconHooked or type(_G.hooksecurefunc) ~= "function" then return end
@@ -57,6 +67,7 @@ local function InstallGlobalRaidIconHook()
         local top = math_floor(zero / 4) * 0.25
         if wantModern then
             pcall(tex.SetTexture, tex, RAID_ATLAS, nil, nil, "TRILINEAR")
+            DisablePixelSnap(tex)
             replacedRaidTex[tex] = true
         elseif replacedRaidTex[tex] then
             pcall(tex.SetTexture, tex, "Interface\\TargetingFrame\\UI-RaidTargetingIcons")
@@ -71,14 +82,15 @@ local function InstallGlobalRaidIconHook()
 end
 
 -- EUI 姓名板在文件加载时就把 SetRaidTargetIconTexture 存成了本地变量（早于本插件挂钩），
--- 上面的全局钩子对姓名板标记无效：直接给 EUI 姓名板的标记贴图换上同为 4x4 布局的现代图集，
--- 之后 EUI 只改 TexCoord，图标就会一直是新样式。
--- （人物头顶的 3D 世界标记由游戏引擎绘制，插件无法替换。）
+-- 上面的全局钩子对姓名板标记无效：直接给 EUI 姓名板的标记贴图换上同为 4x4 布局的超高清图集并关闭像素吸附，
+-- 之后 EUI 只改 TexCoord，图标就会一直是抗锯齿高清样式。
+-- （人物自身头顶与无姓名板单位的 3D 世界标记由游戏引擎绘制，大小不可调，图集可通过 Tools/deploy_raid_markers.py 覆盖。）
 local function RetextureRaidTex(tex, wantModern)
     if not tex or type(tex.SetTexture) ~= "function" then return end
     if tex.IsForbidden and tex:IsForbidden() then return end
     if wantModern then
         pcall(tex.SetTexture, tex, RAID_ATLAS, nil, nil, "TRILINEAR")
+        DisablePixelSnap(tex)
         replacedRaidTex[tex] = true
     elseif replacedRaidTex[tex] then
         pcall(tex.SetTexture, tex, "Interface\\TargetingFrame\\UI-RaidTargetingIcons")
@@ -92,27 +104,161 @@ local function GetEUINameplateNS()
     return type(ns) == "table" and ns or nil
 end
 
+local function GetEUINameplateProfile()
+    local npNS = GetEUINameplateNS()
+    if npNS then
+        local enp = npNS.ENP or (npNS._npInternals and npNS._npInternals.ENP)
+        if enp and enp.db and type(enp.db.profile) == "table" then
+            return enp.db.profile
+        end
+    end
+    local EUI = _G.EllesmereUI
+    if EUI and EUI.GetModule then
+        local ok, m = pcall(EUI.GetModule, EUI, "EllesmereUINameplates", true)
+        if ok and m and m.db and type(m.db.profile) == "table" then
+            return m.db.profile
+        end
+    end
+    return nil
+end
+
 local function RetexturePlate(plate, wantModern)
     if type(plate) ~= "table" then return end
     RetextureRaidTex(plate.raid, wantModern)
     RetextureRaidTex(plate.nameRaid, wantModern)
 end
 
+local function GetConfiguredOverheadSize()
+    local raw = F.PlainNumber(mod:GetDB().overheadSize, 36) or 36
+    return math_max(16, math_min(64, math_floor(raw + 0.5)))
+end
+
+-- 同步覆盖层（EUI 友方 NPC 仅名字覆盖层）与暴雪原生姓名板的团队标记贴图及尺寸
+local function SyncNameplateChildMarkers(wantModern, sz, restore, hasEUINP)
+    local CNP = _G.C_NamePlate
+    if not (CNP and CNP.GetNamePlates) then return end
+    local ok, list = pcall(CNP.GetNamePlates)
+    if not (ok and type(list) == "table") then return end
+    local inCombatNow = _G.InCombatLockdown and _G.InCombatLockdown()
+    for _, np in ipairs(list) do
+        if np and not (np.IsForbidden and np:IsForbidden()) then
+            -- 1) EUI 友方 NPC / 宠物仅名字覆盖层（挂在 nameplate 子框体上，带 .raid 贴图）
+            if np.GetChildren then
+                local okC, children = pcall(function() return { np:GetChildren() } end)
+                if okC and type(children) == "table" then
+                    for _, ch in ipairs(children) do
+                        if ch and not (ch.IsForbidden and ch:IsForbidden()) and ch.raid then
+                            RetextureRaidTex(ch.raid, wantModern)
+                        end
+                    end
+                end
+            end
+            -- 2) 暴雪原生姓名板回退（未启用 EUI 姓名板或某单位走原生姓名板时）
+            local uf = np.UnitFrame
+            local rtf = uf and uf.RaidTargetFrame
+            if rtf and not (rtf.IsForbidden and rtf:IsForbidden()) then
+                local rti = rtf.RaidTargetIcon
+                if rti and not (rti.IsForbidden and rti:IsForbidden()) then
+                    DisablePixelSnap(rti)
+                    if not restore and wantModern then
+                        RetextureRaidTex(rti, true)
+                    elseif restore then
+                        RetextureRaidTex(rti, false)
+                    end
+                end
+                if not inCombatNow and not hasEUINP then
+                    if restore then
+                        local orig = origBlizzRaidSize[rtf]
+                        if orig then
+                            pcall(rtf.SetSize, rtf, orig[1], orig[2])
+                            origBlizzRaidSize[rtf] = nil
+                        end
+                    elseif mod._active and uf.IsShown and uf:IsShown() then
+                        if not origBlizzRaidSize[rtf] and rtf.GetSize then
+                            local okS, ow, oh = pcall(rtf.GetSize, rtf)
+                            local pw, ph = okS and F.PlainNumber(ow, nil), okS and F.PlainNumber(oh, nil)
+                            if pw and ph and pw > 0 and ph > 0 then
+                                origBlizzRaidSize[rtf] = { pw, ph }
+                            end
+                        end
+                        pcall(rtf.SetSize, rtf, sz, sz)
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function SyncEUIPlateRaidIcons(unit)
     local ns = GetEUINameplateNS()
-    if not ns then return end
     local wantModern = mod._active and (mod:GetDB().iconPack or "modern") ~= "blizzard"
-    if unit then
-        if type(ns.plates) == "table" then RetexturePlate(ns.plates[unit], wantModern) end
-        if type(ns.friendlyPlates) == "table" then RetexturePlate(ns.friendlyPlates[unit], wantModern) end
-        return
+    local sz = GetConfiguredOverheadSize()
+    if ns then
+        if unit then
+            if type(ns.plates) == "table" then RetexturePlate(ns.plates[unit], wantModern) end
+            if type(ns.friendlyPlates) == "table" then RetexturePlate(ns.friendlyPlates[unit], wantModern) end
+        else
+            if type(ns.plates) == "table" then
+                for _, plate in pairs(ns.plates) do RetexturePlate(plate, wantModern) end
+            end
+            if type(ns.friendlyPlates) == "table" then
+                for _, plate in pairs(ns.friendlyPlates) do RetexturePlate(plate, wantModern) end
+            end
+        end
     end
-    if type(ns.plates) == "table" then
-        for _, plate in pairs(ns.plates) do RetexturePlate(plate, wantModern) end
+    SyncNameplateChildMarkers(wantModern, sz, not mod._active, ns ~= nil)
+end
+
+-- 将「头顶 / 姓名板标记大小」同步到 EUI 姓名板（敌方板 + 友方板 + 友方 NPC 覆盖层）及原生姓名板
+local function SyncOverheadMarkerSize(restore)
+    local db = mod:GetDB()
+    local sz = GetConfiguredOverheadSize()
+    local wantModern = (not restore) and mod._active and (db.iconPack or "modern") ~= "blizzard"
+    local npNS = GetEUINameplateNS()
+    local p = GetEUINameplateProfile()
+
+    if p then
+        if restore then
+            local saved = db.savedEUIRaidMarker
+            if type(saved) == "table" then
+                p.raidMarkerCoreSize = saved.core
+                p.raidMarkerSize = saved.base
+                db.savedEUIRaidMarker = nil
+            end
+        elseif mod._active then
+            if type(db.savedEUIRaidMarker) ~= "table" then
+                db.savedEUIRaidMarker = {
+                    core = p.raidMarkerCoreSize,
+                    base = p.raidMarkerSize,
+                }
+            end
+            p.raidMarkerCoreSize = sz
+            p.raidMarkerSize = sz
+        end
     end
-    if type(ns.friendlyPlates) == "table" then
-        for _, plate in pairs(ns.friendlyPlates) do RetexturePlate(plate, wantModern) end
+
+    if npNS then
+        if type(npNS.plates) == "table" then
+            for _, plate in pairs(npNS.plates) do
+                RetexturePlate(plate, wantModern)
+                if plate and plate.unit and type(plate.UpdateRaidIcon) == "function" then
+                    pcall(plate.UpdateRaidIcon, plate)
+                end
+            end
+        end
+        if type(npNS.friendlyPlates) == "table" then
+            for _, fp in pairs(npNS.friendlyPlates) do
+                RetexturePlate(fp, wantModern)
+                if fp and fp.unit and type(fp.UpdateRaidIcon) == "function" then
+                    pcall(fp.UpdateRaidIcon, fp)
+                end
+            end
+        end
+        if type(npNS.RefreshAllNPCOverlays) == "function" then
+            pcall(npNS.RefreshAllNPCOverlays)
+        end
     end
+    SyncNameplateChildMarkers(wantModern, sz, restore == true, npNS ~= nil)
 end
 
 local function SyncAllRaidIcons()
@@ -294,8 +440,12 @@ end
 
 local function RefreshTargetMarkHighlight()
     local idx = 0
-    if _G.UnitExists and _G.UnitExists("target") and _G.GetRaidTargetIndex then
-        idx = F.PlainNumber(_G.GetRaidTargetIndex("target"), 0)
+    if _G.UnitExists and _G.GetRaidTargetIndex then
+        local okE, exists = pcall(_G.UnitExists, "target")
+        if okE and not F.IsSecret(exists) and exists == true then
+            local okR, rIdx = pcall(_G.GetRaidTargetIndex, "target")
+            if okR then idx = F.PlainNumber(rIdx, 0) or 0 end
+        end
     end
     currentTargetMark = idx
     for _, btn in ipairs(markBtns) do
@@ -355,7 +505,8 @@ local function LayoutAndStyle()
         btn._icon:SetSize(iconSz, iconSz)
         if useModern then
             btn._icon:SetTexCoord(0, 1, 0, 1)
-            btn._icon:SetTexture(MARK_DIR .. btn._spec.file)
+            pcall(btn._icon.SetTexture, btn._icon, MARK_DIR .. btn._spec.file, nil, nil, "TRILINEAR")
+            DisablePixelSnap(btn._icon)
             btn._icon:SetVertexColor(1, 1, 1, 1)
         else
             btn._icon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
@@ -383,7 +534,8 @@ local function LayoutAndStyle()
         btn:SetSize(cellSz, cellSz)
         btn:SetPoint("LEFT", barFrame, "LEFT", x, 0)
         btn._icon:SetSize(actIconSz, actIconSz)
-        btn._icon:SetTexture(MARK_DIR .. btn._spec.file)
+        pcall(btn._icon.SetTexture, btn._icon, MARK_DIR .. btn._spec.file, nil, nil, "TRILINEAR")
+        DisablePixelSnap(btn._icon)
         PaintCellState(btn, false)
         x = x + cellSz + gap
     end
@@ -569,7 +721,11 @@ function mod:OnEnable()
         UpdateVisibility()
     end
     self:RegisterEvent("GROUP_ROSTER_UPDATE", UpdateVisibility)
-    self:RegisterEvent("PLAYER_ENTERING_WORLD", UpdateVisibility)
+    self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        UpdateVisibility()
+        SyncOverheadMarkerSize(false)
+        SyncAllRaidIcons()
+    end)
     self:RegisterEvent("PLAYER_TARGET_CHANGED", RefreshTargetMarkHighlight)
     self:RegisterEvent("RAID_TARGET_UPDATE", function()
         RefreshTargetMarkHighlight()
@@ -581,7 +737,14 @@ function mod:OnEnable()
         if not u then return end
         C_Timer.After(0, function() if mod._active then SyncEUIPlateRaidIcons(u) end end)
     end)
+    SyncOverheadMarkerSize(false)
     SyncAllRaidIcons()
+    C_Timer.After(0.5, function()
+        if mod._active then
+            SyncOverheadMarkerSize(false)
+            SyncAllRaidIcons()
+        end
+    end)
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
         inCombat = true
         -- 条上挂着安全按钮：拖动中进战必须在本事件内（受保护调用仍合法）结束移动，否则松手时 StopMovingOrSizing 会被拦截
@@ -598,13 +761,15 @@ function mod:OnEnable()
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
         inCombat = false
         if mod:GetDB().combatFade == true then SyncAlpha(false) end
+        SyncEUIPlateRaidIcons()
     end)
 end
 
 function mod:OnDisable()
     inCombat = false
     StopBarDrag()
-    -- 停用后把已换掉的全部团队标记（含姓名板与单位框架）还原成暴雪原版
+    -- 停用后把姓名板标记尺寸与已换掉的全部团队标记还原成原状
+    SyncOverheadMarkerSize(true)
     SyncAllRaidIcons()
     if barFrame then
         if _G.InCombatLockdown and _G.InCombatLockdown() then
@@ -627,7 +792,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "标记图标风格",
-        tooltip = "「现代扁平矢量重绘」使用 128px 重绘高清矢量标记与清除/就位/倒数图标；也可随时切回暴雪原版标记。",
+        tooltip = "「现代扁平矢量重绘」使用 1024px 超高清 SDF 无损图集与边缘抗锯齿渲染（放大不锯齿、无白黑杂边）；也可随时切回暴雪原版标记。",
         values = {
             modern   = "现代扁平矢量重绘（推荐）",
             blizzard = "经典暴雪原版标记",
@@ -639,14 +804,18 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     y = y - h
 
     _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "显示烟熏玻璃胶囊托底",
-        tooltip = "开启后呈现与 EUI 聊天栏一致的半透明烟熏底框与职业色顶线；关闭则完全透明悬浮。",
-        getValue = function() return db.showBackdrop ~= false end,
-        setValue = function(v) db.showBackdrop = v == true; LayoutAndStyle() end,
+        type = "slider",
+        text = "头顶 / 姓名板标记大小（px）",
+        tooltip = "调整怪物与友方姓名板上的团队标记尺寸（默认 36px，与角色自身头顶暴雪默认 3D 标记视觉大小接近），自动启用超高清三线性抗锯齿。\n注：自己头顶及无姓名板单位的 3D 世界标记大小由游戏引擎固定，插件无法缩放。",
+        min = 16, max = 64, step = 1,
+        getValue = function() return GetConfiguredOverheadSize() end,
+        setValue = function(v)
+            db.overheadSize = math_max(16, math_min(64, math_floor((v or 36) + 0.5)))
+            SyncOverheadMarkerSize(false)
+        end,
     }, {
         type = "slider",
-        text = "图标尺寸",
+        text = "标记条按钮图标尺寸",
         min = 16, max = 28, step = 1,
         getValue = function() return db.iconSize or 20 end,
         setValue = function(v) db.iconSize = v; LayoutAndStyle() end,
@@ -655,16 +824,30 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
+        text = "显示烟熏玻璃胶囊托底",
+        tooltip = "开启后呈现与 EUI 聊天栏一致的半透明烟熏底框与职业色顶线；关闭则完全透明悬浮。",
+        getValue = function() return db.showBackdrop ~= false end,
+        setValue = function(v) db.showBackdrop = v == true; LayoutAndStyle() end,
+    }, {
+        type = "toggle",
         text = "静默柔淡（鼠标悬停亮起）",
         tooltip = "平时柔和半透明不抢眼，鼠标移上立刻 100% 清晰。",
         getValue = function() return db.hoverReveal ~= false end,
         setValue = function(v) db.hoverReveal = v == true; SyncAlpha(false) end,
-    }, {
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
         type = "toggle",
         text = "团队无权限时自动隐藏",
         tooltip = "单人和小队始终显示；仅在团队中既非团长也非助理时隐藏。",
         getValue = function() return db.hideWithoutPermission ~= false end,
         setValue = function(v) db.hideWithoutPermission = v == true; UpdateVisibility() end,
+    }, {
+        type = "toggle",
+        text = "战斗中自动淡出",
+        getValue = function() return db.combatFade == true end,
+        setValue = function(v) db.combatFade = v == true; SyncAlpha(false) end,
     })
     y = y - h
 
@@ -674,12 +857,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         min = 3, max = 20, step = 1,
         getValue = function() return db.pullSeconds or 10 end,
         setValue = function(v) db.pullSeconds = v; RefreshActionMacros() end,
-    }, {
-        type = "toggle",
-        text = "战斗中自动淡出",
-        getValue = function() return db.combatFade == true end,
-        setValue = function(v) db.combatFade = v == true; SyncAlpha(false) end,
-    })
+    }, blank)
     y = y - h
     return y
 end

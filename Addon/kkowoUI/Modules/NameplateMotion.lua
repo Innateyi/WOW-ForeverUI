@@ -274,10 +274,12 @@ local function InstallTeleportFlashGuard()
         driverHooked = true
         _G.hooksecurefunc(drv, "OnNamePlateAdded", function(_, addedUnit)
             if not (mod._active and mod:GetDB().suppressTeleportFlash ~= false) then return end
-            if not addedUnit or addedUnit == "preview" then return end
-            local np = _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit and _G.C_NamePlate.GetNamePlateForUnit(addedUnit)
-            if np then
-                SuppressBlizzFlashForPlate(np, addedUnit)
+            local u = F.PlainString(addedUnit, nil)
+            if not u or u == "preview" then return end
+            local okNP, np = _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit
+                and pcall(_G.C_NamePlate.GetNamePlateForUnit, u)
+            if okNP and np then
+                SuppressBlizzFlashForPlate(np, u)
             end
         end)
     end
@@ -825,15 +827,15 @@ local function UpdatePlateCastContrast(plate, fx, unit)
     local hasCast = false
     local notInt = nil
     if _G.UnitCastingInfo then
-        local name, _, _, _, _, _, _, ni = _G.UnitCastingInfo(unit)
-        if type(name) ~= "nil" then
+        local okC, name, _, _, _, _, _, _, ni = pcall(_G.UnitCastingInfo, unit)
+        if okC and type(name) ~= "nil" then
             hasCast = true
             notInt = ni
         end
     end
     if (not hasCast) and _G.UnitChannelInfo then
-        local name, _, _, _, _, _, ni = _G.UnitChannelInfo(unit)
-        if type(name) ~= "nil" then
+        local okCh, name, _, _, _, _, _, ni = pcall(_G.UnitChannelInfo, unit)
+        if okCh and type(name) ~= "nil" then
             hasCast = true
             notInt = ni
         end
@@ -1174,6 +1176,10 @@ function mod:OnDisable()
 end
 
 function mod:OnRefresh()
+    RefreshAllPlates(true)
+end
+
+function mod:OnThemeChanged()
     RefreshAllPlates(true)
 end
 
