@@ -168,11 +168,8 @@ do
             if instant then
                 animTargets[frame] = nil
                 animCurves[frame] = nil
-                if math_abs(cur - goal) > 0.005 then
-                    SafeSetManagedAlpha(frame, goal)
-                else
-                    trackedAlpha[frame] = goal
-                end
+                -- 瞬时设置透明度时无条件写入引擎，确保首次未初始化追踪值不会跳过导致框体停在 0 不可见态
+                SafeSetManagedAlpha(frame, goal)
                 return
             end
             local dist = math_abs(goal - cur)

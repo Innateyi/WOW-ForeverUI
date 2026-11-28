@@ -1430,6 +1430,23 @@ function ST.NotifyTextureChanged(tex)
     OnMaskedTexChanged(tex)
 end
 
+function ST.UnmaskTexture(host, tex)
+    if not tex then return end
+    local h = host or maskedTexHost[tex]
+    local st = h and roundState[h]
+    pendingMasks[tex] = nil
+    stalledMasks[tex] = nil
+    if maskedTexHost[tex] == h then maskedTexHost[tex] = nil end
+    isIconTex[tex] = nil
+    keepLoadedTex[tex] = nil
+    if st then
+        if st.masked then st.masked[tex] = nil end
+        if st.mask then DetachMaskTrack(tex, st.mask) end
+        if st.wholeMask and st.wholeMask ~= st.mask then DetachMaskTrack(tex, st.wholeMask) end
+        if st.sliceMask and st.sliceMask ~= st.mask then DetachMaskTrack(tex, st.sliceMask) end
+    end
+end
+
 function ST.ClearRoundedMask(host)
     local st = host and roundState[host]
     if not st then return end

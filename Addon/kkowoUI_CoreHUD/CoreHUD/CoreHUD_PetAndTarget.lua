@@ -891,17 +891,22 @@ local function EnsureTargetAuraEngine()
             AK.styles[tgtAuraState.debuffStyleKey] = BuildTargetAuraStyleTable(sz, rad, true)
             AK.styles[tgtAuraState.buffStyleKey] = BuildTargetAuraStyleTable(sz, rad, false)
             local divSpan = TARGET_AURA_DIV_GAP * 2 + 1
+            -- 已核实 EUI（EUI_PlayerAuraBars_Groups.lua:413 + EUI_RaidFrames_AuraContainers.lua:2255）：
+            -- 12.x AuraContainer 的 flow layout 在每组末尾元素后自带一次 elementSpacing，而 groupSpacing 施加在
+            -- 目标组之前并与前组末尾 elementSpacing 叠加。因此减益两组之间设 groupSpacing=0（保持 4px 连续流），
+            -- 增益组设 groupSpacing = divSpan - TARGET_AURA_GAP（4 + 11 = 15px，精确容纳 7px + 1px「|」+ 7px）。
+            local buffGroupExtra = math_max(0, divSpan - TARGET_AURA_GAP)
             local gLayout = {
                 elementWidth = sz, elementHeight = sz,
                 elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-                groupSpacing = TARGET_AURA_GAP, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
+                groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             }
             if c.SetAuraGroupLayout then
-                gLayout.layoutIndex = 1; gLayout.forceNewLine = nil; gLayout.groupSpacing = TARGET_AURA_GAP
+                gLayout.layoutIndex = 1; gLayout.forceNewLine = nil; gLayout.groupSpacing = 0
                 pcall(c.SetAuraGroupLayout, c, "kk_tgt_my_debuffs", gLayout)
-                gLayout.layoutIndex = 2; gLayout.forceNewLine = nil; gLayout.groupSpacing = TARGET_AURA_GAP
+                gLayout.layoutIndex = 2; gLayout.forceNewLine = nil; gLayout.groupSpacing = 0
                 pcall(c.SetAuraGroupLayout, c, "kk_tgt_other_debuffs", gLayout)
-                gLayout.layoutIndex = 3; gLayout.forceNewLine = nil; gLayout.groupSpacing = divSpan
+                gLayout.layoutIndex = 3; gLayout.forceNewLine = nil; gLayout.groupSpacing = buffGroupExtra
                 pcall(c.SetAuraGroupLayout, c, "kk_tgt_buffs", gLayout)
             end
             if AK.RestyleSoon then
@@ -964,6 +969,7 @@ local function EnsureTargetAuraEngine()
         local SM = _G.AuraContainerSortMethod
         local sortDefault = SM and SM.Default or nil
         local divSpan = TARGET_AURA_DIV_GAP * 2 + 1
+        local buffGroupExtra = math_max(0, divSpan - TARGET_AURA_GAP)
         tgtAuraState.engineDebuffBtns = {}
         tgtAuraState.engineBuffBtns = {}
         local function TrackDebuffBtn(btn)
@@ -975,19 +981,19 @@ local function EnsureTargetAuraEngine()
         local myDebuffLayout = {
             elementWidth = sz, elementHeight = sz,
             elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-            groupSpacing = TARGET_AURA_GAP, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
+            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             layoutIndex = 1,
         }
         local otherDebuffLayout = {
             elementWidth = sz, elementHeight = sz,
             elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-            groupSpacing = TARGET_AURA_GAP, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
+            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             layoutIndex = 2,
         }
         local buffLayout = {
             elementWidth = sz, elementHeight = sz,
             elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-            groupSpacing = divSpan, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
+            groupSpacing = buffGroupExtra, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             layoutIndex = 3,
         }
         -- 同行流式排布：减益（自身优先 + 其他）与增益之间留出 15px 间距并居中绘制「|」分隔线

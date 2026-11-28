@@ -461,7 +461,7 @@ local function CaptureClickCheckForMark()
         local ok, single = pcall(_G.GetMouseFocus)
         if ok and single then rawFoci = { single } end
     end
-    if rawFoci and not F.IsSecret(rawFoci) then
+    if not F.IsSecret(rawFoci) and type(rawFoci) == "table" then
         local fociLen = SafeSecretTableLen(rawFoci)
         if type(fociLen) == "number" then
             for i = 1, math_min(fociLen, 12) do

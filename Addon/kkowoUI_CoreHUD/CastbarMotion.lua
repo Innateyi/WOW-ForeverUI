@@ -427,6 +427,9 @@ local function RefreshOverlayChrome()
         if overlay._spark and overlay._spark._spark then
             ST.MaskTexture(overlay._barHost, overlay._spark._spark, rad)
         end
+        if overlay._lockTex then
+            ST.MaskTexture(overlay._barHost, overlay._lockTex, rad)
+        end
         ST.ApplyRoundedBorder(overlay._barHost, rad, 0.02, 0.02, 0.03, 0.96, 6)
         overlay._lastBarRad = rad
     elseif overlay._lastBarRad and overlay._lastBarRad > 0 then
@@ -927,10 +930,15 @@ local function ApplySecretUninterruptibleOverlay(notInt)
         lt:SetTexture(ST.TEX.FLAT)
         lt:SetVertexColor(0.56, 0.58, 0.64, 0.55)
         if fillTex then lt:SetAllPoints(fillTex) else lt:SetAllPoints(overlay._bar) end
-        local h = F.PlainNumber(overlay._barHost:GetHeight(), 14) or 14
-        local rad = math_min(ST.GetCornerRadius(6), math_max(2, math_floor(h * 0.48)))
-        if rad > 0 then ST.MaskTexture(overlay._bar, lt, rad) end
         overlay._lockTex = lt
+    end
+    local gRad = ST.GetCornerRadius(6)
+    local h = F.PlainNumber(overlay._barHost:GetHeight(), 14) or 14
+    local rad = (gRad > 0) and math_min(gRad, math_max(2, math_floor(h * 0.48))) or 0
+    if rad > 0 then
+        ST.MaskTexture(overlay._barHost, overlay._lockTex, rad)
+    elseif ST.UnmaskTexture then
+        ST.UnmaskTexture(overlay._barHost, overlay._lockTex)
     end
     if overlay._lockTex.SetAlphaFromBoolean then
         local okA = pcall(overlay._lockTex.SetAlphaFromBoolean, overlay._lockTex, notInt, 0.55, 0)
@@ -1044,11 +1052,18 @@ local function StartCast(isChannel, isEmpower)
     else
         for i = 1, 15 do overlay._ticks[i]:Hide() end
     end
-    if overlay._spark then overlay._spark:SyncAnchor() end
+    if overlay._spark then
+        overlay._spark:SetShown(mod:GetDB().showSpark ~= false)
+        overlay._spark:SyncAnchor()
+    end
 
     overlay:Show()
     if useNative then
         overlay:SetScript("OnUpdate", nil)
+        if overlay._spark then
+            overlay._spark:SetShown(mod:GetDB().showSpark ~= false)
+            overlay._spark:SyncAnchor()
+        end
         UpdateNativeCastText()
         M.RegisterTextTick(CAST_TICK_KEY, 0.05, UpdateNativeCastText)
     else

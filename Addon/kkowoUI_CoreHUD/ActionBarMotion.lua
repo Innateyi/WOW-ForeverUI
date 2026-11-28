@@ -397,12 +397,16 @@ local function CaptureIconPoints(icon)
 end
 
 local function ApplyIconPoints(icon, pts, dy)
-    if not (icon and pts and #pts > 0) then return end
-    pcall(icon.ClearAllPoints, icon)
+    if not (icon and pts and #pts > 0) then return false end
+    local okClr = pcall(icon.ClearAllPoints, icon)
+    if not okClr then return false end
+    local okAny = false
     for i = 1, #pts do
         local p = pts[i]
-        pcall(icon.SetPoint, icon, p.pt, p.rel, p.rpt, p.x, p.y + (dy or 0))
+        local okSet = pcall(icon.SetPoint, icon, p.pt, p.rel, p.rpt, p.x, p.y + (dy or 0))
+        if okSet then okAny = true end
     end
+    return okAny
 end
 
 local function PlayIconReleaseSpring(icon, st, px)
@@ -427,7 +431,7 @@ local function PlayIconReleaseSpring(icon, st, px)
     ag:Play()
 end
 
-local function SetActionIconPressed(btn, pressed)
+local function SetActionIconPressed(btn, pressed, noSpring, source)
     if not IsSafe(btn) then return end
     local st = pressState[btn]
     if not st then
@@ -447,24 +451,36 @@ local function SetActionIconPressed(btn, pressed)
         local px = ST.GetPixel(btn)
         if not px or px <= 0 then px = 1 end
         if st.releaseAG then st.releaseAG:Stop() end
-        st.icon = icon
-        st.origPoints = pts
-        st.shiftPx = px
-        st.pressed = true
-        -- 仅下移图标纹理 1 物理像素，绝不对按钮本身调用任何受保护方法（战斗安全 + 怪癖 6 不用 Scale）
-        ApplyIconPoints(icon, pts, -px)
+        -- 仅在 SetPoint 实际成功后标记 pressed，防止失败导致状态失配（战斗安全 + 怪癖 6 不用 Scale）
+        if ApplyIconPoints(icon, pts, -px) then
+            st.icon = icon
+            st.origPoints = pts
+            st.shiftPx = px
+            st.pressSource = source or "key"
+            st.pressed = true
+        end
     else
         if not st.pressed then return end
         st.pressed = false
+        st.pressSource = nil
         local icon = st.icon or FindButtonIcon(btn)
         local pts = st.origPoints
         local px = st.shiftPx or ST.GetPixel(btn) or 1
         st.origPoints = nil
+        if st.releaseAG then st.releaseAG:Stop() end
         if icon and pts then
             ApplyIconPoints(icon, pts, 0)
-            if mod._active and ST.IsFXEnabled("fx_buttonPress") and btn:IsVisible() then
+            if (not noSpring) and mod._active and ST.IsFXEnabled("fx_buttonPress") and btn:IsVisible() then
                 PlayIconReleaseSpring(icon, st, px)
             end
+        end
+    end
+end
+
+local function ResetAllPressedIcons()
+    for _, btn in ipairs(btnList) do
+        if IsSafe(btn) then
+            SetActionIconPressed(btn, false, true)
         end
     end
 end
@@ -482,7 +498,7 @@ local function HookButtonPressState(btn)
         _G.hooksecurefunc(btn, "SetButtonState", function(self, state)
             local s = F.PlainString(state, nil)
             if s == "PUSHED" then
-                SetActionIconPressed(self, true)
+                SetActionIconPressed(self, true, false, "key")
             elseif s == "NORMAL" then
                 SetActionIconPressed(self, false)
             end
@@ -491,19 +507,32 @@ local function HookButtonPressState(btn)
     -- 2) EUI 动作条键盘按键路径：EUI 通过 Show/Hide PushedTexture 表现键盘按下
     local pt = btn.PushedTexture
     if pt and type(pt.Show) == "function" and type(pt.Hide) == "function" then
-        _G.hooksecurefunc(pt, "Show", function() SetActionIconPressed(btn, true) end)
+        _G.hooksecurefunc(pt, "Show", function() SetActionIconPressed(btn, true, false, "key") end)
         _G.hooksecurefunc(pt, "Hide", function() SetActionIconPressed(btn, false) end)
     end
-    -- 3) 鼠标按下/松开与隐藏清理
+    -- 3) 鼠标按下/松开、拖离松开防卡死与隐藏清理
     if btn.HookScript then
         if not btn.HasScript or btn:HasScript("OnMouseDown") then
-            btn:HookScript("OnMouseDown", function(self) SetActionIconPressed(self, true) end)
+            btn:HookScript("OnMouseDown", function(self) SetActionIconPressed(self, true, false, "mouse") end)
         end
         if not btn.HasScript or btn:HasScript("OnMouseUp") then
             btn:HookScript("OnMouseUp", function(self) SetActionIconPressed(self, false) end)
         end
+        if not btn.HasScript or btn:HasScript("OnLeave") then
+            btn:HookScript("OnLeave", function(self)
+                local pst = pressState[self]
+                if pst and pst.pressed and pst.pressSource == "mouse" then
+                    local isDown = _G.IsMouseButtonDown
+                    local lDown = isDown and isDown("LeftButton") or false
+                    local rDown = isDown and isDown("RightButton") or false
+                    if not lDown and not rDown then
+                        SetActionIconPressed(self, false)
+                    end
+                end
+            end)
+        end
         if not btn.HasScript or btn:HasScript("OnHide") then
-            btn:HookScript("OnHide", function(self) SetActionIconPressed(self, false) end)
+            btn:HookScript("OnHide", function(self) SetActionIconPressed(self, false, true) end)
         end
     end
 end
@@ -1362,11 +1391,15 @@ function mod:OnEnable()
     end
     InstallEABHooks()
 
+    local function OnBarPageOrFormChanged()
+        ResetAllPressedIcons()
+        QueueScan()
+    end
     self:RegisterEvent("ACTIONBAR_SLOT_CHANGED", QueueScan)
-    self:RegisterEvent("ACTIONBAR_PAGE_CHANGED", QueueScan)
-    self:RegisterEvent("UPDATE_BONUS_ACTIONBAR", QueueScan)
+    self:RegisterEvent("ACTIONBAR_PAGE_CHANGED", OnBarPageOrFormChanged)
+    self:RegisterEvent("UPDATE_BONUS_ACTIONBAR", OnBarPageOrFormChanged)
     self:RegisterEvent("PET_BAR_UPDATE", QueueScan)
-    self:RegisterEvent("UPDATE_SHAPESHIFT_FORMS", QueueScan)
+    self:RegisterEvent("UPDATE_SHAPESHIFT_FORMS", OnBarPageOrFormChanged)
     -- 冷却事件只更新冷却就绪提醒；整套按钮扫描只在布局类事件（换槽 / 翻页 / 进出战 / 队伍变化）时做，
     -- 不再随每次公共冷却在战斗中每秒全量重扫数次
     self:RegisterEvent("ACTIONBAR_UPDATE_COOLDOWN", QueueCDCheck)
@@ -1387,9 +1420,9 @@ end
 
 function mod:OnDisable()
     for k in pairs(trackedCDs) do trackedCDs[k] = nil end
+    ResetAllPressedIcons()
     for _, btn in ipairs(btnList) do
         if IsSafe(btn) then
-            SetActionIconPressed(btn, false)
             local fl = flashOverlays[btn]
             if fl then
                 if fl.ag then fl.ag:Stop() end
@@ -1429,6 +1462,9 @@ function mod:OnDisable()
 end
 
 function mod:OnRefresh()
+    if not ST.IsFXEnabled("fx_buttonPress") then
+        ResetAllPressedIcons()
+    end
     ScanButtons()
 end
 

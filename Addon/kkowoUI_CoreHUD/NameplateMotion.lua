@@ -309,6 +309,8 @@ local function ClearPlateCastContrast(plate, fx)
     end
 end
 
+local ClearOutlineRoundedBorder -- 前向声明
+
 local function ResetPlateFX(plate, fx)
     if not fx then return end
     if fx.leftAG and fx.leftAG:IsPlaying() then fx.leftAG:Stop() end
@@ -319,12 +321,7 @@ local function ResetPlateFX(plate, fx)
     if fx.rightBox then fx.rightBox:Hide() end
     if fx.arrowHost then fx.arrowHost:Hide() end
     if fx.targetOutline then fx.targetOutline:Hide() end
-    if fx.outlineRoundedBorder then
-        fx.outlineRoundedBorder = false
-        if plate and IsSafe(plate.health) and plate._npRounded then
-            ST.ApplyRoundedBorder(plate.health, 0)
-        end
-    end
+    ClearOutlineRoundedBorder(plate, fx)
     if fx.questFS then fx.questFS:Hide() end
     if fx.stripeFillClip then fx.stripeFillClip:Hide() end
     if fx.stripeBgClip then fx.stripeBgClip:Hide() end
@@ -1050,7 +1047,7 @@ local function SyncOutlineHostMask(ol, rad)
     end
 end
 
-local function ClearOutlineRoundedBorder(plate, fx)
+ClearOutlineRoundedBorder = function(plate, fx)
     if not (fx and fx.outlineRoundedBorder) then return end
     fx.outlineRoundedBorder = false
     if IsSafe(plate) and IsSafe(plate.health) then
@@ -1383,8 +1380,10 @@ local function RefreshAllPlates(instantTrail)
         end
     end
     if not anyTarget then
-        if activeOutlinePlate and plateFX[activeOutlinePlate] and plateFX[activeOutlinePlate].targetOutline then
-            plateFX[activeOutlinePlate].targetOutline:Hide()
+        if activeOutlinePlate and plateFX[activeOutlinePlate] then
+            local oldFx = plateFX[activeOutlinePlate]
+            if oldFx.targetOutline then oldFx.targetOutline:Hide() end
+            ClearOutlineRoundedBorder(activeOutlinePlate, oldFx)
         end
         activeOutlinePlate = nil
         outlineAnimTask.plate = nil

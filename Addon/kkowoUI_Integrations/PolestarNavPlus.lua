@@ -282,7 +282,7 @@ local function DetectNearbyQuestMob(goal)
                 if type(plate) == "table" and not IsObjForbidden(plate) then
                     local uf = plate.UnitFrame
                     local u = plate.namePlateUnitToken or (uf and not IsObjForbidden(uf) and uf.unit)
-                    if u and not F.IsSecret(u) then
+                    if not F.IsSecret(u) and u then
                         hit, name = UnitMatchesGoal(u, info)
                         if hit then return true, name end
                     end

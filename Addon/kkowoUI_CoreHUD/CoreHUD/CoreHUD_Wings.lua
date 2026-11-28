@@ -114,6 +114,13 @@ local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius, fxOverride
             for _, ln in ipairs(holder._fuiBorders) do ln:Show() end
         end
     end
+    -- 重建圆角遮罩后，同步把治疗预估/吸收盾/超量线与受击闪光叠层重挂到外层 holder 遮罩（或圆角归零时卸载）
+    if holder._healPred and holder._healPred.SyncLayout then
+        holder._healPred:SyncLayout(true)
+    end
+    if M.SyncBarHitFlashMask and holder._bar then
+        M.SyncBarHitFlashMask(holder._bar, holder, rad)
+    end
     ST.ApplyBarGradient(holder._bar, r1, g1, b1, r2, g2, b2, 0.98, holder._reverse)
 end
 
@@ -864,7 +871,7 @@ local function IsBuffBtnShownOnWing(btn)
     local info = btn.buttonInfo
     if type(info) == "table" then
         local iid = info.auraInstanceID
-        if iid ~= nil and not F.IsSecret(iid) and wingShownInstanceIDs[iid] then
+        if not F.IsSecret(iid) and type(iid) ~= "nil" and wingShownInstanceIDs[iid] then
             return true
         end
         local idx = F.PlainNumber(info.index, nil)
@@ -873,7 +880,7 @@ local function IsBuffBtnShownOnWing(btn)
         end
         local tex = info.texture
         local expT = F.PlainNumber(info.expirationTime, nil)
-        if tex ~= nil and not F.IsSecret(tex) and wingShownIcons[tex] and expT and expT > 0 then
+        if not F.IsSecret(tex) and type(tex) ~= "nil" and wingShownIcons[tex] and expT and expT > 0 then
             return true
         end
     end
@@ -898,7 +905,7 @@ local function IsBuffBtnShownOnWing(btn)
         local icObj = btn.Icon or btn.icon
         if icObj and icObj.GetTexture then
             local okT, tex = pcall(icObj.GetTexture, icObj)
-            if okT and tex ~= nil and not F.IsSecret(tex) and wingShownIcons[tex] then
+            if okT and not F.IsSecret(tex) and type(tex) ~= "nil" and wingShownIcons[tex] then
                 return true
             end
         end
@@ -1308,11 +1315,11 @@ local function LayoutAuraRowWithOverflow(slots, overflowBadge, list, maxSlots, s
         local data = (i <= showSlots) and list[i] or nil
         if data then
             if trackShown then
-                if data.auraInstanceID ~= nil and not F.IsSecret(data.auraInstanceID) then
+                if not F.IsSecret(data.auraInstanceID) and type(data.auraInstanceID) ~= "nil" then
                     wingShownInstanceIDs[data.auraInstanceID] = true
                 end
                 if data.index then wingShownIndices[data.index] = true end
-                if data.icon ~= nil and not F.IsSecret(data.icon) then
+                if not F.IsSecret(data.icon) and type(data.icon) ~= "nil" then
                     wingShownIcons[data.icon] = true
                 end
             end
@@ -1331,11 +1338,11 @@ local function LayoutAuraRowWithOverflow(slots, overflowBadge, list, maxSlots, s
                 local d = list[i]
                 hiddenList[#hiddenList + 1] = d
                 if trackShown then
-                    if d.auraInstanceID ~= nil and not F.IsSecret(d.auraInstanceID) then
+                    if not F.IsSecret(d.auraInstanceID) and type(d.auraInstanceID) ~= "nil" then
                         wingShownInstanceIDs[d.auraInstanceID] = true
                     end
                     if d.index then wingShownIndices[d.index] = true end
-                    if d.icon ~= nil and not F.IsSecret(d.icon) then
+                    if not F.IsSecret(d.icon) and type(d.icon) ~= "nil" then
                         wingShownIcons[d.icon] = true
                     end
                 end

@@ -67,6 +67,7 @@ end
 -- 统一主条赋值（fx_smoothMain 关闭时严格退回旧路径 SetMinMaxValues + 1 参 SetValue）
 local function SetHUDMainBar(bar, val, mx, unit, instant, extraChanged)
     if not bar then return end
+    if M.CancelBarArriveGlide then M.CancelBarArriveGlide(bar) end
     if not ST.IsFXEnabled("fx_smoothMain") then
         pcall(bar.SetMinMaxValues, bar, 0, mx)
         M.SetBarValue(bar, val, { fxKey = "fx_smoothMain" })
@@ -89,14 +90,15 @@ local function HandleUnitCombatFlash(unit, action, flags, amount)
     local act = F.PlainString(action, nil)
     if act ~= "WOUND" and act ~= "HEAL" then return end
 
-    local bar = nil
+    local holder, bar = nil, nil
     if unit == "player" then
-        bar = CH.coreFrame and CH.coreFrame:IsShown() and CH.coreFrame._hpWing and CH.coreFrame._hpWing._bar or nil
+        holder = CH.coreFrame and CH.coreFrame:IsShown() and CH.coreFrame._hpWing or nil
     elseif unit == "target" then
-        bar = CH.topTargetFrame and CH.topTargetFrame:IsShown() and CH.topTargetFrame._hpBar and CH.topTargetFrame._hpBar._bar or nil
+        holder = CH.topTargetFrame and CH.topTargetFrame:IsShown() and CH.topTargetFrame._hpBar or nil
     elseif unit == "pet" then
-        bar = CH.petFrame and CH.petFrame:IsShown() and CH.petFrame._hpBar and CH.petFrame._hpBar._bar or nil
+        holder = CH.petFrame and CH.petFrame:IsShown() and CH.petFrame._hpBar or nil
     end
+    bar = holder and holder._bar or nil
     if not bar then return end
 
     local alphaMul = 1.0
@@ -126,10 +128,12 @@ local function HandleUnitCombatFlash(unit, action, flags, amount)
         end
     end
 
-    local h = F.PlainNumber(bar.GetHeight and bar:GetHeight(), 16) or 16
+    local h = F.PlainNumber(holder.GetHeight and holder:GetHeight(), nil)
+        or F.PlainNumber(bar.GetHeight and bar:GetHeight(), 16) or 16
     M.TriggerBarHitFlash(bar, act, {
         alphaMul = alphaMul,
         radius = GetBarRadius(h),
+        maskHost = holder,
     })
 end
 
@@ -332,6 +336,9 @@ local function UpdateTopTargetHUD(instant, isTargetSwitch)
         local db = mod:GetDB()
         local exists = UnitExistsSafe("target")
         if not (mod._active and db.enableTopTarget ~= false and exists) then
+            if M.CancelBarArriveGlide and CH.topTargetFrame._hpBar and CH.topTargetFrame._hpBar._bar then
+                M.CancelBarArriveGlide(CH.topTargetFrame._hpBar._bar)
+            end
             CH.topTargetFrame:Hide()
         else
             if instant and not CH.topTargetFrame:IsShown() then
@@ -1145,10 +1152,16 @@ function mod:OnEnable()
     BuildPetHUD()
     BuildTopTargetHUD()
     if CH.coreFrame and CH.coreFrame._hpWing and not CH.coreFrame._hpWing._healPred then
-        CH.coreFrame._hpWing._healPred = M.AttachHealPrediction(CH.coreFrame._hpWing._bar, { reverse = true })
+        CH.coreFrame._hpWing._healPred = M.AttachHealPrediction(CH.coreFrame._hpWing._bar, {
+            reverse = true,
+            maskHost = CH.coreFrame._hpWing,
+        })
     end
     if CH.topTargetFrame and CH.topTargetFrame._hpBar and not CH.topTargetFrame._hpBar._healPred then
-        CH.topTargetFrame._hpBar._healPred = M.AttachHealPrediction(CH.topTargetFrame._hpBar._bar, { reverse = false })
+        CH.topTargetFrame._hpBar._healPred = M.AttachHealPrediction(CH.topTargetFrame._hpBar._bar, {
+            reverse = false,
+            maskHost = CH.topTargetFrame._hpBar,
+        })
     end
     AttachEUITrails()
 

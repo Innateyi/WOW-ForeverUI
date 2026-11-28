@@ -6,7 +6,7 @@ local _G = _G
 local F = _G.kkowoUI
 if not F then return end
 local ipairs, pairs, pcall, type = ipairs, pairs, pcall, type
-local math_floor, math_min = math.floor, math.min
+local math_floor, math_max, math_min = math.floor, math.max, math.min
 local table_sort = table.sort
 local CreateFrame = CreateFrame
 local GameTooltip = _G.GameTooltip
@@ -331,10 +331,14 @@ local function CloseBar(bar)
     bar.endTime = nil
     bar.bop = nil
     bar._checkAccum = nil
+    bar._nativeTimer = false
+    bar._totalDur = nil
+    bar._lastSec = nil
     bar._slotPt = nil
     bar._slotY = nil
     bar._slotW = nil
     bar._slotH = nil
+    if bar.SetScript then bar:SetScript("OnUpdate", nil) end
     bar:Hide()
 end
 

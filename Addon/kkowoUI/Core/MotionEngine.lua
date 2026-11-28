@@ -1001,6 +1001,41 @@ end
 -- 5i) 受击/治疗柔光瞬闪（ADD 混合，贴合主条填充并共用遮罩，纯 AnimationGroup 0 OnUpdate，不改尺寸）
 local hitFlashOverlays = setmetatable({}, { __mode = "k" })
 
+local function SyncSingleHitFlashMask(state, maskHost, rad)
+    if not (state and state.tex) then return end
+    local r = rad or 0
+    local prevHost = state.maskedHost
+    if prevHost and prevHost ~= maskHost and ST.UnmaskTexture then
+        ST.UnmaskTexture(prevHost, state.tex)
+        state.maskedRad = -1
+    end
+    if r > 0 then
+        if state.maskedRad ~= r or state.maskedHost ~= maskHost then
+            ST.MaskTexture(maskHost, state.tex, r)
+            state.maskedHost = maskHost
+            state.maskedRad = r
+        end
+    else
+        if state.maskedRad and state.maskedRad > 0 then
+            if ST.UnmaskTexture then
+                ST.UnmaskTexture(maskHost, state.tex)
+            elseif maskHost == state.statusBar then
+                ST.ClearRoundedMask(maskHost)
+            end
+        end
+        state.maskedHost = maskHost
+        state.maskedRad = 0
+    end
+end
+
+function M.SyncBarHitFlashMask(statusBar, maskHost, radius)
+    local state = statusBar and hitFlashOverlays[statusBar]
+    if not state then return end
+    local host = maskHost or state.maskedHost or statusBar
+    state.maskedRad = -1
+    SyncSingleHitFlashMask(state, host, radius or 0)
+end
+
 function M.TriggerBarHitFlash(statusBar, kind, opts)
     if not (statusBar and statusBar.CreateTexture and statusBar.GetStatusBarTexture) then return false end
     local override = opts and opts.override
@@ -1038,23 +1073,26 @@ function M.TriggerBarHitFlash(statusBar, kind, opts)
             tex:SetAlpha(0)
             tex:Hide()
         end)
-        state = { tex = tex, ag = ag, rise = rise, fall = fall, maskedRad = -1 }
+        state = { statusBar = statusBar, tex = tex, ag = ag, rise = rise, fall = fall, maskedRad = -1, maskedHost = nil }
         hitFlashOverlays[statusBar] = state
     else
         state.tex:ClearAllPoints()
         state.tex:SetAllPoints(fillTex)
     end
 
-    -- 共享宿主圆角遮罩（每张纹理仅挂 1 个遮罩，严守怪癖 7）
+    -- 共享外层宿主圆角遮罩（每张纹理仅挂 1 个遮罩，严守怪癖 7；圆角归零时正确卸除）
+    local maskHost = (opts and opts.maskHost) or statusBar
     local rad = (opts and opts.radius) or nil
     if rad == nil then
-        local h = F.PlainNumber(statusBar.GetHeight and statusBar:GetHeight(), 16) or 16
-        rad = math_min(ST.GetCornerRadius(6), math_max(2, math.floor(h * 0.45)))
+        local gRad = ST.GetCornerRadius(6)
+        if gRad <= 0 then
+            rad = 0
+        else
+            local h = F.PlainNumber(statusBar.GetHeight and statusBar:GetHeight(), 16) or 16
+            rad = math_min(gRad, math_max(2, math.floor(h * 0.45)))
+        end
     end
-    if rad > 0 and state.maskedRad ~= rad then
-        ST.MaskTexture(statusBar, state.tex, rad)
-        state.maskedRad = rad
-    end
+    SyncSingleHitFlashMask(state, maskHost, rad)
 
     local isHeal = (kind == "heal" or kind == "HEAL")
     if isHeal then
@@ -1172,6 +1210,7 @@ function M.AttachHealPrediction(healthBar, opts)
 
     local ctrl = {
         _host          = healthBar,
+        _maskHost      = opts.maskHost or healthBar,
         _clip          = clip,
         _healBar       = healBar,
         _absorbBar     = absorbBar,
@@ -1184,7 +1223,7 @@ function M.AttachHealPrediction(healthBar, opts)
         _maskedRad     = -1,
     }
 
-    local function LayoutChain()
+    local function LayoutChain(forceMask)
         local fillTex = healthBar:GetStatusBarTexture()
         if not fillTex then return end
         local w = F.PlainNumber(healthBar.GetWidth and healthBar:GetWidth(), 136) or 136
@@ -1225,14 +1264,31 @@ function M.AttachHealPrediction(healthBar, opts)
         overMark:SetPoint("TOP" .. lead, clip, "TOP" .. lead, 0, 0)
         overMark:SetPoint("BOTTOM" .. lead, clip, "BOTTOM" .. lead, 0, 0)
 
-        local h = F.PlainNumber(healthBar.GetHeight and healthBar:GetHeight(), 16) or 16
-        local rad = math_min(ST.GetCornerRadius(6), math_max(2, math.floor(h * 0.45)))
-        if rad > 0 and ctrl._maskedRad ~= rad then
-            if hFill then ST.MaskTexture(healthBar, hFill, rad) end
-            if aFill then ST.MaskTexture(healthBar, aFill, rad) end
-            ST.MaskTexture(healthBar, stripeTex, rad)
-            local haFill = healAbsorbBar:GetStatusBarTexture()
-            if haFill then ST.MaskTexture(healthBar, haFill, rad) end
+        local mHost = ctrl._maskHost or healthBar
+        local gRad = ST.GetCornerRadius(6)
+        local rad = 0
+        if gRad > 0 then
+            local h = F.PlainNumber(mHost.GetHeight and mHost:GetHeight(), nil)
+                or F.PlainNumber(healthBar.GetHeight and healthBar:GetHeight(), 16) or 16
+            rad = math_min(gRad, math_max(2, math.floor(h * 0.45)))
+        end
+        local haFill = healAbsorbBar:GetStatusBarTexture()
+        if forceMask or ctrl._maskedRad ~= rad then
+            if rad > 0 then
+                if hFill then ST.MaskTexture(mHost, hFill, rad) end
+                if aFill then ST.MaskTexture(mHost, aFill, rad) end
+                ST.MaskTexture(mHost, stripeTex, rad)
+                if haFill then ST.MaskTexture(mHost, haFill, rad) end
+                ST.MaskTexture(mHost, overMark, rad)
+            else
+                if ST.UnmaskTexture then
+                    if hFill then ST.UnmaskTexture(mHost, hFill) end
+                    if aFill then ST.UnmaskTexture(mHost, aFill) end
+                    ST.UnmaskTexture(mHost, stripeTex)
+                    if haFill then ST.UnmaskTexture(mHost, haFill) end
+                    ST.UnmaskTexture(mHost, overMark)
+                end
+            end
             ctrl._maskedRad = rad
         end
     end
@@ -1247,7 +1303,7 @@ function M.AttachHealPrediction(healthBar, opts)
             absorbBar:SetStatusBarTexture(seamTex)
             healAbsorbBar:SetStatusBarTexture(seamTex)
             ctrl._maskedRad = -1
-            LayoutChain()
+            LayoutChain(true)
         end
         local pos = ST.COLORS.positive or { 0.34, 0.88, 0.56 }
         healBar:SetStatusBarColor(pos[1], pos[2], pos[3], 0.42 * scale)
@@ -1256,8 +1312,9 @@ function M.AttachHealPrediction(healthBar, opts)
         healAbsorbBar:SetStatusBarColor(0.48, 0.12, 0.24, 0.52 * scale)
     end
 
-    function ctrl:SyncLayout()
-        LayoutChain()
+    function ctrl:SyncLayout(forceMask)
+        if forceMask then self._maskedRad = -1 end
+        LayoutChain(forceMask == true)
         ApplyColors()
     end
 
@@ -1396,6 +1453,13 @@ end
 ----------------------------------------------------------------------
 local arriveState = setmetatable({}, { __mode = "k" })
 
+function M.CancelBarArriveGlide(bar)
+    local st = bar and arriveState[bar]
+    if st then
+        st.gen = (st.gen or 0) + 1
+    end
+end
+
 function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
     if not bar then return false end
     local override = opts and opts.override
@@ -1419,10 +1483,11 @@ function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
 
     local st = arriveState[bar]
     if not st then
-        st = { gen = 0 }
+        st = { gen = 0, armedGen = 0, pending = false }
         arriveState[bar] = st
     end
     st.gen = st.gen + 1
+    st.armedGen = st.gen
     st.targetVal = hp
     st.targetMax = mx
     st.trail = trailCtrl
@@ -1440,8 +1505,10 @@ function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
         trailCtrl:SetValue(startVal, mx, true)
     end
 
-    if not st.fn then
-        st.fn = function()
+    if not st.timerCb then
+        st.timerCb = function()
+            st.pending = false
+            if st.gen ~= st.armedGen then return end
             if not bar:IsVisible() then return end
             M.SetBarValue(bar, st.targetVal, {
                 fxKey = "fx_smoothMain",
@@ -1454,23 +1521,10 @@ function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
             end
         end
     end
-    local myGen = st.gen
+    -- 复用单个已排队的回调（零额外闭包分配），快速连切或同帧 CancelBarArriveGlide 均按代数安全收口
     if not st.pending then
         st.pending = true
-        C_Timer.After(0, function()
-            st.pending = false
-            if st.gen == myGen then
-                st.fn()
-            end
-        end)
-    else
-        -- 已有待执行回调，直接更新目标值，下一帧以最新目标滑入（避免叠加）
-        local latestGen = st.gen
-        C_Timer.After(0, function()
-            if st.gen == latestGen then
-                st.fn()
-            end
-        end)
+        C_Timer.After(0, st.timerCb)
     end
     return true
 end
