@@ -319,6 +319,12 @@ local function ResetPlateFX(plate, fx)
     if fx.rightBox then fx.rightBox:Hide() end
     if fx.arrowHost then fx.arrowHost:Hide() end
     if fx.targetOutline then fx.targetOutline:Hide() end
+    if fx.outlineRoundedBorder then
+        fx.outlineRoundedBorder = false
+        if plate and IsSafe(plate.health) and plate._npRounded then
+            ST.ApplyRoundedBorder(plate.health, 0)
+        end
+    end
     if fx.questFS then fx.questFS:Hide() end
     if fx.stripeFillClip then fx.stripeFillClip:Hide() end
     if fx.stripeBgClip then fx.stripeBgClip:Hide() end
@@ -766,7 +772,8 @@ local function ApplyPlateRounding(plate, fx, active, isTarget)
             if isTarget and mod:GetDB().muteCrudeTargetGlow ~= false and not ST.IsFXEnabled("fx_plateOutline") then
                 local cr, cg, cb = ResolveArrowColors(mod:GetDB().arrowColorMode or "amber")
                 ST.ApplyRoundedBorder(health, rad, cr, cg, cb, 0.94, 7)
-            else
+            elseif not (isTarget and ST.IsFXEnabled("fx_plateOutline") and fx.outlineRoundedBorder) then
+                fx.outlineRoundedBorder = false
                 ST.ApplyRoundedBorder(health, 0)
             end
         end
@@ -1022,6 +1029,46 @@ local outlineAnimTask = {
     dur     = OUTLINE_DRAW_DUR,
 }
 
+local function ResolvePlateOutlineRadius(plate)
+    if not (mod._active and mod:GetDB().roundBars ~= false and IsSafe(plate) and IsSafe(plate.health)) then
+        return 0
+    end
+    local h = F.PlainNumber(plate.health.GetHeight and plate.health:GetHeight(), 14) or 14
+    local r = math_min(ST.GetCornerRadius(6), math_max(3, math_floor(h * 0.44)))
+    return (r > 0) and r or 0
+end
+
+local function SyncOutlineHostMask(ol, rad)
+    if not ol or ol._kkMaskRad == rad then return end
+    ol._kkMaskRad = rad
+    ST.ClearRoundedMask(ol)
+    if rad > 0 then
+        ST.MaskTexture(ol, ol._left, rad)
+        ST.MaskTexture(ol, ol._top, rad)
+        ST.MaskTexture(ol, ol._bottom, rad)
+        ST.MaskTexture(ol, ol._right, rad)
+    end
+end
+
+local function ClearOutlineRoundedBorder(plate, fx)
+    if not (fx and fx.outlineRoundedBorder) then return end
+    fx.outlineRoundedBorder = false
+    if IsSafe(plate) and IsSafe(plate.health) then
+        if plate._npRounded then
+            ST.ApplyRoundedBorder(plate.health, 0)
+        elseif fx.rounded then
+            local rad = ResolvePlateOutlineRadius(plate)
+            if rad > 0 then
+                ST.ApplyRoundedBorder(plate.health, rad, 0.04, 0.045, 0.06, 0.92, 6)
+            else
+                ST.ApplyRoundedBorder(plate.health, 0)
+            end
+        else
+            ST.ApplyRoundedBorder(plate.health, 0)
+        end
+    end
+end
+
 local function ApplyTargetOutlineProgress(plate, fx, progress, cr, cg, cb, alpha)
     if not (IsSafe(plate) and IsSafe(plate.health) and fx and fx.targetOutline) then return false end
     local ol = fx.targetOutline
@@ -1034,29 +1081,42 @@ local function ApplyTargetOutlineProgress(plate, fx, progress, cr, cg, cb, alpha
 
     local p = math_max(0, math_min(1, progress))
     local e = 1 - (1 - p) * (1 - p) * (1 - p)
+    local rad = ResolvePlateOutlineRadius(plate)
+    SyncOutlineHostMask(ol, rad)
+
+    -- 圆角开启且绘制收口完成时，无缝交接给真实 1px 圆角描边，避免直角矩形压住圆角血条四角；
+    -- 动画绘制期间（p < 1）对 4 条移动边套同半径圆角遮罩，全程不露直角毛边
+    local useRoundedCap = (rad > 0 and p >= 1)
+    local edgeA = useRoundedCap and 0 or a
+    if useRoundedCap then
+        ST.ApplyRoundedBorder(plate.health, rad, cr, cg, cb, a, 7)
+        fx.outlineRoundedBorder = true
+    else
+        ClearOutlineRoundedBorder(plate, fx)
+    end
 
     -- 阶段 1 (0..0.15)：左边自上而下展开
     local fL = math_min(1, e / 0.15)
-    ol._left:SetVertexColor(cr, cg, cb, a)
+    ol._left:SetVertexColor(cr, cg, cb, edgeA)
     ol._left:SetSize(px, math_max(0.01, h * fL))
     ol._left:SetTexCoord(0, 1, 0, fL)
     ol._left:SetShown(fL > 0.001)
 
     -- 阶段 2 (0.15..0.85)：上下两条横边同步从左向右绘制并裁剪 TexCoord
     local fH = math_max(0, math_min(1, (e - 0.15) / 0.70))
-    ol._top:SetVertexColor(cr, cg, cb, a)
+    ol._top:SetVertexColor(cr, cg, cb, edgeA)
     ol._top:SetSize(math_max(0.01, w * fH), px)
     ol._top:SetTexCoord(0, fH, 0, 1)
     ol._top:SetShown(fH > 0.001)
 
-    ol._bottom:SetVertexColor(cr, cg, cb, a)
+    ol._bottom:SetVertexColor(cr, cg, cb, edgeA)
     ol._bottom:SetSize(math_max(0.01, w * fH), px)
     ol._bottom:SetTexCoord(0, fH, 0, 1)
     ol._bottom:SetShown(fH > 0.001)
 
     -- 阶段 3 (0.85..1.0)：右边收口闭合
     local fR = math_max(0, math_min(1, (e - 0.85) / 0.15))
-    ol._right:SetVertexColor(cr, cg, cb, a)
+    ol._right:SetVertexColor(cr, cg, cb, edgeA)
     ol._right:SetSize(px, math_max(0.01, h * fR))
     ol._right:SetTexCoord(0, 1, 0, fR)
     ol._right:SetShown(fR > 0.001)
@@ -1070,6 +1130,7 @@ outlineAnimTask._tick = function(task, dt)
     local fx = task.fx
     if not (mod._active and ST.IsFXEnabled("fx_plateOutline") and plate and fx and IsSafe(plate) and plate:IsShown()) then
         if fx and fx.targetOutline then fx.targetOutline:Hide() end
+        if plate and fx then ClearOutlineRoundedBorder(plate, fx) end
         task.plate = nil
         task.fx = nil
         return false
@@ -1094,6 +1155,7 @@ local function SyncPlateTargetOutline(plate, fx, active, isTarget)
         and mod:GetDB().muteCrudeTargetGlow ~= false
     if not wantOutline then
         fx.targetOutline:Hide()
+        ClearOutlineRoundedBorder(plate, fx)
         if outlineAnimTask.plate == plate then
             outlineAnimTask.plate = nil
             outlineAnimTask.fx = nil
@@ -1108,8 +1170,10 @@ local function SyncPlateTargetOutline(plate, fx, active, isTarget)
     local alpha = (ST.GetFXIntensity() == "soft") and 0.76 or 0.94
     if activeOutlinePlate ~= plate then
         -- 切到新目标：立刻隐藏旧目标描边并重置进度重新从左到右绘制
-        if activeOutlinePlate and plateFX[activeOutlinePlate] and plateFX[activeOutlinePlate].targetOutline then
-            plateFX[activeOutlinePlate].targetOutline:Hide()
+        if activeOutlinePlate and plateFX[activeOutlinePlate] then
+            local oldFx = plateFX[activeOutlinePlate]
+            if oldFx.targetOutline then oldFx.targetOutline:Hide() end
+            ClearOutlineRoundedBorder(activeOutlinePlate, oldFx)
         end
         activeOutlinePlate = plate
         outlineAnimTask.plate = plate
