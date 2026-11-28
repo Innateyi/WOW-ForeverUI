@@ -29,6 +29,23 @@ OLD_MARKS = ('[kkowo-polestar-nav v1]',)
 
 FILE_PATCHES = [
     (
+        'Polestar.toc',
+        [
+            (
+                '## Title: Polestar\n',
+                '# [kkowo-polestar-nav v2]\n## Title: Polestar by kkowo\n',
+            ),
+            (
+                '## Title-zhCN: Polestar\n',
+                '## Title-zhCN: Polestar by kkowo\n',
+            ),
+            (
+                '## Title-zhTW: Polestar\n',
+                '## Title-zhTW: Polestar by kkowo\n',
+            ),
+        ],
+    ),
+    (
         'Nav/Walk.lua',
         [
             (

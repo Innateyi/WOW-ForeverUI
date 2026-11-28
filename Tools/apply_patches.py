@@ -11,7 +11,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATCH_DIR = os.path.join(ROOT, 'Patches')
-# 仅保留 2 个无法通过纯外部 Hook 替代的极简补丁：
+# 仅保留 2 个无法通过纯外部 Hook 替代的极简补丁 + 1 个独立插件脱钩改名（Scales → Scales_kkowo）：
 #   • 原 eui_np_questtext_name / eui_friendly_player_names 已转为 Modules/EUIRuntimeFixes.lua 零补丁运行时钩子
 #   • 原 polestar_nav_optimize 中 350 行 DungeonToast.lua 地图副本提醒已迁入 Modules/PolestarNavPlus.lua
 #   • 原 polestar_zhcn_fill 已迁入 kkowoUI_Integrations\Data\PolestarZh.lua 零补丁运行时注入（v2.0 退役）
@@ -19,6 +19,7 @@ PATCH_DIR = os.path.join(ROOT, 'Patches')
 PATCH_LIST = [
     'eui_chat_tab_fast.py',
     'polestar_nav_optimize.py',
+    'scales_kkowo_rename.py',
 ]
 
 
@@ -55,7 +56,7 @@ def main():
         except (OSError, UnicodeDecodeError) as e:
             # 目标插件文件被改名/删除或编码异常：报告并继续检查其余补丁，而不是整个脚本崩溃
             status, msg = 'ERROR', f'{type(e).__name__}: {e}'
-        ok = status in ('APPLIED', 'APPLIED_LEGACY', 'READY', 'PATCHED')
+        ok = status in ('APPLIED', 'APPLIED_LEGACY', 'READY', 'PATCHED', 'SKIPPED')
         mark = 'OK  ' if ok else 'WARN'
         print(f'[{mark}] {name:<30} | {status:<15} | {msg}')
         if not ok:

@@ -107,6 +107,12 @@ _ENGINE_CLHOST_OLD = '''function ECHAT.EngineUpdateCombatLogHost()
 end'''
 
 FILE_PATCHES = {
+    'EllesmereUIChat.toc': [
+        (
+            '## Title: |cff0cd29fEllesmereUI|r Chat\n',
+            '# [fui-chat-fasttab v5]\n## Title: |cff0cd29fEllesmereUI|r Chat by kkowo\n',
+        ),
+    ],
     'EllesmereUIChat.lua': [
         (
             (_FOLLOWER_OLD, _FOLLOWER_OLD.replace('colour', 'color')),

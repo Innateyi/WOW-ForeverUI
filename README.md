@@ -16,7 +16,7 @@
 python Tools/apply_patches.py --apply
 ```
 
-仅包含 2 个极简补丁（聊天标签瞬切 + Polestar 导航优化），不新增其他第三方文件修改。
+仅包含 2 个极简功能补丁（聊天标签瞬切 + Polestar 导航优化，并在 `.toc` 中统一标记 `by kkowo`）与 1 个可选独立插件脱钩改名（`Scales` → `Scales_kkowo` / `Scales by kkowo`），不新增其他第三方文件修改。
 
 ## 模块结构
 

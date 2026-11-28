@@ -78,6 +78,7 @@ local RETIRED_OVERLAPS = {
     "VamoosesSlipstream",
     "VamoosesSlipstream_kkowo",
     "PrettyTooltip",
+    "Scales",
     "EllesmereUIDataBars",
     "EllesmereUIMythicTimer",
     "EllesmereUIQuickdraw",
@@ -86,6 +87,10 @@ local RETIRED_OVERLAPS = {
     "EllesmereUIGroupFinder",
     "Polestar_Arcade",
 }
+
+local function HasScalesLoaded()
+    return F.IsAddOnLoaded("Scales_kkowo") or F.IsAddOnLoaded("Scales")
+end
 
 local function IsKkowoBeamActive()
     local wa = F.Modules and F.Modules.Get and F.Modules.Get("waypointAutoTrack")
@@ -104,7 +109,9 @@ local function CollectHealthReport()
     local loadedOverlaps = {}
     for _, name in ipairs(RETIRED_OVERLAPS) do
         if F.IsAddOnLoaded(name) then
-            if name ~= "PrettyTooltip" or F.IsAddOnLoaded("kkowoUI_Tooltip") then
+            local skip = (name == "PrettyTooltip" and not F.IsAddOnLoaded("kkowoUI_Tooltip"))
+                or (name == "Scales" and not F.IsAddOnLoaded("Scales_kkowo"))
+            if not skip then
                 loadedOverlaps[#loadedOverlaps + 1] = name
             end
         end
@@ -135,7 +142,7 @@ local function CollectHealthReport()
     local pdb = _G.PolestarDB
     local pSet = type(pdb) == "table" and pdb.settings
     if F.IsAddOnLoaded("Polestar") and type(pSet) == "table" then
-        local hasScales = F.IsAddOnLoaded("Scales")
+        local hasScales = HasScalesLoaded()
         if hasScales then
             if type(pSet.gear) == "table" and pSet.gear.enabled == true then
                 configWarnings[#configWarnings + 1] = "已启用装备评分，建议关闭北极星自带评分防重复"
@@ -245,7 +252,7 @@ local function AlignRecommendedSettings()
     if F.IsAddOnLoaded("Polestar") and type(pdb) == "table" then
         if type(pdb.settings) ~= "table" then pdb.settings = {} end
         if type(pdb.settings.gear) ~= "table" then pdb.settings.gear = {} end
-        local wantPolestarGear = not F.IsAddOnLoaded("Scales")
+        local wantPolestarGear = not HasScalesLoaded()
         if pdb.settings.gear.enabled ~= wantPolestarGear then
             pdb.settings.gear.enabled = wantPolestarGear
             changed = changed + 1
@@ -349,7 +356,10 @@ function mod:BuildLauncherPage(W, parent, y, blank)
         buttonText = "打开",
         width = 110,
         tooltip = "打开装备属性模拟与提升权重界面（/scales）。",
-        onClick = function() OpenOrWarn("Scales", "/scales", "", "装备评分") end,
+        onClick = function()
+            local scalesAddon = F.IsAddOnLoaded("Scales_kkowo") and "Scales_kkowo" or "Scales"
+            OpenOrWarn(scalesAddon, "/scales", "", "装备评分")
+        end,
     }, {
         type = "labeledButton",
         text = "北极星指南",

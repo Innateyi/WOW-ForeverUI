@@ -508,6 +508,7 @@ local ARC_ADDONS = { "ArcAuras", "ArcAuras_Finds", "ArcAuras_LFG" }
 local REPLACED_BY = {
     VamoosesSlipstream = "VamoosesSlipstream_kkowo",
     PrettyTooltip = "kkowoUI_Tooltip",
+    Scales = "Scales_kkowo",
 }
 local CDM_ADDON = "EllesmereUICooldownManager"
 

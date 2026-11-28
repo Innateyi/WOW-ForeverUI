@@ -1706,10 +1706,10 @@ do
     local function CleanScalesText(s)
         if type(s) ~= "string" then return s end
         -- Logo 保持 11px（不撑高行升部，左右文字严格齐平），yOffset=0 与 Scales/↓/降级垂直居中；箭头保持 10:10:0:-1
-        local out = s:gsub("|TInterface\\AddOns\\Scales\\Media\\Logo:%d+|t",
-            "|TInterface\\AddOns\\Scales\\Media\\Logo:11:11:0:0|t")
-        out = out:gsub("|TInterface\\AddOns\\Scales\\Media\\(Arrow%a+):%d+|t",
-            "|TInterface\\AddOns\\Scales\\Media\\%1:10:10:0:-1|t")
+        local out = s:gsub("|TInterface\\AddOns\\(Scales[^\\]*)\\Media\\Logo:%d+|t",
+            "|TInterface\\AddOns\\%1\\Media\\Logo:11:11:0:0|t")
+        out = out:gsub("|TInterface\\AddOns\\(Scales[^\\]*)\\Media\\(Arrow%a+):%d+|t",
+            "|TInterface\\AddOns\\%1\\Media\\%2:10:10:0:-1|t")
         out = out:gsub("|T([^|:]+):14|t", "|T%1:11:11:0:0|t")
         out = out:gsub("Scales|r  +", "Scales|r ")
         if out:sub(1, 3) == "   " then
@@ -1757,7 +1757,8 @@ do
         if not mod._active or not IsSafeFrame(tip) then return end
         local left = F.PlainString(leftArg, nil)
         if not left then return end
-        local isScalesHeader = left:find("Interface\\AddOns\\Scales\\Media\\", 1, true) ~= nil
+        local isScalesHeader = (left:find("Interface\\AddOns\\Scales\\Media\\", 1, true) ~= nil)
+            or (left:find("Interface\\AddOns\\Scales_kkowo\\Media\\", 1, true) ~= nil)
         local gap = scalesGapIdx[tip]
         local n = tip.NumLines and F.PlainNumber(tip:NumLines(), 0) or 0
         if n <= 0 then return end
