@@ -24,8 +24,9 @@ local InCombatLockdown = InCombatLockdown
 local REC = {}
 F.Recorder = REC
 
-local SCHEMA_VERSION = 1
+local SCHEMA_VERSION = 2
 local AUTO_ARM_KEY = "v1_initial"
+local AUTO_ARM_KEY_V2 = "v2_motion_fx"
 local MAX_SESSION_ENTRIES = 1200
 local MAX_TOTAL_ENTRIES = 2000
 local MAX_SESSIONS = 4
@@ -468,8 +469,63 @@ end
 --  录制事件框体与生命周期
 ----------------------------------------------------------------------
 local recFrame = CreateFrame("Frame")
+local recUnitFrame2 = CreateFrame("Frame")
 local watchFrame = CreateFrame("Frame")
 local lastPlayerAuraAt = -10
+local lastPowerFreqAt = {}
+local lastHealthAt = {}
+local probeHealCalc = nil
+
+local function CaptureDurationObject(fn, unit)
+    if type(fn) ~= "function" then
+        return { ok = false, missing = true }
+    end
+    local ok, obj = pcall(fn, unit)
+    if not ok then return { ok = false } end
+    if type(obj) == "nil" then return { ok = true, t = "nil", s = false } end
+    if F.IsSecret(obj) then return { ok = true, t = type(obj), s = true } end
+    local res = { ok = true, t = type(obj), s = false }
+    if (type(obj) == "table" or type(obj) == "userdata") and obj.GetRemainingDuration then
+        local okR, rem = pcall(obj.GetRemainingDuration, obj)
+        if okR then res.rem = PackValue(rem, false) end
+        if obj.GetTotalDuration then
+            local okT, tot = pcall(obj.GetTotalDuration, obj)
+            if okT then res.tot = PackValue(tot, false) end
+        end
+    end
+    return res
+end
+
+local function CaptureHealPredictAndAbsorb(unit)
+    local snap = {}
+    snap.incomingHeals = CaptureAPI(_G.UnitGetIncomingHeals, nil, unit)
+    snap.totalAbsorbs = CaptureAPI(_G.UnitGetTotalAbsorbs, nil, unit)
+    snap.healAbsorbs = CaptureAPI(_G.UnitGetTotalHealAbsorbs, nil, unit)
+    if type(_G.CreateUnitHealPredictionCalculator) == "function" and type(_G.UnitGetDetailedHealPrediction) == "function" then
+        if not probeHealCalc then
+            local okC, calc = pcall(_G.CreateUnitHealPredictionCalculator)
+            if okC and calc then probeHealCalc = calc end
+        end
+        if probeHealCalc then
+            local okU = pcall(_G.UnitGetDetailedHealPrediction, unit, nil, probeHealCalc)
+            if okU then
+                local cSnap = { ok = true }
+                if probeHealCalc.GetIncomingHeals then
+                    cSnap.heals = PackPcallResult(nil, pcall(probeHealCalc.GetIncomingHeals, probeHealCalc))
+                end
+                if probeHealCalc.GetDamageAbsorbs then
+                    cSnap.absorbs = PackPcallResult(nil, pcall(probeHealCalc.GetDamageAbsorbs, probeHealCalc))
+                end
+                snap.calculator = cSnap
+            else
+                snap.calculator = { ok = false }
+            end
+        end
+    else
+        snap.calculator = { ok = false, missing = true }
+    end
+    return snap
+end
 
 local CORE_RECORD_EVENTS = {
     "START_LOOT_ROLL",
@@ -488,26 +544,66 @@ local CORE_RECORD_EVENTS = {
     "PLAYER_EQUIPMENT_CHANGED",
     "NAME_PLATE_UNIT_ADDED",
     "NAME_PLATE_UNIT_REMOVED",
+    "PLAYER_TARGET_CHANGED",
+    "UNIT_PET",
+    "PLAYER_XP_UPDATE",
+    "UPDATE_FACTION",
 }
 
-local CORE_PLAYER_UNIT_EVENTS = {
+local CORE_PLAYER_ONLY_UNIT_EVENTS = {
     "UNIT_AURA",
     "UNIT_INVENTORY_CHANGED",
+}
+
+local CORE_CAST_UNIT_EVENTS = {
     "UNIT_SPELLCAST_START",
     "UNIT_SPELLCAST_STOP",
+    "UNIT_SPELLCAST_FAILED",
+    "UNIT_SPELLCAST_INTERRUPTED",
     "UNIT_SPELLCAST_SUCCEEDED",
+    "UNIT_SPELLCAST_DELAYED",
     "UNIT_SPELLCAST_CHANNEL_START",
+    "UNIT_SPELLCAST_CHANNEL_UPDATE",
     "UNIT_SPELLCAST_CHANNEL_STOP",
+    "UNIT_SPELLCAST_EMPOWER_START",
+    "UNIT_SPELLCAST_EMPOWER_UPDATE",
+    "UNIT_SPELLCAST_EMPOWER_STOP",
 }
+
+local CORE_VITAL_UNIT_EVENTS = {
+    "UNIT_HEALTH",
+    "UNIT_MAXHEALTH",
+    "UNIT_POWER_FREQUENT",
+    "UNIT_MAXPOWER",
+    "UNIT_DISPLAYPOWER",
+    "UNIT_ABSORB_AMOUNT_CHANGED",
+    "UNIT_HEAL_ABSORB_AMOUNT_CHANGED",
+    "UNIT_HEAL_PREDICTION",
+    "UNIT_COMBAT",
+}
+
+local CAST_EVENT_SET = {}
+for i = 1, #CORE_CAST_UNIT_EVENTS do CAST_EVENT_SET[CORE_CAST_UNIT_EVENTS[i]] = true end
+
+local VITAL_EVENT_SET = {}
+for i = 1, #CORE_VITAL_UNIT_EVENTS do VITAL_EVENT_SET[CORE_VITAL_UNIT_EVENTS[i]] = true end
 
 local function SyncRecordEventRegistration(active)
     recFrame:UnregisterAllEvents()
+    recUnitFrame2:UnregisterAllEvents()
     if not active then return end
     for i = 1, #CORE_RECORD_EVENTS do
         pcall(recFrame.RegisterEvent, recFrame, CORE_RECORD_EVENTS[i])
     end
-    for i = 1, #CORE_PLAYER_UNIT_EVENTS do
-        pcall(recFrame.RegisterUnitEvent, recFrame, CORE_PLAYER_UNIT_EVENTS[i], "player")
+    for i = 1, #CORE_PLAYER_ONLY_UNIT_EVENTS do
+        pcall(recFrame.RegisterUnitEvent, recFrame, CORE_PLAYER_ONLY_UNIT_EVENTS[i], "player")
+    end
+    for i = 1, #CORE_CAST_UNIT_EVENTS do
+        pcall(recFrame.RegisterUnitEvent, recFrame, CORE_CAST_UNIT_EVENTS[i], "player", "target")
+    end
+    for i = 1, #CORE_VITAL_UNIT_EVENTS do
+        pcall(recFrame.RegisterUnitEvent, recFrame, CORE_VITAL_UNIT_EVENTS[i], "player", "target")
+        pcall(recUnitFrame2.RegisterUnitEvent, recUnitFrame2, CORE_VITAL_UNIT_EVENTS[i], "pet", "targettarget")
     end
     for i = 1, #EXTRA_EVENTS do
         pcall(recFrame.RegisterEvent, recFrame, EXTRA_EVENTS[i])
@@ -654,27 +750,114 @@ local function OnRecordEvent(_, event, ...)
         return
     end
 
-    -- 施法事件（arg #2 是 castGUID，明确脱敏不存原文）
-    if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_STOP"
-        or event == "UNIT_SPELLCAST_SUCCEEDED" or event == "UNIT_SPELLCAST_CHANNEL_START"
-        or event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+    -- 施法事件（arg #2 是 castGUID，UNIT_SPELLCAST_INTERRUPTED arg #4 可能是打断者 GUID，明确脱敏不存原文）
+    if CAST_EVENT_SET[event] then
         local unit = select(1, ...)
+        local safeUnit = F.PlainString(unit, "player") or "player"
         local apis = {}
-        if event == "UNIT_SPELLCAST_START" then
-            apis.UnitCastingInfo = CaptureAPI(_G.UnitCastingInfo, { [7] = true }, unit or "player")
-        elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
-            apis.UnitChannelInfo = CaptureAPI(_G.UnitChannelInfo, nil, unit or "player")
-        elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_DELAYED" then
+            apis.UnitCastingInfo = CaptureAPI(_G.UnitCastingInfo, { [7] = true }, safeUnit)
+            apis.UnitCastingDuration = CaptureDurationObject(_G.UnitCastingDuration, safeUnit)
+        elseif event == "UNIT_SPELLCAST_CHANNEL_START" or event == "UNIT_SPELLCAST_CHANNEL_UPDATE"
+            or event == "UNIT_SPELLCAST_EMPOWER_START" or event == "UNIT_SPELLCAST_EMPOWER_UPDATE" then
+            apis.UnitChannelInfo = CaptureAPI(_G.UnitChannelInfo, nil, safeUnit)
+            apis.UnitChannelDuration = CaptureDurationObject(_G.UnitChannelDuration, safeUnit)
+        elseif event == "UNIT_SPELLCAST_SUCCEEDED" and safeUnit == "player" then
             apis.weaponEnchants = CaptureWeaponEnchants()
         end
-        -- 允许扩展钩子补充 duration 等快照
         for i = 1, #EXTRA_HOOKS do
             pcall(EXTRA_HOOKS[i], event, ctx, apis, ...)
+        end
+        local redactMap = (event == "UNIT_SPELLCAST_INTERRUPTED") and { [2] = true, [4] = true } or { [2] = true }
+        PushEntry({
+            ev = event,
+            ctx = ctx,
+            args = PackTuple(redactMap, ...),
+            apis = apis,
+        })
+        return
+    end
+
+    -- 血量/能量/治疗预估/吸收/受击事件（player/target/pet/targettarget，限流防挤掉 roll 记录）
+    if VITAL_EVENT_SET[event] then
+        local unit = select(1, ...)
+        local uKey = F.PlainString(unit, "unknown") or "unknown"
+        if event == "UNIT_POWER_FREQUENT" then
+            local prevAt = lastPowerFreqAt[uKey] or -10
+            if ctx.t - prevAt < 0.25 then return end
+            lastPowerFreqAt[uKey] = ctx.t
+        elseif event == "UNIT_HEALTH" then
+            local prevAt = lastHealthAt[uKey] or -10
+            if ctx.t - prevAt < 0.10 then return end
+            lastHealthAt[uKey] = ctx.t
+        end
+        local apis = {}
+        if event == "UNIT_COMBAT" then
+            -- 动作类型(arg2)、标志(arg3)与伤害数字是否机密(arg4)
+            local _, action, flags, amount, school = ...
+            PushEntry({
+                ev = event,
+                ctx = ctx,
+                args = {
+                    n = 5,
+                    v = {
+                        PackValue(unit, false),
+                        PackValue(action, false),
+                        PackValue(flags, false),
+                        PackValue(amount, false),
+                        PackValue(school, false),
+                    },
+                },
+                apis = {
+                    UnitHealth = CaptureAPI(_G.UnitHealth, nil, uKey),
+                    UnitHealthMax = CaptureAPI(_G.UnitHealthMax, nil, uKey),
+                },
+            })
+            return
+        elseif event == "UNIT_ABSORB_AMOUNT_CHANGED" or event == "UNIT_HEAL_ABSORB_AMOUNT_CHANGED" or event == "UNIT_HEAL_PREDICTION" then
+            apis.healPredict = CaptureHealPredictAndAbsorb(uKey)
+            apis.UnitHealthMax = CaptureAPI(_G.UnitHealthMax, nil, uKey)
+        elseif event == "UNIT_POWER_FREQUENT" or event == "UNIT_MAXPOWER" or event == "UNIT_DISPLAYPOWER" then
+            apis.UnitPower = CaptureAPI(_G.UnitPower, nil, uKey)
+            apis.UnitPowerMax = CaptureAPI(_G.UnitPowerMax, nil, uKey)
+            apis.UnitPowerType = CaptureAPI(_G.UnitPowerType, nil, uKey)
+        else
+            apis.UnitHealth = CaptureAPI(_G.UnitHealth, nil, uKey)
+            apis.UnitHealthMax = CaptureAPI(_G.UnitHealthMax, nil, uKey)
         end
         PushEntry({
             ev = event,
             ctx = ctx,
-            args = PackTuple({ [2] = true }, ...),
+            args = PackTuple(nil, ...),
+            apis = apis,
+        })
+        return
+    end
+
+    -- 目标切换、宠物变更、经验与声望更新
+    if event == "PLAYER_TARGET_CHANGED" or event == "UNIT_PET" or event == "PLAYER_XP_UPDATE" or event == "UPDATE_FACTION" then
+        local apis = {}
+        if event == "PLAYER_TARGET_CHANGED" then
+            apis.UnitExists = CaptureAPI(_G.UnitExists, nil, "target")
+            apis.UnitHealth = CaptureAPI(_G.UnitHealth, nil, "target")
+            apis.UnitHealthMax = CaptureAPI(_G.UnitHealthMax, nil, "target")
+            apis.UnitPower = CaptureAPI(_G.UnitPower, nil, "target")
+            apis.UnitPowerMax = CaptureAPI(_G.UnitPowerMax, nil, "target")
+            apis.healPredict = CaptureHealPredictAndAbsorb("target")
+            apis.UnitCastingInfo = CaptureAPI(_G.UnitCastingInfo, { [7] = true }, "target")
+            apis.UnitCastingDuration = CaptureDurationObject(_G.UnitCastingDuration, "target")
+        elseif event == "UNIT_PET" then
+            apis.UnitExistsPet = CaptureAPI(_G.UnitExists, nil, "pet")
+            apis.UnitHealthPet = CaptureAPI(_G.UnitHealth, nil, "pet")
+            apis.UnitHealthMaxPet = CaptureAPI(_G.UnitHealthMax, nil, "pet")
+        elseif event == "PLAYER_XP_UPDATE" then
+            apis.UnitXP = CaptureAPI(_G.UnitXP, nil, "player")
+            apis.UnitXPMax = CaptureAPI(_G.UnitXPMax, nil, "player")
+        end
+        PushEntry({
+            ev = event,
+            ctx = ctx,
+            args = PackTuple(nil, ...),
             apis = apis,
         })
         return
@@ -718,6 +901,11 @@ local function OnRecordEvent(_, event, ...)
 end
 
 recFrame:SetScript("OnEvent", OnRecordEvent)
+recUnitFrame2:SetScript("OnEvent", function(self, event, ...)
+    local u = F.PlainString(select(1, ...), nil)
+    if u ~= "pet" and u ~= "targettarget" then return end
+    OnRecordEvent(self, event, ...)
+end)
 
 ----------------------------------------------------------------------
 --  状态机：只录一次、副本内重载续录、离本即停并提示一次
@@ -1059,6 +1247,7 @@ watchFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
 watchFrame:SetScript("OnEvent", function(_, event, a1, a2)
     if event == "PLAYER_LOGIN" then
         REC.EnsureAutoArm(AUTO_ARM_KEY)
+        REC.EnsureAutoArm(AUTO_ARM_KEY_V2)
         if type(REC._pendingAutoArmKeys) == "table" then
             for i = 1, #REC._pendingAutoArmKeys do
                 REC.EnsureAutoArm(REC._pendingAutoArmKeys[i])
