@@ -373,6 +373,141 @@ local function EnsureFlashOverlay(btn)
     return fl
 end
 
+-- 2e 动作条按键下沉与回弹反馈（纯事件驱动零轮询，只动图标纹理，绝不触碰受保护按钮本身）
+local pressState = setmetatable({}, { __mode = "k" })
+
+local function CaptureIconPoints(icon)
+    local pts = {}
+    if not (icon and icon.GetNumPoints and icon.GetPoint) then return pts end
+    local okN, n = pcall(icon.GetNumPoints, icon)
+    n = okN and F.PlainNumber(n, 0) or 0
+    for i = 1, n do
+        local okP, pt, rel, rpt, x, y = pcall(icon.GetPoint, icon, i)
+        if okP and pt then
+            pts[#pts + 1] = {
+                pt = pt,
+                rel = rel,
+                rpt = rpt or pt,
+                x = F.PlainNumber(x, 0) or 0,
+                y = F.PlainNumber(y, 0) or 0,
+            }
+        end
+    end
+    return pts
+end
+
+local function ApplyIconPoints(icon, pts, dy)
+    if not (icon and pts and #pts > 0) then return end
+    pcall(icon.ClearAllPoints, icon)
+    for i = 1, #pts do
+        local p = pts[i]
+        pcall(icon.SetPoint, icon, p.pt, p.rel, p.rpt, p.x, p.y + (dy or 0))
+    end
+end
+
+local function PlayIconReleaseSpring(icon, st, px)
+    if not (icon and icon.CreateAnimationGroup) then return end
+    local ag = st.releaseAG
+    if not ag then
+        ag = icon:CreateAnimationGroup()
+        local jump = ag:CreateAnimation("Translation")
+        jump:SetOrder(1)
+        jump:SetDuration(0)
+        local back = ag:CreateAnimation("Translation")
+        back:SetOrder(2)
+        back:SetDuration(0.08)
+        back:SetSmoothing("OUT")
+        ag._jump = jump
+        ag._back = back
+        st.releaseAG = ag
+    end
+    ag:Stop()
+    ag._jump:SetOffset(0, -px)
+    ag._back:SetOffset(0, px)
+    ag:Play()
+end
+
+local function SetActionIconPressed(btn, pressed)
+    if not IsSafe(btn) then return end
+    local st = pressState[btn]
+    if not st then
+        st = { pressed = false }
+        pressState[btn] = st
+    end
+    if pressed then
+        if not (mod._active and ST.IsFXEnabled("fx_buttonPress") and skinnedBtns[btn] == "ab") then
+            return
+        end
+        if not ButtonHasVisibleAction(btn) then return end
+        if st.pressed then return end
+        local icon = FindButtonIcon(btn)
+        if not icon then return end
+        local pts = CaptureIconPoints(icon)
+        if #pts == 0 then return end
+        local px = ST.GetPixel(btn)
+        if not px or px <= 0 then px = 1 end
+        if st.releaseAG then st.releaseAG:Stop() end
+        st.icon = icon
+        st.origPoints = pts
+        st.shiftPx = px
+        st.pressed = true
+        -- 仅下移图标纹理 1 物理像素，绝不对按钮本身调用任何受保护方法（战斗安全 + 怪癖 6 不用 Scale）
+        ApplyIconPoints(icon, pts, -px)
+    else
+        if not st.pressed then return end
+        st.pressed = false
+        local icon = st.icon or FindButtonIcon(btn)
+        local pts = st.origPoints
+        local px = st.shiftPx or ST.GetPixel(btn) or 1
+        st.origPoints = nil
+        if icon and pts then
+            ApplyIconPoints(icon, pts, 0)
+            if mod._active and ST.IsFXEnabled("fx_buttonPress") and btn:IsVisible() then
+                PlayIconReleaseSpring(icon, st, px)
+            end
+        end
+    end
+end
+
+local function HookButtonPressState(btn)
+    local st = pressState[btn]
+    if st and st.hooked then return end
+    if not st then
+        st = { pressed = false }
+        pressState[btn] = st
+    end
+    st.hooked = true
+    -- 1) 原生/直接 SetButtonState("PUSHED" / "NORMAL")
+    if type(btn.SetButtonState) == "function" then
+        _G.hooksecurefunc(btn, "SetButtonState", function(self, state)
+            local s = F.PlainString(state, nil)
+            if s == "PUSHED" then
+                SetActionIconPressed(self, true)
+            elseif s == "NORMAL" then
+                SetActionIconPressed(self, false)
+            end
+        end)
+    end
+    -- 2) EUI 动作条键盘按键路径：EUI 通过 Show/Hide PushedTexture 表现键盘按下
+    local pt = btn.PushedTexture
+    if pt and type(pt.Show) == "function" and type(pt.Hide) == "function" then
+        _G.hooksecurefunc(pt, "Show", function() SetActionIconPressed(btn, true) end)
+        _G.hooksecurefunc(pt, "Hide", function() SetActionIconPressed(btn, false) end)
+    end
+    -- 3) 鼠标按下/松开与隐藏清理
+    if btn.HookScript then
+        if not btn.HasScript or btn:HasScript("OnMouseDown") then
+            btn:HookScript("OnMouseDown", function(self) SetActionIconPressed(self, true) end)
+        end
+        if not btn.HasScript or btn:HasScript("OnMouseUp") then
+            btn:HookScript("OnMouseUp", function(self) SetActionIconPressed(self, false) end)
+        end
+        if not btn.HasScript or btn:HasScript("OnHide") then
+            btn:HookScript("OnHide", function(self) SetActionIconPressed(self, false) end)
+        end
+    end
+end
+
 local function TriggerButtonFX(btn, isCDFinish)
     if not (mod._active and IsSafe(btn) and btn:IsVisible()) then return end
     if (not isCDFinish) and (skinnedBtns[btn] == "ab") and (not ButtonHasVisibleAction(btn)) then
@@ -385,7 +520,8 @@ local function TriggerButtonFX(btn, isCDFinish)
     end
     local db = mod:GetDB()
     local icon = FindButtonIcon(btn)
-    if (isCDFinish and db.cdFinishPulse ~= false) or ((not isCDFinish) and db.pressBounce ~= false) then
+    local useNewPress = (not isCDFinish) and skinnedBtns[btn] == "ab" and ST.IsFXEnabled("fx_buttonPress")
+    if not useNewPress and ((isCDFinish and db.cdFinishPulse ~= false) or ((not isCDFinish) and db.pressBounce ~= false)) then
         M.PlayScalePop(icon or btn, isCDFinish and 1.16 or 1.10, isCDFinish and 0.22 or 0.13)
     end
     if (isCDFinish and db.cdFinishPulse ~= false) or ((not isCDFinish) and db.pressFlash ~= false) then
@@ -604,6 +740,9 @@ local function RegisterActionBtn(btn, isActionSlot)
             btn:HookScript("OnClick", function(self)
                 TriggerButtonFX(self, false)
             end)
+        end
+        if isActionSlot then
+            HookButtonPressState(btn)
         end
         -- 冷却管理器（CDM）图标挂载原生 Cooldown 结束爆光脉冲（仅 >2s 真实技能 CD，排除 GCD）
         local cd = (not isActionSlot) and (btn.Cooldown or btn.cooldown) or nil
@@ -1250,6 +1389,7 @@ function mod:OnDisable()
     for k in pairs(trackedCDs) do trackedCDs[k] = nil end
     for _, btn in ipairs(btnList) do
         if IsSafe(btn) then
+            SetActionIconPressed(btn, false)
             local fl = flashOverlays[btn]
             if fl then
                 if fl.ag then fl.ag:Stop() end
