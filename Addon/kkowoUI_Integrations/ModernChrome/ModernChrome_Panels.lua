@@ -1301,43 +1301,228 @@ do
         end
     end
 
-    -- 法术书（PlayerSpellsFrame.SpellBookFrame）右侧搜索框防位移与防顶栏挤压守卫：
-    -- 1) 同步在打开瞬间计算最右侧可见标签（兼容 DungeonsForeverSpell 新增的 ∞ / 锤 两枚标签），
-    --    直接一步落位搜索框宽度，消除打开后 0.05~0.20s 晚到缩窄造成的肉眼位移跳动；
-    -- 2) 将搜索框及筛选下拉按钮与标签栏垂直对齐，避免紧贴右上角「+ / ×」窗口按钮。
+    -- 法术书（PlayerSpellsFrame.SpellBookFrame）右侧搜索框防跳动与筛选下拉对齐守卫：
+    -- 1) 打开第 0 帧即预留 DungeonsForeverSpell 双标签（∞ / 锤）的精确宽度，
+    --    并与 NativeSpellBook.lua:1686 的公式（right - left - 10，上限 300）完全对齐，
+    --    彻底消除 0~200ms 延迟显形造成的「先宽后窄」跳动；
+    -- 2) 挂接 box:SetWidth 与双标签 OnShow 防外部拉宽与微校准；
+    -- 3) 基于原始锚点将 SearchBox 与右侧筛选下拉钮 [▼] 一起垂直居中对齐标签行，无漂移、停用无损还原。
     local spellBookGuardHooked = setmetatable({}, { __mode = "k" })
+    local spellBoxWidthHooked = setmetatable({}, { __mode = "k" })
+    local dfTabShowHooked = setmetatable({}, { __mode = "k" })
     local spellSearchOrigW = setmetatable({}, { __mode = "k" })
     local spellSearchOrigPts = setmetatable({}, { __mode = "k" })
+    local spellSearchAppliedDy = setmetatable({}, { __mode = "k" })
+    local spellFilterOrigPts = setmetatable({}, { __mode = "k" })
+    local spellFilterAppliedDy = setmetatable({}, { __mode = "k" })
     local spellSearchBusy = false
+    local StabilizeSpellBookSearchBox -- 前向声明
 
-    local function FindRightmostSpellTab(sb)
-        local rightmost = nil
-        local maxR = -1e9
-        local function consider(btn)
-            if not IsSafeObj(btn) then return end
-            if btn.IsShown then
-                local okS, s = pcall(btn.IsShown, btn)
-                if not okS or F.IsSecret(s) or not s then return end
-            end
-            local r = btn.GetRight and F.PlainNumber(btn:GetRight(), nil) or nil
-            if r and r > maxR then
-                maxR = r
-                rightmost = btn
+    local function IsDungeonsForeverSpellLoaded()
+        if _G.DungeonsForeverSpellBookTab or _G.DungeonsForeverWeaponBookTab then
+            return true
+        end
+        if _G.C_AddOns and type(_G.C_AddOns.IsAddOnLoaded) == "function" then
+            local okL, loaded = pcall(_G.C_AddOns.IsAddOnLoaded, "DungeonsForeverSpell")
+            if okL and not F.IsSecret(loaded) and loaded == true then
+                return true
             end
         end
-        local tabSys = sb and sb.CategoryTabSystem
-        if IsSafeObj(tabSys) and tabSys.GetChildren then
-            local okC, kids = pcall(function() return { tabSys:GetChildren() } end)
-            if okC and type(kids) == "table" then
-                for _, ch in ipairs(kids) do consider(ch) end
-            end
-        end
-        consider(_G.DungeonsForeverSpellBookTab)
-        consider(_G.DungeonsForeverWeaponBookTab)
-        return rightmost, (maxR > -1e8) and maxR or nil
+        return false
     end
 
-    local function StabilizeSpellBookSearchBox(want)
+    local function IsWidgetShownPlain(w)
+        if not IsSafeObj(w) then return false end
+        if w.IsShown then
+            local okS, s = pcall(w.IsShown, w)
+            if not okS or F.IsSecret(s) or not s then return false end
+        end
+        return true
+    end
+
+    local function HookDFTabOnShow(btn)
+        if not (IsSafeObj(btn) and btn.HookScript and not dfTabShowHooked[btn]) then return end
+        dfTabShowHooked[btn] = true
+        btn:HookScript("OnShow", function()
+            local on = mod._active and mod:GetDB().harmonyFontGuard ~= false
+            StabilizeSpellBookSearchBox(on)
+        end)
+    end
+
+    local function ReadScaledWidth(btn, fallbackW, refEffScale)
+        local w = nil
+        if IsSafeObj(btn) and btn.GetWidth then
+            w = F.PlainNumber(btn:GetWidth(), nil)
+        end
+        if not (w and w > 4) then
+            return fallbackW
+        end
+        if IsSafeObj(btn) and btn.GetEffectiveScale and refEffScale and refEffScale > 0 then
+            local bScale = F.PlainNumber(btn:GetEffectiveScale(), nil)
+            if bScale and bScale > 0 and math_abs(bScale - refEffScale) > 0.001 then
+                w = w * (bScale / refEffScale)
+            end
+        end
+        return w
+    end
+
+    local function FindRightmostSpellTab(sb, box)
+        local rightmost = nil
+        local blizzRightmost = nil
+        local maxBlizzR = -1e9
+        local sampleTabW = nil
+        local boxEffScale = (IsSafeObj(box) and box.GetEffectiveScale and F.PlainNumber(box:GetEffectiveScale(), nil)) or 1
+        if not (boxEffScale and boxEffScale > 0) then boxEffScale = 1 end
+
+        local tabSys = sb and sb.CategoryTabSystem
+        if IsSafeObj(tabSys) then
+            local sysR = tabSys.GetRight and F.PlainNumber(tabSys:GetRight(), nil) or nil
+            if sysR and sysR > maxBlizzR then
+                maxBlizzR = sysR
+                blizzRightmost = tabSys
+            end
+            if tabSys.GetChildren then
+                local okC, kids = pcall(function() return { tabSys:GetChildren() } end)
+                if okC and type(kids) == "table" then
+                    for _, ch in ipairs(kids) do
+                        if IsWidgetShownPlain(ch) then
+                            local r = ch.GetRight and F.PlainNumber(ch:GetRight(), nil) or nil
+                            if r and r > maxBlizzR then
+                                maxBlizzR = r
+                                blizzRightmost = ch
+                            end
+                            if not sampleTabW and ch.GetWidth then
+                                local cw = F.PlainNumber(ch:GetWidth(), nil)
+                                if cw and cw >= 18 and cw <= 120 then
+                                    sampleTabW = ReadScaledWidth(ch, cw, boxEffScale)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        sampleTabW = sampleTabW or 42
+        rightmost = blizzRightmost
+        local effectiveRight = (maxBlizzR > -1e8) and maxBlizzR or nil
+
+        local dfSpellTab = _G.DungeonsForeverSpellBookTab
+        local dfWeaponTab = _G.DungeonsForeverWeaponBookTab
+        HookDFTabOnShow(dfSpellTab)
+        HookDFTabOnShow(dfWeaponTab)
+
+        if IsDungeonsForeverSpellLoaded() then
+            local spellShown = IsWidgetShownPlain(dfSpellTab)
+            local weaponShown = IsWidgetShownPlain(dfWeaponTab)
+            local spellR = spellShown and dfSpellTab.GetRight and F.PlainNumber(dfSpellTab:GetRight(), nil) or nil
+            local weaponR = weaponShown and dfWeaponTab.GetRight and F.PlainNumber(dfWeaponTab:GetRight(), nil) or nil
+
+            if weaponR then
+                if (not effectiveRight) or weaponR > effectiveRight then
+                    effectiveRight = weaponR
+                    rightmost = dfWeaponTab
+                end
+            elseif spellR then
+                if (not effectiveRight) or spellR > effectiveRight then
+                    effectiveRight = spellR
+                    rightmost = dfSpellTab
+                end
+                -- 若第 2 枚标签（武器/训练师）尚未 Show，提前预留其宽度（+1px 间距）
+                local w2 = ReadScaledWidth(dfWeaponTab, sampleTabW, boxEffScale)
+                effectiveRight = effectiveRight + w2 + 1
+            elseif effectiveRight then
+                -- 打开第 0~200ms 延迟窗：双标签均尚未 Show，按原生 AnchorTabs 规则一次预留两枚完整宽度
+                local w1 = ReadScaledWidth(dfSpellTab, sampleTabW, boxEffScale)
+                local w2 = ReadScaledWidth(dfWeaponTab, sampleTabW, boxEffScale)
+                effectiveRight = effectiveRight + (w1 + 1) + (w2 + 1)
+            end
+        end
+
+        return rightmost, effectiveRight
+    end
+
+    local function FindSpellBookFilterButton(sb, box, origBoxPts)
+        for _, field in ipairs({ "FilterDropdown", "SearchOptionsDropdown", "FilterButton", "FilterDropDownButton" }) do
+            local cand = sb[field]
+            if IsWidgetShownPlain(cand) and cand ~= box then
+                return cand
+            end
+        end
+        if type(origBoxPts) == "table" then
+            for _, p in ipairs(origBoxPts) do
+                local rel = p[2]
+                if IsWidgetShownPlain(rel) and rel ~= sb and rel ~= box and rel ~= _G.PlayerSpellsFrame then
+                    local par = rel.GetParent and rel:GetParent() or nil
+                    if par == sb then
+                        return rel
+                    end
+                end
+            end
+        end
+        local boxR = box.GetRight and F.PlainNumber(box:GetRight(), nil) or nil
+        local boxT = box.GetTop and F.PlainNumber(box:GetTop(), nil) or nil
+        local boxB = box.GetBottom and F.PlainNumber(box:GetBottom(), nil) or nil
+        if not (boxR and boxT and boxB and sb.GetChildren) then return nil end
+        local boxCy = (boxT + boxB) * 0.5
+        local okC, kids = pcall(function() return { sb:GetChildren() } end)
+        if not (okC and type(kids) == "table") then return nil end
+        local best, bestDist = nil, 1e9
+        for _, ch in ipairs(kids) do
+            if ch ~= box and ch ~= sb.CategoryTabSystem and ch ~= sb.CloseButton
+                and ch ~= sb.MaximizeMinimizeButton and ch ~= _G.DungeonsForeverSpellBookTab
+                and ch ~= _G.DungeonsForeverWeaponBookTab and IsWidgetShownPlain(ch) then
+                local l = ch.GetLeft and F.PlainNumber(ch:GetLeft(), nil) or nil
+                local t = ch.GetTop and F.PlainNumber(ch:GetTop(), nil) or nil
+                local b = ch.GetBottom and F.PlainNumber(ch:GetBottom(), nil) or nil
+                local w = ch.GetWidth and F.PlainNumber(ch:GetWidth(), nil) or nil
+                local h = ch.GetHeight and F.PlainNumber(ch:GetHeight(), nil) or nil
+                if l and t and b and w and h and w >= 12 and w <= 76 and h >= 12 and h <= 38 then
+                    local dx = l - boxR
+                    local cy = (t + b) * 0.5
+                    if dx >= -6 and dx <= 48 and math_abs(cy - boxCy) <= 22 and math_abs(dx) < bestDist then
+                        best = ch
+                        bestDist = math_abs(dx)
+                    end
+                end
+            end
+        end
+        return best
+    end
+
+    local function IsAnchoredTo(pts, target)
+        if not (type(pts) == "table" and target) then return false end
+        for _, p in ipairs(pts) do
+            if p[2] == target then return true end
+        end
+        return false
+    end
+
+    local function AlignWidgetCenterY(widget, targetCy, origPtsMap, appliedDyMap)
+        if not (IsSafeObj(widget) and targetCy) then return end
+        if origPtsMap[widget] == nil then
+            local pts = ReadAllPoints(widget)
+            if #pts > 0 then origPtsMap[widget] = pts end
+        end
+        local origPts = origPtsMap[widget]
+        if not (origPts and #origPts > 0) then return end
+        local top = widget.GetTop and F.PlainNumber(widget:GetTop(), nil) or nil
+        local bot = widget.GetBottom and F.PlainNumber(widget:GetBottom(), nil) or nil
+        if not (top and bot) then return end
+        local curCy = (top + bot) * 0.5
+        local diff = targetCy - curCy
+        if math_abs(diff) < 0.5 then return end
+        local curApplied = appliedDyMap[widget] or 0
+        local newDy = curApplied + diff
+        if math_abs(newDy) > 36 then return end
+        local adj = {}
+        for i, p in ipairs(origPts) do
+            adj[i] = { p[1], p[2], p[3], p[4], (p[5] or 0) + newDy }
+        end
+        SetAllPoints(widget, adj)
+        appliedDyMap[widget] = newDy
+    end
+
+    StabilizeSpellBookSearchBox = function(want)
         if spellSearchBusy then return end
         if _G.InCombatLockdown and _G.InCombatLockdown() then return end
         local psf = _G.PlayerSpellsFrame
@@ -1355,16 +1540,36 @@ do
                 SetAllPoints(box, op)
                 spellSearchOrigPts[box] = nil
             end
+            spellSearchAppliedDy[box] = nil
+            local toRestore = {}
+            for btn, pts in pairs(spellFilterOrigPts) do
+                toRestore[#toRestore + 1] = { btn = btn, pts = pts }
+            end
+            for _, item in ipairs(toRestore) do
+                if IsSafeObj(item.btn) then
+                    SetAllPoints(item.btn, item.pts)
+                end
+                spellFilterOrigPts[item.btn] = nil
+                spellFilterAppliedDy[item.btn] = nil
+            end
             spellSearchBusy = false
             return
         end
 
-        if sb.IsShown then
-            local okS, shown = pcall(sb.IsShown, sb)
-            if not okS or F.IsSecret(shown) or not shown then
-                spellSearchBusy = false
-                return
-            end
+        if not IsWidgetShownPlain(sb) then
+            spellSearchBusy = false
+            return
+        end
+
+        if not spellBoxWidthHooked[box] and type(box.SetWidth) == "function" then
+            spellBoxWidthHooked[box] = true
+            _G.hooksecurefunc(box, "SetWidth", function()
+                if spellSearchBusy then return end
+                local on = mod._active and mod:GetDB().harmonyFontGuard ~= false
+                if on then
+                    StabilizeSpellBookSearchBox(true)
+                end
+            end)
         end
 
         if spellSearchOrigW[box] == nil and box.GetWidth then
@@ -1375,18 +1580,19 @@ do
             if #pts > 0 then spellSearchOrigPts[box] = pts end
         end
 
-        local rightmost, tabRight = FindRightmostSpellTab(sb)
+        local rightmost, tabRight = FindRightmostSpellTab(sb, box)
         local boxRight = box.GetRight and F.PlainNumber(box:GetRight(), nil) or nil
         if tabRight and boxRight then
+            -- 与 DungeonsForeverSpell NativeSpellBook.lua:1686 公式统一（right - left - 10，上限 300）
             local avail = math_floor(boxRight - tabRight - 10 + 0.5)
-            local wantW = math_max(76, math_min(260, avail))
+            local wantW = math_max(76, math_min(300, avail))
             local curW = F.PlainNumber(box.GetWidth and box:GetWidth(), 0) or 0
             if math_abs(curW - wantW) >= 1 and box.SetWidth then
                 pcall(box.SetWidth, box, wantW)
             end
         end
 
-        -- 垂直对齐到标签行中心，避开右上角最大化(+) / 关闭(×) 按钮
+        -- 基于原始锚点将搜索框与右侧筛选下拉按钮 [▼] 同步垂直居中对齐标签行中心
         local refTab = rightmost or (sb.CategoryTabSystem and sb.CategoryTabSystem)
         local tabCy = nil
         if IsSafeObj(refTab) then
@@ -1394,19 +1600,16 @@ do
             local tBot = refTab.GetBottom and F.PlainNumber(refTab:GetBottom(), nil) or nil
             if tTop and tBot then tabCy = (tTop + tBot) * 0.5 end
         end
-        local boxTop = box.GetTop and F.PlainNumber(box:GetTop(), nil) or nil
-        local boxBot = box.GetBottom and F.PlainNumber(box:GetBottom(), nil) or nil
-        if tabCy and boxTop and boxBot then
-            local boxCy = (boxTop + boxBot) * 0.5
-            local dy = tabCy - boxCy
-            if math_abs(dy) >= 2 and math_abs(dy) <= 36 then
-                local pts = ReadAllPoints(box)
-                if #pts > 0 then
-                    local adj = {}
-                    for i, p in ipairs(pts) do
-                        adj[i] = { p[1], p[2], p[3], p[4], (p[5] or 0) + dy }
-                    end
-                    SetAllPoints(box, adj)
+        if tabCy then
+            local filterBtn = FindSpellBookFilterButton(sb, box, spellSearchOrigPts[box])
+            if filterBtn and IsAnchoredTo(spellSearchOrigPts[box], filterBtn) then
+                -- 搜索框锚定在筛选按钮上：先移动筛选按钮，再微调搜索框中心
+                AlignWidgetCenterY(filterBtn, tabCy, spellFilterOrigPts, spellFilterAppliedDy)
+                AlignWidgetCenterY(box, tabCy, spellSearchOrigPts, spellSearchAppliedDy)
+            else
+                AlignWidgetCenterY(box, tabCy, spellSearchOrigPts, spellSearchAppliedDy)
+                if filterBtn then
+                    AlignWidgetCenterY(filterBtn, tabCy, spellFilterOrigPts, spellFilterAppliedDy)
                 end
             end
         end
@@ -1438,6 +1641,8 @@ do
         if IsSafeObj(psf) and psf.HookScript then
             psf:HookScript("OnSizeChanged", SyncDeferred)
         end
+        HookDFTabOnShow(_G.DungeonsForeverSpellBookTab)
+        HookDFTabOnShow(_G.DungeonsForeverWeaponBookTab)
     end
 
     local function PolishNamedHeaders(want)
