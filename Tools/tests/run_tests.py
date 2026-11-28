@@ -3309,6 +3309,266 @@ def run_all():
 
     check('演示命令 /kk motion demo（脱战新旧对比与零残留回收）', t_motion_demo)
 
+    # 29. Post-dungeon feedback regression suite (all 5 items)
+    def t_post_dungeon_fixes():
+        l_env, m_env, load_fn = create_env()
+        # Seed WoW Forever spellbook/talent micro buttons + PlayerSpellsFrame + BuffFrame/DebuffFrame + EUI ManaRegenSpark
+        l_env.execute('''
+            _G.SpellbookMicroButton = CreateFrame("Button", "SpellbookMicroButton", UIParent)
+            _G.TalentMicroButton = CreateFrame("Button", "TalentMicroButton", UIParent)
+            _G.EUI_SpellbookRoute = CreateFrame("Button", "EUI_SpellbookRoute", UIParent)
+            _G.BuffFrame = CreateFrame("Frame", "BuffFrame", UIParent)
+            _G.BuffFrame:SetSize(200, 36); _G.BuffFrame:Show()
+            local bfBtn = CreateFrame("Button", nil, _G.BuffFrame)
+            bfBtn:SetSize(30, 30)
+            bfBtn.Icon = bfBtn:CreateTexture(nil, "ARTWORK"); bfBtn.Icon:SetAllPoints()
+            bfBtn.Border = bfBtn:CreateTexture(nil, "OVERLAY")
+            bfBtn.Duration = bfBtn:CreateFontString(nil, "OVERLAY")
+            _G.BuffFrame.auraFrames = { bfBtn }
+            _G.BuffFrame.UpdateAuraButtons = function() end
+            _G.DebuffFrame = CreateFrame("Frame", "DebuffFrame", UIParent)
+            _G.DebuffFrame:SetSize(200, 36); _G.DebuffFrame:Show()
+            local dfBtn = CreateFrame("Button", nil, _G.DebuffFrame)
+            dfBtn:SetSize(30, 30)
+            dfBtn.Icon = dfBtn:CreateTexture(nil, "ARTWORK"); dfBtn.Icon:SetAllPoints()
+            dfBtn.Border = dfBtn:CreateTexture(nil, "OVERLAY")
+            _G.DebuffFrame.auraFrames = { dfBtn }
+            _G.DebuffFrame.UpdateAuraButtons = function() end
+
+            -- Mock EllesmereUI.ManaRegenSpark
+            _G._testSparkLog = { attaches = 0, detaches = 0, isMana = nil, ticks = nil, attachedKey = nil }
+            EllesmereUI.ManaRegenSpark = {
+                Attach = function(key, bar, ticks)
+                    _G._testSparkLog.attaches = _G._testSparkLog.attaches + 1
+                    _G._testSparkLog.attachedKey = key
+                    _G._testSparkLog.bar = bar
+                    _G._testSparkLog.ticks = ticks
+                end,
+                Detach = function(key)
+                    _G._testSparkLog.detaches = _G._testSparkLog.detaches + 1
+                    if _G._testSparkLog.attachedKey == key then _G._testSparkLog.attachedKey = nil end
+                end,
+                SetMana = function(key, isMana)
+                    _G._testSparkLog.isMana = isMana
+                end,
+            }
+
+            -- Mock PlayerSpellsFrame.SpellBookFrame + SearchBox + DungeonsForever extra tabs
+            local psf = CreateFrame("Frame", "PlayerSpellsFrame", UIParent)
+            psf:SetSize(640, 560)
+            local sb = CreateFrame("Frame", nil, psf)
+            sb:SetSize(620, 500); sb:Show()
+            local tabSys = CreateFrame("Frame", nil, sb)
+            tabSys:SetSize(300, 36)
+            tabSys.GetTop = function() return 500 end
+            tabSys.GetBottom = function() return 464 end
+            local dfTab = CreateFrame("Button", "DungeonsForeverWeaponBookTab", tabSys)
+            dfTab:SetSize(36, 36); dfTab:Show()
+            dfTab.GetRight = function() return 420 end
+            dfTab.GetTop = function() return 500 end
+            dfTab.GetBottom = function() return 464 end
+            local sbox = CreateFrame("EditBox", nil, sb)
+            sbox:SetSize(240, 26)
+            sbox:SetPoint("TOPRIGHT", sb, "TOPRIGHT", -24, -10)
+            sbox.GetRight = function() return 600 end
+            sbox.GetTop = function() return 516 end
+            sbox.GetBottom = function() return 490 end
+            local instr = sbox:CreateFontString(nil, "OVERLAY")
+            instr:SetPoint("TOPLEFT", sbox, "TOPLEFT", 6, 0)
+            instr:SetText("输入搜索文本")
+            sbox.Instructions = instr
+            sb.CategoryTabSystem = tabSys
+            sb.SearchBox = sbox
+            sb.ResizeSearchBox = function() end
+            psf.SpellBookFrame = sb
+            psf:Show()
+        ''')
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(1.5, 4)
+
+        # (1) Dungeon Lua error regressions: secret UNIT_AURA nested tables + secret GetDrawLayer
+        l_env.globals()['_test_sec_added'] = m_env.NewSecret('addedAuras')
+        l_env.globals()['_test_sec_upd'] = m_env.NewSecret('updatedAuraInstanceIDs')
+        l_env.globals()['_test_sec_rem'] = m_env.NewSecret('removedAuraInstanceIDs')
+        l_env.globals()['_test_sec_layer'] = m_env.NewSecret('BACKGROUND')
+        m_env.RunSlash('/kk', 'rec on')
+        m_env.AdvanceTime(0.35)
+        m_env.FireEvent('UNIT_AURA', 'player', l_env.eval('''{
+            isFullUpdate = false,
+            addedAuras = _test_sec_added,
+            updatedAuraInstanceIDs = _test_sec_upd,
+            removedAuraInstanceIDs = _test_sec_rem,
+        }'''))
+        m_env.RunSlash('/kk', 'rec off')
+        err_chk = l_env.eval('''(function()
+            local tip = _G.GameTooltip
+            local secTex = tip:CreateTexture(nil, "BACKGROUND")
+            secTex.GetDrawLayer = function() return _test_sec_layer end
+            tip:Show()
+            local ok2, e2 = pcall(function()
+                local tm = kkowoUI.Modules.Get("tooltipStyle")
+                if tm and tm.OnRefresh then tm:OnRefresh() end
+            end)
+            return { ok2 = ok2, e2 = tostring(e2 or "") }
+        end)()''')
+        assert err_chk.ok2, f'副本机密绘制层回归失败: {err_chk}'
+
+        # (2) Nameplate rounded outline: masked during animation & rounded border applied at p>=1
+        l_env.execute('''
+            local plate = CreateFrame("Frame", nil, UIParent)
+            plate:SetSize(130, 14)
+            plate.health = CreateFrame("StatusBar", nil, plate)
+            plate.health:SetSize(130, 14)
+            plate.health:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            plate._npRounded = true
+            plate.unit = "nameplate1"
+            plate:Show()
+            _G._testNPPlate = plate
+            EllesmereUI._ModuleNS.EllesmereUINameplates = {
+                plates = { nameplate1 = plate },
+                ENP = { db = { profile = { cornerRadius = 6 } } },
+            }
+            _G.UnitIsUnit = function(a, b) return a == "nameplate1" and b == "target" end
+            kkowoUI.Modules.Get("nameplateMotion"):OnRefresh()
+        ''')
+        m_env.StepTime(0.50, 5)
+        np_chk = l_env.eval('''(function()
+            local plate = _G._testNPPlate
+            local hasMask = false
+            local olTopW, olTopA = 0, -1
+            for _, ch in ipairs({ plate.health:GetChildren() }) do
+                if ch._top and ch._left and ch._bottom and ch._right then
+                    olTopW = ch._top:GetWidth()
+                    olTopA = select(4, ch._top:GetVertexColor()) or -1
+                    if ch._kkMaskRad and ch._kkMaskRad > 0 then hasMask = true end
+                end
+            end
+            return { hasMask = hasMask, olTopW = olTopW, olTopA = olTopA }
+        end)()''')
+        assert np_chk.hasMask and abs(float(np_chk.olTopW) - 130.0) < 0.5 and float(np_chk.olTopA) == 0.0, (
+            f'目标姓名板圆角描边校验失败: {np_chk}'
+        )
+
+        # (3) SystemBar split (SpellBook + PlayerSpells/Talents) & SpellBook SearchBox guard
+        sb_chk = l_env.eval('''(function()
+            local bSpell = _G.kkowoUI_SysBtn_SpellBook
+            local bTal = _G.kkowoUI_SysBtn_PlayerSpells
+            local sbox = _G.PlayerSpellsFrame.SpellBookFrame.SearchBox
+            local _, _, _, _, iy = sbox.Instructions:GetPoint(1)
+            local sw = sbox:GetWidth()
+            return {
+                hasSpell = bSpell ~= nil and bSpell:IsShown(),
+                spellTarget = bSpell and bSpell:GetAttribute("clickbutton1") and bSpell:GetAttribute("clickbutton1"):GetName() or "",
+                hasTal = bTal ~= nil and bTal:IsShown(),
+                talTarget = bTal and bTal:GetAttribute("clickbutton1") and bTal:GetAttribute("clickbutton1"):GetName() or "",
+                instrY = iy or 0,
+                searchW = sw or 0,
+            }
+        end)()''')
+        assert sb_chk.hasSpell and sb_chk.spellTarget == 'EUI_SpellbookRoute', f'系统栏法术书按钮异常: {sb_chk}'
+        assert sb_chk.hasTal and sb_chk.talTarget == 'TalentMicroButton', f'系统栏天赋按钮异常: {sb_chk}'
+        assert abs(float(sb_chk.instrY)) < 0.01, f'搜索框占位文字不应被 GuardWindowTree 下移: {sb_chk}'
+        assert 150.0 <= float(sb_chk.searchW) <= 180.0, f'法术书搜索框应同步自适应至 tabRight~boxRight-10 (~170px): {sb_chk}'
+        # Also verify the newly generated BLP icons exist on disk
+        repo_root = pathlib.Path(__file__).resolve().parents[2]
+        for rel in (
+            'Addon/kkowoUI_Media/Media/SystemBar/Lucide/SpellBook.blp',
+            'Addon/kkowoUI_Media/Media/SystemBar/Lucide/Talents.blp',
+            'Addon/kkowoUI_Media/Media/SystemBar/GameIcons/SpellBook.blp',
+            'Addon/kkowoUI_Media/Media/SystemBar/GameIcons/Talents.blp',
+        ):
+            p = repo_root / rel
+            assert p.is_file() and p.stat().st_size > 1000, f'缺失或无效系统栏图标: {rel}'
+
+        # (4) Target Buff/Debuff '|' divider + Unified Player Aura One-Click Toggle + Minimap-left Rounding
+        aura_div = l_env.eval('''(function()
+            _G.UnitExists = function(u) return u == "player" or u == "target" end
+            _G.C_UnitAuras = {
+                GetAuraDataByIndex = function(unit, idx, filter)
+                    if unit ~= "target" then return nil end
+                    if filter == "HARMFUL" and idx == 1 then
+                        return { icon = 135812, applications = 1, duration = 12, expirationTime = 112, dispelName = "Magic", isFromPlayerOrPlayerPet = true }
+                    elseif filter == "HELPFUL" and idx == 1 then
+                        return { icon = 135987, applications = 1, duration = 60, expirationTime = 160 }
+                    end
+                    return nil
+                end,
+            }
+            kkowoUI._CoreHUD.SyncTargetAuras()
+            local host = kkowoUI._CoreHUD.topTargetFrame._auraHost
+            local divShown = false
+            local slots = {}
+            for _, r in ipairs({ host:GetRegions() }) do
+                if r.IsShown and r:IsShown() then divShown = true end
+            end
+            for _, ch in ipairs({ host:GetChildren() }) do
+                if ch:IsShown() then
+                    local _, _, _, x, y = ch:GetPoint(1)
+                    slots[#slots + 1] = { x = x or 0, y = y or 0 }
+                end
+            end
+            local sameRow = (#slots >= 2) and math.abs(slots[1].y - slots[2].y) < 1
+            local gapBetween = (#slots >= 2) and (slots[2].x - (slots[1].x + 22)) or 0
+            return { divShown = divShown, sameRow = sameRow, gapBetween = gapBetween }
+        end)()''')
+        assert aura_div.divShown and aura_div.sameRow and float(aura_div.gapBetween) >= 14.0, (
+            f'目标BUFF/DEBUFF「|」分隔与距离校验失败: {aura_div}'
+        )
+        # Toggle wingOwnAuras OFF -> BuffFrame/DebuffFrame restored & AuraBarSkin skins them
+        l_env.execute('''
+            local chMod = kkowoUI.Modules.Get("coreHUD")
+            local db = chMod:GetDB()
+            db.wingOwnAuras = false
+            db.showPermanentBuffs = false
+            db.showCombatBuffs = false
+            db.showCombatDebuffs = false
+            db.hideTopRightBlizzAuras = false
+            chMod:OnRefresh()
+        ''')
+        m_env.StepTime(0.2, 2)
+        off_ok = l_env.eval('''(function()
+            return _G.BuffFrame:IsShown() and (_G.BuffFrame:GetAlpha() == 1)
+                and _G.DebuffFrame:IsShown() and (_G.DebuffFrame:GetAlpha() == 1)
+        end)()''')
+        # Toggle back ON -> BuffFrame/DebuffFrame hidden cleanly
+        l_env.execute('''
+            local chMod = kkowoUI.Modules.Get("coreHUD")
+            local db = chMod:GetDB()
+            db.wingOwnAuras = true
+            db.showPermanentBuffs = true
+            db.showCombatBuffs = true
+            db.showCombatDebuffs = true
+            db.hideTopRightBlizzAuras = true
+            chMod:OnRefresh()
+        ''')
+        m_env.StepTime(0.2, 2)
+        on_ok = l_env.eval('''(function()
+            return (not _G.BuffFrame:IsShown()) or (_G.BuffFrame:GetAlpha() == 0)
+        end)()''')
+        assert off_ok and on_ok, f'自身增益一键开关切换双翼/小地图左侧校验失败: off={off_ok}, on={on_ok}'
+
+        # (5) ManaRegenSpark attach / mode switch / off detach
+        spark_chk = l_env.eval('''(function()
+            local log = _G._testSparkLog
+            local attachedInit = (log.attachedKey == "kkowo_corehud") and (log.ticks == true) and (log.isMana == true)
+            local chMod = kkowoUI.Modules.Get("coreHUD")
+            chMod:GetDB().manaRegenSpark = "fsr"
+            chMod:OnRefresh()
+            local fsrOk = (log.attachedKey == "kkowo_corehud") and (log.ticks == false)
+            chMod:GetDB().manaRegenSpark = "off"
+            chMod:OnRefresh()
+            local offOk = (log.attachedKey == nil) and (log.detaches >= 1)
+            return { attachedInit = attachedInit, fsrOk = fsrOk, offOk = offOk }
+        end)()''')
+        assert spark_chk.attachedInit and spark_chk.fsrOk and spark_chk.offOk, f'蓝条回蓝节拍提示校验失败: {spark_chk}'
+
+        return '副本机密报错归零/姓名板圆角描边/法术书天赋双钮+搜索框防位移/目标|分隔+自身一键开关/蓝条回蓝节拍 全部通过'
+
+    check('副本反馈五项修复回归校验（报错/圆角/法术书/光环/回蓝）', t_post_dungeon_fixes)
+
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0
 
