@@ -52,7 +52,9 @@ local function CreateWingBar(parent, w, h, reverse)
 
     local sb = CreateFrame("StatusBar", nil, holder)
     sb:SetAllPoints()
-    sb:SetStatusBarTexture(ST.TEX.FLAT)
+    local fillPath = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
+    sb:SetStatusBarTexture(fillPath)
+    sb._kkFillPath = fillPath
     sb:SetMinMaxValues(0, 1)
     sb:SetValue(1)
     if reverse and sb.SetReverseFill then
@@ -72,9 +74,16 @@ local function CreateWingBar(parent, w, h, reverse)
     return holder
 end
 
-local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius)
+local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius, fxOverride)
     if not holder then return end
     local rad = radius or GetBarRadius(F.PlainNumber(holder:GetHeight(), 16) or 16)
+    -- 2-T 自制明暗条体贴图联动（关闭 fx_barTexture 时换回 FLAT）
+    local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false, fxOverride) or ST.TEX.FLAT
+    if holder._bar and holder._bar._kkFillPath ~= wantFill then
+        holder._bar:SetStatusBarTexture(wantFill)
+        holder._bar._kkFillPath = wantFill
+        holder._bar._kkGradCache = nil
+    end
     -- 柔和微透色融玻璃底槽：按当前条色相轻染（蓝条带柔蓝玻璃、绿条带柔绿玻璃，彻底告别生硬死黑块）
     if holder._bg then
         local bgA = (r1 + g1 + b1 < 0.25) and 0.34 or 0.42

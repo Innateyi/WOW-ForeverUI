@@ -411,6 +411,14 @@ local function RefreshOverlayChrome()
     overlay._barHost:SetPoint("TOPLEFT", overlay, "TOPLEFT", showIcon and (iconW + 2) or 0, 0)
     overlay._barHost:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", 0, 0)
 
+    local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
+    if overlay._bar and overlay._bar._kkFillPath ~= wantFill then
+        overlay._bar:SetStatusBarTexture(wantFill)
+        overlay._bar._kkFillPath = wantFill
+        local ft = overlay._bar:GetStatusBarTexture()
+        if ft and M.DisablePixelSnap then M.DisablePixelSnap(ft) end
+    end
+
     if rad > 0 then
         ST.MaskTexture(overlay._barHost, overlay._bg, rad)
         local fillTex = overlay._bar:GetStatusBarTexture()

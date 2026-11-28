@@ -617,7 +617,8 @@ function M.AttachEdgeSpark(statusBar, opts)
     host:SetFrameLevel(lvl + (opts.levelOffset or 3))
 
     local spark = host:CreateTexture(nil, "OVERLAY", nil, 5)
-    spark:SetTexture(opts.texture or ST.TEX.SPARK_BLADE)
+    local customTex = opts.texture
+    spark:SetTexture(customTex or (ST.GetSparkTexture and ST.GetSparkTexture(opts.fxOverride) or ST.TEX.SPARK_BLADE))
     spark:SetBlendMode("ADD")
     if spark.SetSnapToPixelGrid then pcall(spark.SetSnapToPixelGrid, spark, false) end
     if spark.SetTexelSnappingBias then pcall(spark.SetTexelSnappingBias, spark, 0) end
@@ -626,15 +627,24 @@ function M.AttachEdgeSpark(statusBar, opts)
     spark:SetWidth(w)
 
     local ctrl = {
-        _host    = host,
-        _bar     = statusBar,
-        _spark   = spark,
-        _width   = w,
-        _extraH  = extraH,
-        _reverse = opts.reverse == true,
+        _host       = host,
+        _bar        = statusBar,
+        _spark      = spark,
+        _customTex  = customTex,
+        _fxOverride = opts.fxOverride,
+        _width      = w,
+        _extraH     = extraH,
+        _reverse    = opts.reverse == true,
     }
 
+    function ctrl:RefreshTexture()
+        if not self._customTex and ST.GetSparkTexture then
+            self._spark:SetTexture(ST.GetSparkTexture(self._fxOverride))
+        end
+    end
+
     function ctrl:SyncAnchor()
+        self:RefreshTexture()
         local fillTex = self._bar:GetStatusBarTexture()
         if not fillTex then return end
         local h = F.PlainNumber(self._bar:GetHeight(), 12) or 12
@@ -1230,6 +1240,15 @@ function M.AttachHealPrediction(healthBar, opts)
     local function ApplyColors()
         local scale = ST.GetFXScale(ctrl._fxOverride)
         if scale <= 0 then scale = 1 end
+        local seamTex = ST.GetBarFillTexture and ST.GetBarFillTexture(true, ctrl._fxOverride) or ST.TEX.FLAT
+        if ctrl._appliedTex ~= seamTex then
+            ctrl._appliedTex = seamTex
+            healBar:SetStatusBarTexture(seamTex)
+            absorbBar:SetStatusBarTexture(seamTex)
+            healAbsorbBar:SetStatusBarTexture(seamTex)
+            ctrl._maskedRad = -1
+            LayoutChain()
+        end
         local pos = ST.COLORS.positive or { 0.34, 0.88, 0.56 }
         healBar:SetStatusBarColor(pos[1], pos[2], pos[3], 0.42 * scale)
         absorbBar:SetStatusBarColor(0.92, 0.96, 1.00, 0.32 * scale)

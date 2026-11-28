@@ -273,12 +273,25 @@ local function ResolveThemeColors(themeKey)
     return fillStart, fillEnd, questStart, questEnd, rested, questHex, ILVL_AION_HEX
 end
 
+local AttachMask -- 前向声明
+
 local function ApplyHorizBarColor(bar, colStart, colEnd, alpha)
     if not bar or not colEnd then return end
     local a = alpha or 1
-    if not bar._texBound then
-        bar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    local ST = F.StyleTokens
+    local wantTex = (ST and ST.GetBarFillTexture) and ST.GetBarFillTexture(false) or F.Theme.FLAT_TEX
+    if bar._texPath ~= wantTex then
+        bar:SetStatusBarTexture(wantTex)
+        bar._texPath = wantTex
         bar._texBound = true
+        if xpFrame and xpFrame._pillMask and (bar == xpBar or bar == restedBar or bar == questBar or bar == gainBar) then
+            AttachMask(bar.GetStatusBarTexture and bar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
+        elseif repFrame and repFrame._pillMask and bar == repBar then
+            AttachMask(bar.GetStatusBarTexture and bar:GetStatusBarTexture(), repFrame._pillMask, repFrame)
+        end
+        if F.Motion and F.Motion.DisablePixelSnap and bar.GetStatusBarTexture then
+            F.Motion.DisablePixelSnap(bar:GetStatusBarTexture())
+        end
     end
     bar:SetStatusBarColor(colEnd[1], colEnd[2], colEnd[3], a)
     if colStart and _G.CreateColor and bar.GetStatusBarTexture then
@@ -452,7 +465,7 @@ local function ApplyNineSlice(obj, texPath, radius, wrap)
     end
 end
 
-local function AttachMask(tex, mask, host)
+AttachMask = function(tex, mask, host)
     if not (tex and mask and tex.AddMaskTexture) then return end
     local ST = F.StyleTokens
     if ST and ST.AttachCustomMask then

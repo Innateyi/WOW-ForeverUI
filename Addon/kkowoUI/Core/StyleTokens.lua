@@ -23,6 +23,9 @@ ST.TEX = {
     CIRCLE_RING  = F.MEDIA .. "Textures\\CircleRing.tga",
     CIRCLE_ARC   = F.MEDIA .. "Textures\\CircleArcGlow.tga",
     SPARK_BLADE  = F.MEDIA .. "Textures\\SparkBlade.tga",
+    SPARK_SOFT   = F.MEDIA .. "Textures\\SparkSoft.tga",
+    BAR_FILL_SHADED   = F.MEDIA .. "Textures\\BarFillShaded.tga",
+    BAR_FILL_SEAMLESS = F.MEDIA .. "Textures\\BarFillSeamless.tga",
     SOFT_GLOW    = F.MEDIA .. "Textures\\SoftGlow.tga",
     VIGNETTE     = F.MEDIA .. "Textures\\VignetteEdge.tga",
     DIAG_STRIPES = F.MEDIA .. "Textures\\DiagStripes.tga",
@@ -275,6 +278,21 @@ function ST.IsFXEnabled(fxKey, override)
     end
     if not fxKey then return true end
     return (not db) or (db[fxKey] ~= false)
+end
+
+-- 2-T 自制条体与火花贴图解析（fx_barTexture 关闭时完全退回 FLAT / SPARK_BLADE）
+function ST.GetBarFillTexture(seamless, override)
+    if ST.IsFXEnabled("fx_barTexture", override) then
+        return seamless and ST.TEX.BAR_FILL_SEAMLESS or ST.TEX.BAR_FILL_SHADED
+    end
+    return ST.TEX.FLAT
+end
+
+function ST.GetSparkTexture(override)
+    if ST.IsFXEnabled("fx_barTexture", override) then
+        return ST.TEX.SPARK_SOFT
+    end
+    return ST.TEX.SPARK_BLADE
 end
 
 function ST.GetGradientMode()
