@@ -1,6 +1,8 @@
 // kkowoUI 严格静态检查器（基于 luaparse）
 // 检查：1) 语法正确性 2) 零未声明全局写入 3) 零先用后声明 local
 //       4) 禁止向暴雪核心全局框体表写字段 5) 顶层 local 数量上限
+//       6) 禁止读取未声明的 math_*/string_*/table_*/bit_* 本地别名
+//       7) 禁止 x and not F.IsSecret(x) 倒置机密值判断顺序
 'use strict';
 
 const fs = require('fs');
@@ -36,7 +38,72 @@ const ALLOWED_GLOBALS = new Set([
   'KkowoUIDB',
   'KkowoUICharDB',
   'SlashCmdList',
+  // GroundPin 快捷键绑定（Bindings.xml 明确规定的 5 个全局符号）
+  'BINDING_HEADER_KKOWOUI_NAV',
+  'BINDING_NAME_KKOWOUI_GROUNDPIN',
+  'BINDING_NAME_KKOWOUI_GROUNDPIN_CLEAR',
+  'kkowoUI_GroundPin_OnKey',
+  'kkowoUI_GroundPin_Clear',
 ]);
+const ALLOWED_GLOBAL_PREFIXES = [
+  'SLASH_',
+  'BINDING_HEADER_KKOWOUI_',
+  'BINDING_NAME_KKOWOUI_',
+];
+const LOCAL_STDLIB_ALIAS_RE = /^(?:math|string|table|bit)_[A-Za-z0-9_]+$/;
+function isAllowedGlobal(name) {
+  if (ALLOWED_GLOBALS.has(name)) return true;
+  for (const p of ALLOWED_GLOBAL_PREFIXES) {
+    if (name.startsWith(p)) return true;
+  }
+  return false;
+}
+function exprKey(node) {
+  if (!node) return null;
+  if (node.type === 'Identifier') return node.name;
+  if (node.type === 'MemberExpression' && node.indexer === '.' && node.identifier && node.identifier.type === 'Identifier') {
+    const base = exprKey(node.base);
+    return base ? `${base}.${node.identifier.name}` : null;
+  }
+  return null;
+}
+function getIsSecretArg(node) {
+  // 匹配 not F.IsSecret(x) / not issecretvalue(x) / not IsSecret(x)
+  if (!node || node.type !== 'UnaryExpression' || node.operator !== 'not') return null;
+  const call = node.argument;
+  if (!call || call.type !== 'CallExpression' || !call.arguments || call.arguments.length !== 1) return null;
+  const base = call.base;
+  let isSecretCall = false;
+  if (base && base.type === 'Identifier' && (base.name === 'IsSecret' || base.name === 'issecretvalue')) {
+    isSecretCall = true;
+  } else if (base && base.type === 'MemberExpression' && base.identifier && base.identifier.type === 'Identifier') {
+    if (base.identifier.name === 'IsSecret' || base.identifier.name === 'issecretvalue') {
+      isSecretCall = true;
+    }
+  }
+  if (!isSecretCall) return null;
+  return exprKey(call.arguments[0]);
+}
+function testsTargetBeforeSecret(node, targetKey) {
+  if (!node || !targetKey) return false;
+  if (exprKey(node) === targetKey) return true;
+  if (node.type === 'UnaryExpression' && (node.operator === 'not' || node.operator === '#')) {
+    return exprKey(node.argument) === targetKey;
+  }
+  if (node.type === 'BinaryExpression') {
+    return exprKey(node.left) === targetKey || exprKey(node.right) === targetKey;
+  }
+  return false;
+}
+function flattenAndChain(node, out = []) {
+  if (node && node.type === 'LogicalExpression' && node.operator === 'and') {
+    flattenAndChain(node.left, out);
+    flattenAndChain(node.right, out);
+  } else if (node) {
+    out.push(node);
+  }
+  return out;
+}
 const FORBIDDEN_BLIZZ_WRITES = new Set([
   'WorldMapFrame',
   'SuperTrackedFrame',
@@ -133,7 +200,7 @@ function checkFile(filePath) {
         } else if (!node.isLocal && node.identifier) {
           if (node.identifier.type === 'Identifier') {
             const n = node.identifier.name;
-            if (!hasLocal(n) && !ALLOWED_GLOBALS.has(n)) {
+            if (!hasLocal(n) && !isAllowedGlobal(n)) {
               errors.push(`${rel}:${node.loc.start.line}: 声明了全局函数 ${n}`);
             }
           }
@@ -154,7 +221,7 @@ function checkFile(filePath) {
         for (const v of node.variables) {
           if (v.type === 'Identifier') {
             const n = v.name;
-            if (!hasLocal(n) && !ALLOWED_GLOBALS.has(n) && !n.startsWith('SLASH_')) {
+            if (!hasLocal(n) && !isAllowedGlobal(n)) {
               errors.push(`${rel}:${v.loc.start.line}: 写入全局变量 ${n}`);
             }
           } else if (v.type === 'MemberExpression' || v.type === 'IndexExpression') {
@@ -204,10 +271,35 @@ function checkFile(filePath) {
         scopes.pop();
         return;
 
+      case 'LogicalExpression': {
+        if (node.operator === 'and') {
+          const chain = flattenAndChain(node);
+          for (let j = 1; j < chain.length; j++) {
+            const targetKey = getIsSecretArg(chain[j]);
+            if (targetKey) {
+              for (let i = 0; i < j; i++) {
+                if (testsTargetBeforeSecret(chain[i], targetKey)) {
+                  errors.push(`${rel}:${chain[j].loc.start.line}: 机密值判断顺序倒置，应先判 not F.IsSecret(${targetKey}) 再判 ${targetKey}`);
+                  break;
+                }
+              }
+            }
+          }
+          // 遍历叶子节点，避免同一条 and 链在子节点上重复报错
+          for (const item of chain) visit(item);
+          return;
+        }
+        visit(node.left);
+        visit(node.right);
+        return;
+      }
+
       case 'Identifier': {
         const name = node.name;
         if (!hasLocal(name) && topLocals.has(name) && node.loc.start.line < topLocals.get(name)) {
           errors.push(`${rel}:${node.loc.start.line}: 在 local ${name}（第 ${topLocals.get(name)} 行）声明之前使用了它`);
+        } else if (!hasLocal(name) && LOCAL_STDLIB_ALIAS_RE.test(name)) {
+          errors.push(`${rel}:${node.loc.start.line}: 读取了未声明的本地别名 ${name}`);
         }
         return;
       }
