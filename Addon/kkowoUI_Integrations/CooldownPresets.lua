@@ -27,6 +27,8 @@ local mod = F.RegisterModule("cdPresets", {
 
 local CDM_ADDON = "EllesmereUICooldownManager"
 local syncQueued = false
+local syncRetries = 0
+local MAX_SYNC_RETRIES = 10
 local QueueSync   -- forward：Sync 在存档未就绪时要自我重排
 
 local function CDM()
@@ -154,9 +156,13 @@ local function Sync()
     -- 两次取到同一张表才说明是真正落盘的那张，否则稍后重试。
     local okT2, tbb2 = pcall(ns.GetTrackedBuffBars)
     if not (okT2 and tbb2 == tbb) then
-        QueueSync(3)
+        if syncRetries < MAX_SYNC_RETRIES then
+            syncRetries = syncRetries + 1
+            QueueSync(3)
+        end
         return
     end
+    syncRetries = 0
     local bars = tbb.bars
 
     local mine = {}
@@ -256,10 +262,40 @@ local function ResetRemoved()
 end
 mod.ResetRemoved = ResetRemoved
 
+local function ClearPresets()
+    local ns = CDM()
+    if not ns then return 0 end
+    if _G.InCombatLockdown and _G.InCombatLockdown() then
+        F.RunOutOfCombat("cdPresetsClear", ClearPresets)
+        return 0
+    end
+    local okT, tbb = pcall(ns.GetTrackedBuffBars)
+    if not (okT and type(tbb) == "table" and type(tbb.bars) == "table") then return 0 end
+    local removed = 0
+    for i = #tbb.bars, 1, -1 do
+        local cfg = tbb.bars[i]
+        if type(cfg) == "table" and type(cfg.kkPreset) == "string" then
+            table.remove(tbb.bars, i)
+            removed = removed + 1
+        end
+    end
+    local okK, specKey = pcall(ns.GetActiveSpecKey)
+    if okK and specKey then
+        local st = SpecState(specKey)
+        if st then st.added = {} end
+    end
+    if removed > 0 then
+        pcall(ns.BuildTrackedBuffBars)
+    end
+    return removed
+end
+mod.ClearPresets = ClearPresets
+
 function mod:OnEnable()
+    syncRetries = 0
     -- EUI 冷却管理器在 PLAYER_LOGIN 之后才建好存档与专精表：进世界后稍等再同步
-    self:RegisterEvent("PLAYER_ENTERING_WORLD", function() QueueSync(4) end)
-    self:RegisterEvent("SPELLS_CHANGED", function() QueueSync(1.5) end)
+    self:RegisterEvent("PLAYER_ENTERING_WORLD", function() syncRetries = 0; QueueSync(4) end)
+    self:RegisterEvent("SPELLS_CHANGED", function() syncRetries = 0; QueueSync(1.5) end)
     QueueSync(4)
 end
 

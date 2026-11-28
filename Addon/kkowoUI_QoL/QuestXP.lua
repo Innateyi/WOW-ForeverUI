@@ -363,8 +363,8 @@ function mod:OnEnable()
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         RefreshRows()
         if _G.C_Timer and _G.C_Timer.After then
-            _G.C_Timer.After(0.6, RefreshRows)
-            _G.C_Timer.After(1.8, RefreshRows)
+            _G.C_Timer.After(0.6, function() if mod._active then RefreshRows() end end)
+            _G.C_Timer.After(1.8, function() if mod._active then RefreshRows() end end)
         end
     end)
     RefreshRows()

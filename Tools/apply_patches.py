@@ -32,11 +32,14 @@ def load_patch(path):
 
 def wow_running():
     try:
-        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Wow.exe'], capture_output=True, text=True,
-                             encoding='mbcs', errors='replace', timeout=10).stdout
-        return 'Wow.exe' in out
+        r = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Wow.exe'], capture_output=True, text=True,
+                           encoding='mbcs', errors='replace', timeout=10)
+        if r.returncode != 0:
+            return True
+        return 'Wow.exe' in r.stdout
     except Exception:
-        return False
+        # fail-closed：无法确认游戏已退出时拒绝写盘（P45-05）
+        return True
 
 
 def main():
@@ -53,14 +56,18 @@ def main():
         try:
             mod = load_patch(os.path.join(PATCH_DIR, name))
             status, msg = mod.run(check_only=check_only)
-        except (OSError, UnicodeDecodeError) as e:
-            # 目标插件文件被改名/删除或编码异常：报告并继续检查其余补丁，而不是整个脚本崩溃
+        except Exception as e:
+            # 目标插件文件被改名/删除、编码异常或补丁脚本异常：报告并继续检查其余补丁，而不是整个脚本崩溃
             status, msg = 'ERROR', f'{type(e).__name__}: {e}'
-        ok = status in ('APPLIED', 'APPLIED_LEGACY', 'READY', 'PATCHED', 'SKIPPED')
-        mark = 'OK  ' if ok else 'WARN'
-        print(f'[{mark}] {name:<30} | {status:<15} | {msg}')
-        if not ok:
+        ok = status in ('APPLIED', 'PATCHED', 'SKIPPED')
+        if ok:
+            mark = 'OK  '
+        elif check_only and status == 'READY':
+            mark = 'TODO'
+        else:
+            mark = 'WARN'
             failed += 1
+        print(f'[{mark}] {name:<30} | {status:<15} | {msg}')
     if check_only:
         print('\n提示：以上为只读检查，未修改游戏文件。退出游戏后加 --apply 即可写入。')
     return 1 if failed else 0

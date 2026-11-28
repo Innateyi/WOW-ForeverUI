@@ -1092,20 +1092,29 @@ local fittedTimers = setmetatable({}, { __mode = "k" })
 local measureFS = nil
 
 local function FitAuraButton(btn)
-    local fs = btn and btn.Duration
-    if not (fs and fs.GetFont and fs.SetFont) then
+    if not btn or (btn.IsForbidden and btn:IsForbidden()) then return end
+    local fs = btn.Duration
+    if not (fs and not (fs.IsForbidden and fs:IsForbidden()) and fs.GetFont and fs.SetFont) then
         return
     end
-    local w = F.PlainNumber(btn:GetWidth(), nil)
-    local iw = btn.Icon and btn.Icon.GetWidth and F.PlainNumber(btn.Icon:GetWidth(), nil)
+    local okW, rawW = pcall(btn.GetWidth, btn)
+    local w = okW and F.PlainNumber(rawW, nil) or nil
+    local iw = nil
+    if btn.Icon and not (btn.Icon.IsForbidden and btn.Icon:IsForbidden()) and btn.Icon.GetWidth then
+        local okIW, rawIW = pcall(btn.Icon.GetWidth, btn.Icon)
+        iw = okIW and F.PlainNumber(rawIW, nil) or nil
+    end
     if iw and iw > 0 and (not w or iw < w) then
         w = iw
     end
     if not w or w <= 0 then
         return
     end
-    local face, size, flags = fs:GetFont()
-    size = F.PlainNumber(size, nil)
+    local okF, rawFace, rawSize, rawFlags = pcall(fs.GetFont, fs)
+    if not okF then return end
+    local face = F.PlainString(rawFace, nil)
+    local size = F.PlainNumber(rawSize, nil)
+    local flags = F.PlainString(rawFlags, "") or ""
     if not (face and size and size > 0) then
         return
     end
@@ -1118,15 +1127,16 @@ local function FitAuraButton(btn)
         measureFS = _G.UIParent:CreateFontString(nil, "BACKGROUND")
         measureFS:Hide()
     end
-    measureFS:SetFont(face, base, flags or "")
-    measureFS:SetText("88 m")
-    local tw = F.PlainNumber(measureFS:GetStringWidth(), nil)
+    if not pcall(measureFS.SetFont, measureFS, face, base, flags) then return end
+    pcall(measureFS.SetText, measureFS, "88 m")
+    local okTW, rawTW = pcall(measureFS.GetStringWidth, measureFS)
+    local tw = okTW and F.PlainNumber(rawTW, nil) or nil
     local newSize = base
     if tw and tw > w then
         newSize = math_max(7, math_floor(base * w / tw * 10) / 10)
     end
     if math_abs(newSize - size) >= 0.05 then
-        fs:SetFont(face, newSize, flags or "")
+        pcall(fs.SetFont, fs, face, newSize, flags)
     end
     fittedTimers[fs] = { w, newSize, base }
 end
@@ -1144,11 +1154,13 @@ end
 -- 关闭「计时文字防重叠」或停用模块时把缩小过的计时字号还原
 local function RestoreFittedAuraTimers()
     for fs, done in pairs(fittedTimers) do
-        if fs and fs.GetFont and fs.SetFont and done[3] then
-            local face, size, flags = fs:GetFont()
-            size = F.PlainNumber(size, nil)
+        if fs and not (fs.IsForbidden and fs:IsForbidden()) and fs.GetFont and fs.SetFont and done[3] then
+            local okF, rawFace, rawSize, rawFlags = pcall(fs.GetFont, fs)
+            local face = okF and F.PlainString(rawFace, nil) or nil
+            local size = okF and F.PlainNumber(rawSize, nil) or nil
+            local flags = okF and F.PlainString(rawFlags, "") or ""
             if face and size and math_abs(size - done[3]) >= 0.05 then
-                pcall(fs.SetFont, fs, face, done[3], flags or "")
+                pcall(fs.SetFont, fs, face, done[3], flags)
             end
         end
         fittedTimers[fs] = nil

@@ -6,6 +6,7 @@
 --    • 注册 /kk selftest 翻译抽查
 ----------------------------------------------------------------------
 local _, ns = ...
+if ns._yielded then return end
 local _G = _G
 local GetLocale = _G.GetLocale
 if not (GetLocale and GetLocale() == "zhCN") then

@@ -112,7 +112,7 @@ function Theme.ApplyFont(fs, size, outline, r, g, b, a)
     local c = fontCache[fs]
     if not c or c[1] ~= path or c[2] ~= sz or c[3] ~= fl then
         local ok, applied = pcall(fs.SetFont, fs, path, sz, fl)
-        if not (ok and applied) then
+        if not ok or applied == false then
             local fallback = _G.STANDARD_TEXT_FONT or "Fonts\\ARKai_T.ttf"
             if fallback ~= path then
                 pcall(fs.SetFont, fs, fallback, sz, fl)
@@ -736,6 +736,18 @@ local function CanToggleFrameVis(frame)
     return not (frame.IsProtected and frame:IsProtected() and InCombatLockdown and InCombatLockdown())
 end
 
+local function HideFrameAtZeroSafe(frame)
+    if CanToggleFrameVis(frame) then
+        frame:Hide()
+    elseif F.RunOutOfCombat then
+        F.RunOutOfCombat("FUI_FadeHide_" .. tostring(frame), function()
+            if frame and frame.Hide and (F.PlainNumber(frame.GetAlpha and frame:GetAlpha(), 1) or 1) <= 0.01 then
+                pcall(frame.Hide, frame)
+            end
+        end)
+    end
+end
+
 function Theme.FadeTo(frame, toAlpha, duration, hideAtZero)
     if not (frame and frame.SetAlpha) then return end
     local goal = toAlpha or 1
@@ -746,7 +758,7 @@ function Theme.FadeTo(frame, toAlpha, duration, hideAtZero)
         local ag = fadeGroups[frame]
         if ag and ag:IsPlaying() then ag:Stop() end
         frame:SetAlpha(goal)
-        if hideAtZero and goal <= 0.001 and CanToggleFrameVis(frame) then frame:Hide() end
+        if hideAtZero and goal <= 0.001 then HideFrameAtZeroSafe(frame) end
         return
     end
 
@@ -757,8 +769,8 @@ function Theme.FadeTo(frame, toAlpha, duration, hideAtZero)
         ag.anim = ag:CreateAnimation("Alpha")
         ag:SetScript("OnFinished", function(self)
             frame:SetAlpha(self.target or 1)
-            if self.hideAtZero and (self.target or 1) <= 0.001 and CanToggleFrameVis(frame) then
-                frame:Hide()
+            if self.hideAtZero and (self.target or 1) <= 0.001 then
+                HideFrameAtZeroSafe(frame)
             end
         end)
         fadeGroups[frame] = ag
@@ -787,7 +799,7 @@ function Theme.FadeTo(frame, toAlpha, duration, hideAtZero)
     end
     if math_abs(cur - goal) < 0.015 then
         frame:SetAlpha(goal)
-        if hideAtZero and goal <= 0.001 and CanToggleFrameVis(frame) then frame:Hide() end
+        if hideAtZero and goal <= 0.001 then HideFrameAtZeroSafe(frame) end
         return
     end
     ag._from = cur

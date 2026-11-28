@@ -490,6 +490,10 @@ end
 local origGetTooltipBg = nil
 
 local function FrostedTooltipBg()
+    if type(origGetTooltipBg) ~= "function" then
+        local c = F.Theme.FROST_RGB
+        return c[1], c[2], c[3], GetGlassAlpha()
+    end
     local r, g, b, a = origGetTooltipBg()
     if not UseFrostedGlass() then return r, g, b, a end
     local want = GetGlassAlpha()
@@ -502,12 +506,17 @@ end
 local function SetTooltipBgOverride(on)
     local E = _G.EllesmereUI
     if type(E) ~= "table" then return end
-    if on and not origGetTooltipBg and type(E.GetTooltipBg) == "function" then
-        origGetTooltipBg = E.GetTooltipBg
-        E.GetTooltipBg = FrostedTooltipBg
-    elseif not on and origGetTooltipBg then
-        if E.GetTooltipBg == FrostedTooltipBg then E.GetTooltipBg = origGetTooltipBg end
-        origGetTooltipBg = nil
+    if on then
+        if not origGetTooltipBg and type(E.GetTooltipBg) == "function" and E.GetTooltipBg ~= FrostedTooltipBg then
+            origGetTooltipBg = E.GetTooltipBg
+            E.GetTooltipBg = FrostedTooltipBg
+        end
+    elseif origGetTooltipBg then
+        if E.GetTooltipBg == FrostedTooltipBg then
+            E.GetTooltipBg = origGetTooltipBg
+            origGetTooltipBg = nil
+        end
+        -- 若已有其他插件在 FrostedTooltipBg 外层再次包装，保留 origGetTooltipBg 让停用态安全直通不崩溃
     end
 end
 
@@ -752,6 +761,7 @@ local function IsPanelFamilyAnchor(region)
     local guard = 0
     while node and guard < 16 do
         guard = guard + 1
+        if not IsSafeFrame(node) then return false end
         if node == mf then return true end
         if type(pops) == "table" then
             for i = 1, #pops do
@@ -1035,9 +1045,6 @@ local function SyncPrettyIconMask(panel, st, fromSwap)
         end
     end
     if panel.icon and st.iconMask then
-        if panel.icon.SetBlockingLoadsRequested then
-            pcall(panel.icon.SetBlockingLoadsRequested, panel.icon, true)
-        end
         if ST and ST.AttachCustomMask then
             ST.AttachCustomMask(panel, panel.icon, st.iconMask, {
                 isIcon = true,
@@ -1171,11 +1178,9 @@ local function ApplyRoundToPrettyPanel(panel)
             iconOnBorder = false,
         }
         st.bodyMask:SetAllPoints(panel)
-        if st.borderTex.SetBlockingLoadsRequested then pcall(st.borderTex.SetBlockingLoadsRequested, st.borderTex, true) end
         st.borderTex:SetAllPoints(panel)
         st.borderTex:SetTexture(F.Theme.FLAT_TEX)
 
-        if st.topTex.SetBlockingLoadsRequested then pcall(st.topTex.SetBlockingLoadsRequested, st.topTex, true) end
         st.topTex:SetPoint("TOPLEFT", panel, "TOPLEFT", 0, 0)
         st.topTex:SetPoint("TOPRIGHT", panel, "TOPRIGHT", 0, 0)
         st.topTex:SetHeight(2)

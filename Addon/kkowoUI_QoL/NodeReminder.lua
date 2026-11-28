@@ -181,7 +181,7 @@ local function RefreshQuestObjectives()
     if not (QL and QL.GetNumQuestLogEntries and QL.GetInfo and QL.GetQuestObjectives) then
         return
     end
-    for i = 1, QL.GetNumQuestLogEntries() do
+    for i = 1, F.PlainNumber(QL.GetNumQuestLogEntries(), 0) do
         local info = QL.GetInfo(i)
         if info and info.questID and not info.isHeader then
             local objs = QL.GetQuestObjectives(info.questID)
@@ -292,9 +292,11 @@ local function IsBobber(objID)
 end
 
 local function ClassifyIcon(unitFrame)
-    local soft = unitFrame and unitFrame.SoftTargetFrame
-    local icon = soft and soft.Icon
-    if not icon then return nil end
+    if not unitFrame or (unitFrame.IsForbidden and unitFrame:IsForbidden()) then return nil end
+    local soft = unitFrame.SoftTargetFrame
+    if not soft or (soft.IsForbidden and soft:IsForbidden()) then return nil end
+    local icon = soft.Icon
+    if not icon or (icon.IsForbidden and icon:IsForbidden()) then return nil end
     local okShow, shown = pcall(icon.IsShown, icon)
     if okShow and not F.IsSecret(shown) and not shown then return nil end
     local okTex, tex = pcall(icon.GetTexture, icon)
@@ -748,7 +750,7 @@ function mod:OnEnable()
             end
         end
         -- 任务物件/宝箱交互读条往往不是玩家法术书技能；炉石/坐骑/战斗法术属于玩家已知法术则排除
-        if (kind == "quest" or kind == "chest") and sid then
+        if (kind == "quests" or kind == "chest") and sid then
             local known = false
             if _G.C_SpellBook and _G.C_SpellBook.IsSpellKnown then
                 local okK, kVal = pcall(_G.C_SpellBook.IsSpellKnown, sid)

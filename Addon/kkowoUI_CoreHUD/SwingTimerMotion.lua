@@ -149,8 +149,10 @@ local function BuildStandalone()
         defaultRelPoint = "CENTER",
         defaultX = 0,
         defaultY = -262,
+        allowShiftDrag = false,
         isHidden = function() return not (mod._active and mod:GetDB().mode == "standalone") end,
     })
+    f:EnableMouse(false)
 
     f:Hide()
     container = f
@@ -175,9 +177,18 @@ local hookedSwingShell = _G.setmetatable({}, { __mode = "k" })
 local seenSwingRows = _G.setmetatable({}, { __mode = "k" })
 local swingBorderBusy = false
 
+local function IsSafeObj(obj)
+    if not obj then return false end
+    if obj.IsForbidden then
+        local ok, forb = pcall(obj.IsForbidden, obj)
+        if not ok or forb then return false end
+    end
+    return true
+end
+
 local function EnhanceEUISwingFrame()
     local erb = _G.ERB_SwingTimerFrame
-    if not erb then return end
+    if not IsSafeObj(erb) then return end
     -- 外壳 ERB_SwingTimerFrame 仅是多行排布容器，绝不能在外壳上套圆角框（会包住多行空隙并与行内直角框打架）
     ST.ClearRoundedMask(erb)
     if not hookedSwingShell[erb] and erb.HookScript then
@@ -192,7 +203,7 @@ local function EnhanceEUISwingFrame()
     local rad = math_min(ST.GetCornerRadius(4), 4)
     if not erb.GetChildren then return end
     for _, row in _G.ipairs({ erb:GetChildren() }) do
-        if row and row._bar and row._bg then
+        if IsSafeObj(row) and row._bar and row._bg then
             seenSwingRows[row] = true
             if row._merged == true then
                 ST.ClearRoundedMask(row)
@@ -236,9 +247,9 @@ end
 
 local function CheckUnseenEUISwingRows()
     local erb = _G.ERB_SwingTimerFrame
-    if not (erb and erb.GetChildren) then return end
+    if not (IsSafeObj(erb) and erb.GetChildren) then return end
     for _, row in _G.ipairs({ erb:GetChildren() }) do
-        if row and row._bar and row._bg and not seenSwingRows[row] then
+        if IsSafeObj(row) and row._bar and row._bg and not seenSwingRows[row] then
             EnhanceEUISwingFrame()
             return
         end

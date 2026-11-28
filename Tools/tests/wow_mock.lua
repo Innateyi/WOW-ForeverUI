@@ -3,6 +3,13 @@ local M = {}
 
 local _now = 100.0
 local _inCombat = false
+local _inInstance = false
+local _instanceType = "none"
+local _instanceName = "Kalimdor"
+local _aurasSecret = false
+local _secretAPIs = {}
+local _zeroReturnAPIs = {}
+local _mouseFoci = {}
 local _locale = "zhCN"
 local _eventListeners = {}
 local _timers = {}
@@ -54,6 +61,34 @@ local _prints = {}
 local _protectedViolations = {}
 local _allFrames = {}
 local _secretSentinels = setmetatable({}, { __mode = "k" })
+
+local function makeSecretMT(label)
+    local function forbid(op)
+        return function()
+            error("attempt to perform " .. op .. " on secret value (" .. tostring(label or "secret") .. ")", 2)
+        end
+    end
+    return {
+        __eq = forbid("comparison (==)"),
+        __lt = forbid("comparison (<)"),
+        __le = forbid("comparison (<=)"),
+        __add = forbid("arithmetic (+)"),
+        __sub = forbid("arithmetic (-)"),
+        __mul = forbid("arithmetic (*)"),
+        __div = forbid("arithmetic (/)"),
+        __mod = forbid("arithmetic (%)"),
+        __pow = forbid("arithmetic (^)"),
+        __unm = forbid("unary minus (-)"),
+        __concat = forbid("concatenation (..)"),
+        __tostring = function() return "<secret:" .. tostring(label or "value") .. ">" end,
+    }
+end
+
+local function newSecretSentinel(label)
+    local s = setmetatable({}, makeSecretMT(label))
+    _secretSentinels[s] = true
+    return s
+end
 
 local function recordProtected(api, obj)
     if _inCombat then
@@ -148,6 +183,7 @@ local RegionProto = {}
 RegionProto.__index = RegionProto
 
 local function newRegion(objType, name, parent)
+    local interactiveDefault = (objType == "Button" or objType == "CheckButton" or objType == "EditBox" or objType == "Slider")
     local r = setmetatable({
         _type = objType,
         _name = name,
@@ -167,6 +203,12 @@ local function newRegion(objType, name, parent)
         _attrs = {},
         _text = "",
         _font = { "Fonts\\ARKai_T.ttf", 12, "" },
+        _drawLayer = "ARTWORK",
+        _drawSublevel = 0,
+        _mouseClick = interactiveDefault,
+        _mouseMotion = interactiveDefault,
+        _dragRegistered = false,
+        _isMoving = false,
         _forbidden = false,
         _protected = false,
         _messages = {},
@@ -225,11 +267,37 @@ function RegionProto:Hide()
 end
 function RegionProto:SetShown(v) if v then self:Show() else self:Hide() end end
 function RegionProto:IsShown() return self._shown == true end
-function RegionProto:IsVisible() return self._shown == true end
+function RegionProto:IsVisible()
+    local cur = self
+    local guard = 0
+    while cur and guard < 32 do
+        guard = guard + 1
+        if cur._shown == false then return false end
+        local par = cur._parent
+        if par == cur then break end
+        cur = par
+    end
+    return true
+end
 function RegionProto:SetAlpha(a) self._alpha = a or 1 end
 function RegionProto:GetAlpha() return self._alpha or 1 end
-function RegionProto:GetEffectiveAlpha() return self._alpha or 1 end
-function RegionProto:SetScale(s) self._scale = s or 1 end
+function RegionProto:GetEffectiveAlpha()
+    local acc = 1
+    local cur = self
+    local guard = 0
+    while cur and guard < 32 do
+        guard = guard + 1
+        acc = acc * (cur._alpha or 1)
+        local par = cur._parent
+        if par == cur then break end
+        cur = par
+    end
+    return acc
+end
+function RegionProto:SetScale(s)
+    if self._protected then recordProtected("SetScale", self) end
+    self._scale = s or 1
+end
 function RegionProto:GetScale() return self._scale or 1 end
 function RegionProto:GetEffectiveScale() return self._scale or 1 end
 function RegionProto:SetWidth(w) self._w = w or 0 end
@@ -276,19 +344,48 @@ function RegionProto:Lower() end
 function RegionProto:SetClampedToScreen() end
 function RegionProto:SetClampRectInsets() end
 function RegionProto:SetClipsChildren() end
-function RegionProto:EnableMouse() end
+function RegionProto:EnableMouse(on)
+    if self._protected then recordProtected("EnableMouse", self) end
+    local v = (on == true)
+    self._mouseClick = v
+    self._mouseMotion = v
+end
+function RegionProto:SetMouseClickEnabled(on)
+    if self._protected then recordProtected("SetMouseClickEnabled", self) end
+    self._mouseClick = (on == true)
+end
+function RegionProto:SetMouseMotionEnabled(on)
+    self._mouseMotion = (on == true)
+end
+function RegionProto:IsMouseClickEnabled() return self._mouseClick == true end
+function RegionProto:IsMouseMotionEnabled() return self._mouseMotion == true end
 function RegionProto:EnableMouseWheel() end
 function RegionProto:EnableKeyboard() end
 function RegionProto:SetPropagateKeyboardInput() end
-function RegionProto:SetMovable() end
+function RegionProto:SetMovable(v) self._movable = (v == true) end
+function RegionProto:IsMovable() return self._movable == true end
 function RegionProto:SetResizable() end
 function RegionProto:SetUserPlaced() end
 function RegionProto:IsUserPlaced() return false end
 function RegionProto:IsMouseOver() return false end
-function RegionProto:IsMouseEnabled() return false end
-function RegionProto:StartMoving() end
-function RegionProto:StopMovingOrSizing() end
-function RegionProto:RegisterForDrag() end
+function RegionProto:IsMouseEnabled() return self._mouseClick == true or self._mouseMotion == true end
+function RegionProto:StartMoving()
+    if self._protected then recordProtected("StartMoving", self) end
+    self._isMoving = true
+end
+function RegionProto:StopMovingOrSizing()
+    if self._protected then recordProtected("StopMovingOrSizing", self) end
+    self._isMoving = false
+end
+function RegionProto:RegisterForDrag(...)
+    local has = select("#", ...) > 0
+    self._dragRegistered = has
+    if has then
+        -- 模拟客户端中 RegisterForDrag 令框体参与鼠标拖拽命中（用于暴露被动容器未设 allowShiftDrag=false 的挡点击隐患）
+        self._mouseClick = true
+        self._mouseMotion = true
+    end
+end
 function RegionProto:RegisterForClicks() end
 function RegionProto:SetHitRectInsets() end
 function RegionProto:SetIgnoreParentAlpha() end
@@ -337,9 +434,18 @@ end
 function RegionProto:IsEventRegistered(ev) return self._events[ev] == true end
 
 -- Texture / FontString / StatusBar / Button / EditBox / SMF / Animation methods
-function RegionProto:CreateTexture(name) return newRegion("Texture", name, self) end
+function RegionProto:CreateTexture(name, layer, _, sublevel)
+    local t = newRegion("Texture", name, self)
+    t._drawLayer = layer or "ARTWORK"
+    t._drawSublevel = sublevel or 0
+    return t
+end
 function RegionProto:CreateMaskTexture(name) return newRegion("MaskTexture", name, self) end
-function RegionProto:CreateFontString(name) return newRegion("FontString", name, self) end
+function RegionProto:CreateFontString(name, layer)
+    local fs = newRegion("FontString", name, self)
+    fs._drawLayer = layer or "OVERLAY"
+    return fs
+end
 function RegionProto:CreateLine(name) return newRegion("Line", name, self) end
 function RegionProto:CreateAnimationGroup()
     local ag = newRegion("AnimationGroup", nil, self)
@@ -383,18 +489,22 @@ function RegionProto:CreateAnimationGroup()
     return ag
 end
 function RegionProto:SetTexture(t) self._texture = t; return true end
-function RegionProto:GetTexture() return self._texture end
+function RegionProto:GetTexture()
+    if self._texture ~= nil then return self._texture end
+    if self._colorTex ~= nil then return "Color-mock" end
+    return nil
+end
 function RegionProto:SetAtlas(a) self._atlas = a; return true end
 function RegionProto:GetAtlas() return self._atlas end
-function RegionProto:SetColorTexture(r, g, b, a) self._colorTex = { r, g, b, a } end
+function RegionProto:SetColorTexture(r, g, b, a) self._colorTex = { r, g, b, a }; self._colorTexture = true end
 function RegionProto:SetVertexColor() end
 function RegionProto:SetDesaturated() end
 function RegionProto:SetBlendMode() end
 function RegionProto:SetTexCoord() end
 function RegionProto:GetTexCoord() return 0, 1, 0, 1 end
 function RegionProto:SetRotation() end
-function RegionProto:SetDrawLayer() end
-function RegionProto:GetDrawLayer() return "ARTWORK", 0 end
+function RegionProto:SetDrawLayer(layer, sub) self._drawLayer = layer or "ARTWORK"; self._drawSublevel = sub or 0 end
+function RegionProto:GetDrawLayer() return self._drawLayer or "ARTWORK", self._drawSublevel or 0 end
 function RegionProto:SetGradient() end
 function RegionProto:SetSnapToPixelGrid() end
 function RegionProto:SetTexelSnappingBias() end
@@ -407,7 +517,13 @@ function RegionProto:SetFont(p, sz, fl) self._font = { p, sz, fl }; return true 
 function RegionProto:GetFont() return self._font[1], self._font[2], self._font[3] end
 function RegionProto:SetFontObject() end
 function RegionProto:GetFontObject() return nil end
-function RegionProto:SetText(t) self._text = t ~= nil and tostring(t) or "" end
+function RegionProto:SetText(t)
+    if _secretSentinels[t] then
+        self._text = t
+    else
+        self._text = t ~= nil and tostring(t) or ""
+    end
+end
 function RegionProto:GetText() return self._text or "" end
 function RegionProto:SetFormattedText(fmt, ...) self._text = string.format(fmt, ...) end
 function RegionProto:SetTextColor() end
@@ -577,9 +693,54 @@ function MainMenuMicroButton_ShowAlert() end
 function SharedTooltip_SetBackdropStyle() end
 function GameTooltip_SetDefaultAnchor() end
 function SetRaidTargetIconTexture() end
+function GroupLootFrame_OpenNewFrame() end
 function GroupLootContainer_AddFrame() end
 function GroupLootContainer_Update() end
 function ConfirmLootRoll() end
+function RollOnLoot() end
+local _activeRolls = {}
+function GetActiveLootRollIDs()
+    local out = {}
+    for id in pairs(_activeRolls) do out[#out + 1] = id end
+    return out
+end
+function GetLootRollItemInfo(id)
+    local r = _activeRolls[id]
+    if not r then return nil end
+    if _secretAPIs.GetLootRollItemInfo then
+        return r.tex or 135489, newSecretSentinel("rollName"), 1, r.quality or 4,
+            newSecretSentinel("rollBoP"), newSecretSentinel("rollNeed"),
+            newSecretSentinel("rollGreed"), newSecretSentinel("rollDisenchant")
+    end
+    return r.tex or 135489, r.name or "测试装备", r.count or 1, r.quality or 4,
+        r.bop == true, r.canNeed ~= false, r.canGreed ~= false, r.canDisenchant == true
+end
+function GetLootRollItemLink(id)
+    local r = _activeRolls[id]
+    return r and r.link or ("|cffa335ee|Hitem:19019::::::::60:::::::|h[" .. tostring(r and r.name or "测试装备") .. "]|h|r")
+end
+function GetLootRollTimeLeft(id)
+    if _secretAPIs.GetLootRollTimeLeft then
+        return newSecretSentinel("rollTimeLeft")
+    end
+    local r = _activeRolls[id]
+    if not r then return 0 end
+    local left = (r.endAt or (_now + 60)) - _now
+    return left > 0 and math.floor(left * 1000) or 0
+end
+function EnumerateFrames(prev)
+    if prev == nil then return _allFrames[1] end
+    for i = 1, #_allFrames do
+        if _allFrames[i] == prev then return _allFrames[i + 1] end
+    end
+    return nil
+end
+function GetMouseFoci() return _mouseFoci end
+function GetMouseFocus() return _mouseFoci[1] end
+C_Secrets = {
+    ShouldAurasBeSecret = function() return _aurasSecret == true end,
+    ShouldSpellAuraBeSecret = function() return _aurasSecret == true end,
+}
 function ChatEdit_InsertLink() return true end
 function SetItemRef() end
 function UseAction() end
@@ -627,18 +788,40 @@ function IsShiftKeyDown() return false end
 function IsControlKeyDown() return false end
 function IsAltKeyDown() return false end
 function GetRealmName() return "TestRealm" end
-function UnitName(u) return u == "player" and "TestPlayer" or nil end
+function UnitName(u)
+    if _zeroReturnAPIs.UnitName then return end
+    if _secretAPIs.UnitName then return newSecretSentinel("UnitName:" .. tostring(u)) end
+    return u == "player" and "TestPlayer" or nil
+end
 function UnitFullName(u) return u == "player" and "TestPlayer" or nil, "TestRealm" end
 function UnitClass(u) return "猎人", "HUNTER", 3 end
 function UnitGUID(u) return u == "player" and "Player-95-00000001" or nil end
 function UnitLevel(u) return 60 end
-function UnitExists(u) return u == "player" end
+function UnitExists(u)
+    if _secretAPIs.UnitExists then return newSecretSentinel("UnitExists:" .. tostring(u)) end
+    return u == "player"
+end
 function UnitIsDeadOrGhost() return false end
-function UnitAffectingCombat() return _inCombat end
-function UnitHealth() return 5000 end
-function UnitHealthMax() return 5000 end
-function UnitPower() return 3000 end
-function UnitPowerMax() return 3000 end
+function UnitAffectingCombat()
+    if _secretAPIs.UnitAffectingCombat then return newSecretSentinel("UnitAffectingCombat") end
+    return _inCombat
+end
+function UnitHealth()
+    if _secretAPIs.UnitHealth then return newSecretSentinel("UnitHealth") end
+    return 5000
+end
+function UnitHealthMax()
+    if _secretAPIs.UnitHealthMax then return newSecretSentinel("UnitHealthMax") end
+    return 5000
+end
+function UnitPower()
+    if _secretAPIs.UnitPower then return newSecretSentinel("UnitPower") end
+    return 3000
+end
+function UnitPowerMax()
+    if _secretAPIs.UnitPowerMax then return newSecretSentinel("UnitPowerMax") end
+    return 3000
+end
 function UnitPowerType() return 0, "MANA" end
 function UnitXP() return 1000 end
 function UnitXPMax() return 10000 end
@@ -648,13 +831,25 @@ function UnitReaction() return 5 end
 function UnitIsPlayer(u) return u == "player" end
 function UnitIsEnemy() return false end
 function UnitIsFriend() return true end
-function UnitCastingInfo() return nil end
-function UnitChannelInfo() return nil end
+function UnitCastingInfo()
+    if _zeroReturnAPIs.UnitCastingInfo then return end
+    if _secretAPIs.UnitCastingInfo then
+        return "稳固射击", "稳固射击", 132213, newSecretSentinel("castStart"), newSecretSentinel("castEnd"), false, newSecretSentinel("castGUID"), false, newSecretSentinel("castSpellID")
+    end
+    return nil
+end
+function UnitChannelInfo()
+    if _zeroReturnAPIs.UnitChannelInfo then return end
+    if _secretAPIs.UnitChannelInfo then
+        return "乱射", "乱射", 132222, newSecretSentinel("chanStart"), newSecretSentinel("chanEnd"), false, false, newSecretSentinel("chanSpellID")
+    end
+    return nil
+end
 function GetRaidTargetIndex() return nil end
 function IsInGroup() return false end
 function IsInRaid() return false end
-function IsInInstance() return false, "none" end
-function GetInstanceInfo() return "Kalimdor", "none", 0, "", 0, 0, false, 1 end
+function IsInInstance() return _inInstance == true, _instanceType or "none" end
+function GetInstanceInfo() return _instanceName or "Kalimdor", _instanceType or "none", 0, "", 0, 0, false, 1 end
 function IsResting() return false end
 function GetZoneText() return "杜隆塔尔" end
 function GetSubZoneText() return "森金村" end
@@ -883,7 +1078,7 @@ EllesmereUI = {
     GetFont = function() return "Fonts\\ARKai_T.ttf" end,
     _plugins = {},
     _ModuleNS = {
-        EllesmereUIChat = { _kkowoFastTab = true, _kkowoFastTabVer = 5 },
+        EllesmereUIChat = { _kkowoFastTab = true, _kkowoFastTabVer = 6 },
         EllesmereUINameplates = {
             plates = {},
             friendlyPlates = {},
@@ -945,6 +1140,44 @@ end
 function M.SetLoDLoader(fn) _lodLoader = fn end
 function M.SetAddonLoaded(name, val) _loadedAddons[name] = val; _addonEnabled[name] = val and 2 or 0 end
 function M.SetInCombat(v) _inCombat = v == true end
+function M.SetInstanceMode(inInst, instType, instName)
+    _inInstance = inInst == true
+    _instanceType = instType or (inInst and "party" or "none")
+    _instanceName = instName or (inInst and "死亡矿井" or "Kalimdor")
+end
+function M.SetAurasSecret(v) _aurasSecret = v == true end
+function M.SetSecretAPIs(map)
+    _secretAPIs = {}
+    if type(map) == "table" then
+        for k, v in pairs(map) do _secretAPIs[k] = v end
+    end
+end
+function M.SetZeroReturnAPIs(map)
+    _zeroReturnAPIs = {}
+    if type(map) == "table" then
+        for k, v in pairs(map) do _zeroReturnAPIs[k] = v end
+    end
+end
+function M.NewSecret(label) return newSecretSentinel(label) end
+function M.SetMouseFoci(list) _mouseFoci = type(list) == "table" and list or {} end
+function M.SetActiveRolls(map)
+    _activeRolls = {}
+    if type(map) == "table" then
+        for k, v in pairs(map) do _activeRolls[k] = v end
+    end
+end
+function M.ResetScenario()
+    _inCombat = false
+    _inInstance = false
+    _instanceType = "none"
+    _instanceName = "Kalimdor"
+    _aurasSecret = false
+    _secretAPIs = {}
+    _zeroReturnAPIs = {}
+    _mouseFoci = {}
+    _activeRolls = {}
+    _protectedViolations = {}
+end
 function M.GetProtectedViolations() return _protectedViolations end
 function M.ClearProtectedViolations() _protectedViolations = {} end
 function M.GetPrints() return _prints end
@@ -956,6 +1189,47 @@ function M.CreateForbiddenPlate()
     local f = CreateFrame("Frame", nil, WorldFrame)
     f._forbidden = true
     return f
+end
+function M.TickOnUpdates(dt)
+    dt = dt or 0.1
+    for i = 1, #_allFrames do
+        local f = _allFrames[i]
+        if f and f._scripts and f._scripts.OnUpdate and f:IsVisible() then
+            f._scripts.OnUpdate(f, dt)
+        end
+    end
+end
+function M.StepTime(totalDt, steps)
+    steps = steps or 1
+    local sub = (totalDt or 0.1) / steps
+    for _ = 1, steps do
+        M.AdvanceTime(sub)
+        M.TickOnUpdates(sub)
+    end
+end
+function M.GetActiveOnUpdates()
+    local out = {}
+    for i = 1, #_allFrames do
+        local f = _allFrames[i]
+        if f and f._scripts and f._scripts.OnUpdate and f:IsVisible() then
+            out[#out + 1] = f._name or ("<anon:" .. tostring(f._type) .. ">")
+        end
+    end
+    return out
+end
+function M.GetActiveTickers()
+    local out = {}
+    for i = 1, #_tickers do
+        if not _tickers[i].cancelled then out[#out + 1] = _tickers[i] end
+    end
+    return out
+end
+function M.GetPendingTimers()
+    local out = {}
+    for i = 1, #_timers do
+        if not _timers[i].cancelled then out[#out + 1] = _timers[i] end
+    end
+    return out
 end
 function M.FireEvent(ev, ...)
     local listeners = _eventListeners[ev]

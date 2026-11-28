@@ -162,7 +162,7 @@ local function GetClassRGB(classToken)
     if type(classToken) == "string" and classToken ~= "" then
         if _G.C_ClassColor and _G.C_ClassColor.GetClassColor then
             local ok, c = pcall(_G.C_ClassColor.GetClassColor, classToken)
-            if ok and c and not F.IsSecret(c) then
+            if ok and not F.IsSecret(c) and c then
                 local r = F.PlainNumber(c.r, nil)
                 local g = F.PlainNumber(c.g, nil)
                 local b = F.PlainNumber(c.b, nil)
@@ -1282,6 +1282,13 @@ local function EnsureContainer()
             end
         end
     end)
+    container:RegisterEvent("PLAYER_REGEN_DISABLED")
+    container:SetScript("OnEvent", function(self)
+        if self._cardDragging then
+            self._cardDragging = false
+            pcall(self.StopMovingOrSizing, self)
+        end
+    end)
 
     F.Mover.Register({
         key = "SoulstoneAlert",
@@ -1292,9 +1299,12 @@ local function EnsureContainer()
         defaultRelPoint = "CENTER",
         defaultX = 0,
         defaultY = 195,
+        allowShiftDrag = false,
         -- 只在真正挂载了监控（术士 / 关闭「仅术士」）或正在预览时出现在解锁模式里，其他职业不显示空移动框
         isHidden = function() return not mod._active or not (eventsBound or #previewEntries > 0) end,
     })
+    container:EnableMouse(false)
+    container:Hide()
 end
 
 local function RoleTag(role)
@@ -1473,12 +1483,14 @@ local function CreateCard()
 
     -- 丝滑出现淡入动画
     local fadeIn = card:CreateAnimationGroup()
+    fadeIn:SetToFinalAlpha(true)
     local fa = fadeIn:CreateAnimation("Alpha")
     fa:SetFromAlpha(0)
     fa:SetToAlpha(1)
     fa:SetDuration(0.20)
     fa:SetSmoothing("OUT")
     fadeIn:SetScript("OnFinished", function() card:SetAlpha(1) end)
+    fadeIn:SetScript("OnStop", function() if card:IsShown() then card:SetAlpha(1) end end)
     card._fadeIn = fadeIn
 
     -- 交互：悬停看详情 / Shift+左键拖动容器 / 右键关闭预览或过期卡片
@@ -1676,9 +1688,8 @@ RenderAll = function()
         if container then
             container:SetFrameStrata("MEDIUM")
             container:SetSize(F.PlainNumber(mod:GetDB().cardWidth, 248), CARD_HEIGHT)
-            if not mod._active then
-                container:Hide()
-            end
+            container:EnableMouse(false)
+            container:Hide()
         end
         return
     end
@@ -1920,6 +1931,7 @@ function mod:TestVoice()
 end
 
 function mod:ShowPreview(mode)
+    if not self._active then return end
     mode = mode or "expiring"
     DismissPreview()
     EnsureContainer()
@@ -2091,8 +2103,8 @@ end
 function mod:OnEnable()
     scanGeneration = scanGeneration + 1
     EnsureContainer()
-    if container then container:Show() end
     SyncEventRegistration()
+    RenderAll()
 end
 
 function mod:OnDisable()
@@ -2110,7 +2122,6 @@ end
 function mod:OnThemeChanged()
     local function restyle(list)
         for _, c in ipairs(list) do
-            F.Theme.StylePanel(c, 0.90, 0.84)
             F.Theme.ApplyFont(c._nameFS, 12, "")
             F.Theme.ApplyFont(c._subFS, 10, "")
             F.Theme.ApplyFont(c._timeFS, 15, "")

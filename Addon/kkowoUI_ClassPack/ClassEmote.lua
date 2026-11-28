@@ -350,18 +350,25 @@ local function FormatTemplate(tpl, ctx)
     return CutUTF8Bytes(Trim(out), 240)
 end
 
+local function SafeBoolCall(fn, ...)
+    if type(fn) ~= "function" then return false end
+    local ok, v = pcall(fn, ...)
+    return ok and not F.IsSecret(v) and v == true
+end
+
 local function IsInCombatInstance()
-    if not _G.GetInstanceInfo then return false end
-    local _, iType = _G.GetInstanceInfo()
+    if type(_G.GetInstanceInfo) ~= "function" then return false end
+    local ok, _, iType = pcall(_G.GetInstanceInfo)
+    iType = ok and F.PlainString(iType, nil) or nil
     return iType == "party" or iType == "raid" or iType == "scenario" or iType == "arena" or iType == "pvp"
 end
 
 local function ResolveGroupChannel()
-    if not (_G.IsInGroup and _G.IsInGroup()) then return nil end
+    if not SafeBoolCall(_G.IsInGroup) then return nil end
     local instCat = _G.LE_PARTY_CATEGORY_INSTANCE
-    if instCat and _G.IsInGroup(instCat) then
+    if instCat and SafeBoolCall(_G.IsInGroup, instCat) then
         return "INSTANCE_CHAT"
-    elseif _G.IsInRaid and _G.IsInRaid() then
+    elseif SafeBoolCall(_G.IsInRaid) then
         return "RAID"
     end
     return "PARTY"
@@ -460,7 +467,7 @@ local function OnPlayerAuraChanged()
         wasDrinking = false
         return
     end
-    if (_G.InCombatLockdown and _G.InCombatLockdown()) or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player")) then
+    if (_G.InCombatLockdown and _G.InCombatLockdown()) or SafeBoolCall(_G.UnitAffectingCombat, "player") then
         wasDrinking = false
         return
     end
@@ -686,6 +693,7 @@ local function OpenTextEditor(catKey)
         boxHost:EnableMouse(true)
         boxHost:SetScript("OnMouseDown", function() eb:SetFocus() end)
         f:SetScript("OnHide", function()
+            pcall(f.StopMovingOrSizing, f)
             if eb.ClearFocus then eb:ClearFocus() end
         end)
         f._eb = eb
@@ -772,6 +780,11 @@ function mod:OnEnable()
     self:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player", OnPlayerSpellSent)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         wasDrinking = false
+    end)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        if editorFrame and editorFrame.StopMovingOrSizing then
+            pcall(editorFrame.StopMovingOrSizing, editorFrame)
+        end
     end)
 end
 

@@ -163,7 +163,7 @@ _G.SlashCmdList.KKOWOUI = function(msg)
     if cmd == "" then
         local EUI = _G.EllesmereUI
         if EUI and EUI.OpenPlugin then
-            EUI.OpenPlugin(F.NAME)
+            pcall(EUI.OpenPlugin, F.NAME)
             return
         end
     end

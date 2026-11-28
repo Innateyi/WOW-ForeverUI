@@ -731,10 +731,21 @@ local function SkinVehicleLeaveButton()
     -- （真实载具/攻城车或飞行途中重载导致飞行条未显示时，仍自动保留本按钮）
     if ShouldHideVehicleLeaveForFlight(SkinVehicleLeaveButton) then
         vehFlightSuppressed = true
-        pcall(btn.SetAlpha, btn, 0)
-        sk:Hide()
         if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+            pcall(btn.SetAlpha, btn, 0)
+            sk:Hide()
             pcall(btn.EnableMouse, btn, false)
+        else
+            -- 战斗中不可改受保护按钮 EnableMouse：延后至脱战再同步隐藏，绝不留下 alpha=0 且可点击的透明挡块（P3-10）
+            F.RunOutOfCombat("FUI_VehLeaveMouse", function()
+                local b = _G.MainMenuBarVehicleLeaveButton
+                if b and vehFlightSuppressed then
+                    pcall(b.SetAlpha, b, 0)
+                    pcall(b.EnableMouse, b, false)
+                    local s = hudSkins[b]
+                    if s then s:Hide() end
+                end
+            end)
         end
     else
         RestoreVehicleLeaveVisibility(btn)
@@ -903,19 +914,35 @@ local function StripZoneAbilityStyle()
     end
 end
 
+local function SetDurabilityMouseSafe(df, enable)
+    if not df or (df.IsForbidden and df:IsForbidden()) then return end
+    if _G.InCombatLockdown and _G.InCombatLockdown() then
+        F.RunOutOfCombat("FUI_BlizzDurability", function()
+            local cur = _G.DurabilityFrame
+            if not cur or (cur.IsForbidden and cur:IsForbidden()) then return end
+            local wantHideNow = mod._active and (mod:GetDB().hideBlizzDurability ~= false)
+            if cur.EnableMouse then pcall(cur.EnableMouse, cur, not wantHideNow) end
+            pcall(cur.SetAlpha, cur, wantHideNow and 0 or 1)
+        end)
+    else
+        if df.EnableMouse then pcall(df.EnableMouse, df, enable) end
+        pcall(df.SetAlpha, df, enable and 1 or 0)
+    end
+end
+
 local function ApplyBlizzDurabilityVisibility()
     local df = _G.DurabilityFrame
-    if not df then return end
+    if not df or (df.IsForbidden and df:IsForbidden()) then return end
     local wantHide = mod._active and (mod:GetDB().hideBlizzDurability ~= false)
     if not hudHooked[df] then
         hudHooked[df] = true
         df:HookScript("OnShow", function(self)
             if mod._active and mod:GetDB().hideBlizzDurability ~= false then
-                self:SetAlpha(0)
+                SetDurabilityMouseSafe(self, false)
             end
         end)
     end
-    df:SetAlpha(wantHide and 0 or 1)
+    SetDurabilityMouseSafe(df, not wantHide)
 end
 
 local function ApplyEUIBuiltinHUDSkinsOnce()
@@ -1023,6 +1050,7 @@ local function ApplyQuestieTownsfolkDedup(forceFlush)
     if not (mod._active and mod:GetDB().dedupMinimapNPC ~= false) then return end
     if not (F.IsAddOnLoaded("Polestar") and F.IsAddOnLoaded("Questie")) then return end
 
+    local db = mod:GetDB()
     local pDB = _G.PolestarDB
     if type(pDB) == "table" and type(pDB.settings) == "table" then
         pDB.settings.maps = type(pDB.settings.maps) == "table" and pDB.settings.maps or {}
@@ -1037,6 +1065,20 @@ local function ApplyQuestieTownsfolkDedup(forceFlush)
     local q = _G.Questie
     local qProf = q and q.db and q.db.profile
     if type(qProf) ~= "table" then return end
+
+    -- 首次接管前备份 Questie 原设置，关闭去重或停用模块时无损还原（P3-14）
+    if type(db.savedQuestieTownsfolk) ~= "table" then
+        local snap = {
+            knownProf = qProf.townsfolkKnownProfessions,
+            cfg = {},
+        }
+        if type(qProf.townsfolkConfig) == "table" then
+            for k, v in pairs(qProf.townsfolkConfig) do
+                snap.cfg[k] = v
+            end
+        end
+        db.savedQuestieTownsfolk = snap
+    end
 
     local changed = false
     if qProf.townsfolkKnownProfessions == true then
@@ -1072,6 +1114,31 @@ local function ApplyQuestieTownsfolkDedup(forceFlush)
             if type(qMenu.RefreshKnownProfessionTrainers) == "function" then
                 pcall(qMenu.RefreshKnownProfessionTrainers)
             end
+        end
+    end
+end
+
+local function RestoreQuestieTownsfolkDedup()
+    local db = mod:GetDB()
+    local snap = type(db.savedQuestieTownsfolk) == "table" and db.savedQuestieTownsfolk or nil
+    if not snap then return end
+    local q = _G.Questie
+    local qProf = q and q.db and q.db.profile
+    if type(qProf) ~= "table" then return end
+    qProf.townsfolkKnownProfessions = snap.knownProf
+    if type(snap.cfg) == "table" then
+        qProf.townsfolkConfig = type(qProf.townsfolkConfig) == "table" and qProf.townsfolkConfig or {}
+        for k, v in pairs(snap.cfg) do
+            qProf.townsfolkConfig[k] = v
+        end
+    end
+    db.savedQuestieTownsfolk = nil
+    questieDedupSwept = false
+    if _G.QuestieLoader and _G.QuestieLoader.ImportModule then
+        local okM, qMenu = pcall(_G.QuestieLoader.ImportModule, _G.QuestieLoader, "QuestieMenu")
+        if okM and type(qMenu) == "table" then
+            if type(qMenu.OnLogin) == "function" then pcall(qMenu.OnLogin, qMenu, true) end
+            if type(qMenu.RefreshKnownProfessionTrainers) == "function" then pcall(qMenu.RefreshKnownProfessionTrainers) end
         end
     end
 end
@@ -1158,4 +1225,5 @@ MC.ApplyBlizzDurabilityVisibility = ApplyBlizzDurabilityVisibility
 MC.ApplyEUIBuiltinHUDSkinsOnce = ApplyEUIBuiltinHUDSkinsOnce
 MC.ApplyFlightTimerDedup = ApplyFlightTimerDedup
 MC.ApplyQuestieTownsfolkDedup = ApplyQuestieTownsfolkDedup
+MC.RestoreQuestieTownsfolkDedup = RestoreQuestieTownsfolkDedup
 MC.RefreshHDPetHappiness = RefreshHDPetHappiness

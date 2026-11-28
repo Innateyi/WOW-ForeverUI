@@ -128,6 +128,10 @@ end
 
 function M.AttachHealthTrail(healthBar, opts)
     if not (healthBar and healthBar.GetStatusBarTexture) then return nil end
+    if healthBar.IsForbidden then
+        local okF, forb = pcall(healthBar.IsForbidden, healthBar)
+        if not okF or forb then return nil end
+    end
     opts = opts or {}
     local existing = trailRegistry[healthBar]
     if existing then
@@ -469,6 +473,9 @@ function M.PlayFlashFade(frame, duration, liftY, onDone)
             frame:SetAlpha(1)
             if self._onDone then self._onDone() end
         end)
+        ag:SetScript("OnStop", function()
+            frame:SetAlpha(1)
+        end)
         cache.flashFade = ag
     end
     local dur = duration or 0.22
@@ -505,6 +512,9 @@ function M.PlayInterruptShake(frame, amplitude, duration, onDone)
             frame:Hide()
             frame:SetAlpha(1)
             if self._onDone then self._onDone() end
+        end)
+        ag:SetScript("OnStop", function()
+            frame:SetAlpha(1)
         end)
         cache.shake = ag
     end

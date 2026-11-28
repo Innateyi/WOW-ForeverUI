@@ -16,7 +16,9 @@
 import os
 import re
 import shutil
+import subprocess
 import sys
+import time
 
 WOW_ROOT = os.environ.get('WOW_FOREVER_DIR', r'E:\Program Files\World of Warcraft\_forever_')
 DEFAULT_DIR = os.path.join(WOW_ROOT, 'Interface', 'AddOns', 'Polestar')
@@ -24,8 +26,21 @@ BACKUP_ROOT = os.environ.get(
     'WOW_BACKUP_ROOT',
     os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'backups')),
 )
-MARK = '[kkowo-polestar-nav v2]'
-OLD_MARKS = ('[kkowo-polestar-nav v1]',)
+MARK = '[kkowo-polestar-nav v3]'
+OLD_MARKS = ('[kkowo-polestar-nav v1]', '[kkowo-polestar-nav v2]')
+
+
+def wow_running():
+    try:
+        r = subprocess.run(
+            ['tasklist', '/FI', 'IMAGENAME eq Wow.exe'],
+            capture_output=True, text=True, encoding='mbcs', errors='replace', timeout=10,
+        )
+        if r.returncode != 0:
+            return True
+        return 'Wow.exe' in r.stdout
+    except Exception:
+        return True
 
 FILE_PATCHES = [
     (
@@ -33,7 +48,7 @@ FILE_PATCHES = [
         [
             (
                 '## Title: Polestar\n',
-                '# [kkowo-polestar-nav v2]\n## Title: Polestar by kkowo\n',
+                '# [kkowo-polestar-nav v3]\n## Title: Polestar by kkowo\n',
             ),
             (
                 '## Title-zhCN: Polestar\n',
@@ -55,19 +70,19 @@ local ASK_EVERY = 2         -- seconds between asks for the same goal
 local ASK_FAR, ASK_FAR_EVERY = 2000, 10 -- yards left along the path past which a stray is asked again at most this often
 local GOAL_MOVED = 1        -- yards: the goal is another one
 local FAIL_RETRY, FAIL_MOVED, FAIL_AGAIN = 15, 5, 2 -- a failed search is asked again this late, this far away; a refusal for no policy reason once this soon''',
-                '''local STRAY = 18            -- [kkowo-polestar-nav v2] yards off the path: ask again (原 25)
-local JOIN = 30             -- [kkowo-polestar-nav v2] yards from a path's start (原 50，避免斜穿山坡)
-local ASK_EVERY = 1.0       -- [kkowo-polestar-nav v2] seconds between asks for the same goal (原 2)
-local ASK_FAR, ASK_FAR_EVERY = 2000, 2.5 -- [kkowo-polestar-nav v2] 长路偏离后最快 2.5s 重算（原 10s）
+                '''local STRAY = 18            -- [kkowo-polestar-nav v3] yards off the path: ask again (原 25)
+local JOIN = 30             -- [kkowo-polestar-nav v3] yards from a path's start (原 50，避免斜穿山坡)
+local ASK_EVERY = 1.0       -- [kkowo-polestar-nav v3] seconds between asks for the same goal (原 2)
+local ASK_FAR, ASK_FAR_EVERY = 2000, 2.5 -- [kkowo-polestar-nav v3] 长路偏离后最快 2.5s 重算（原 10s）
 local GOAL_MOVED = 1        -- yards: the goal is another one
-local FAIL_RETRY, FAIL_MOVED, FAIL_AGAIN = 4, 4, 1.5 -- [kkowo-polestar-nav v2] 寻路失败后更快重试（原 15, 5, 2）''',
+local FAIL_RETRY, FAIL_MOVED, FAIL_AGAIN = 4, 4, 1.5 -- [kkowo-polestar-nav v3] 寻路失败后更快重试（原 15, 5, 2）''',
             ),
             (
                 '''\tlocal every = lastLeft > ASK_FAR and ASK_FAR_EVERY or ASK_EVERY
 \tif fstate.off > STRAY and not fstate.sighted and token == nil and not wanted and GetTime() - askedAt >= every then ask(P, pc, px, py) end
 \treturn pc, ax, ay, lastLeft''',
                 '''\tlocal every = lastLeft > ASK_FAR and ASK_FAR_EVERY or ASK_EVERY
-\t-- [kkowo-polestar-nav v1] 偏离超过 32 码时无视 fstate.sighted 强制重算，走上正确山路后立刻贴合新路线
+\t-- [kkowo-polestar-nav v3] 偏离超过 32 码时无视 fstate.sighted 强制重算，走上正确山路后立刻贴合新路线
 \tif (fstate.off > 32 or (fstate.off > STRAY and not fstate.sighted)) and token == nil and not wanted and GetTime() - askedAt >= every then ask(P, pc, px, py) end
 \treturn pc, ax, ay, lastLeft''',
             ),
@@ -79,20 +94,20 @@ local FAIL_RETRY, FAIL_MOVED, FAIL_AGAIN = 4, 4, 1.5 -- [kkowo-polestar-nav v2] 
             (
                 '''local PAD = 20         -- yards: path points this close to the line to the aim lie on the way (a road's wiggles)
 local CORNER_PAD = 10  -- yards: how far the aim may cut inside a real corner''',
-                '''local PAD = 12         -- [kkowo-polestar-nav v2] 收紧道路走廊容差（原 20），减少山路切弯
-local CORNER_PAD = 6   -- [kkowo-polestar-nav v2] 减少拐角内切（原 10）''',
+                '''local PAD = 12         -- [kkowo-polestar-nav v3] 收紧道路走廊容差（原 20），减少山路切弯
+local CORNER_PAD = 6   -- [kkowo-polestar-nav v3] 减少拐角内切（原 10）''',
             ),
             (
                 '''local OPEN = 100       -- yards beside the path the player may run with the arrow aiming ahead by sight (open ground)
 local SIGHT_AHEAD = 150 -- yards along the path past the projection the sight aim may lie''',
-                '''local OPEN = 45        -- [kkowo-polestar-nav v1] 缩小允许离路直瞄的范围（原 100），避免走上另一条路不重算
-local SIGHT_AHEAD = 75 -- [kkowo-polestar-nav v1] 缩短直线前瞻距离（原 150），贴合弯道与山路''',
+                '''local OPEN = 45        -- [kkowo-polestar-nav v3] 缩小允许离路直瞄的范围（原 100），避免走上另一条路不重算
+local SIGHT_AHEAD = 75 -- [kkowo-polestar-nav v3] 缩短直线前瞻距离（原 150），贴合弯道与山路''',
             ),
             (
                 '''local LOOK_AHEAD = 40  -- yards along the path the aim may lie ahead on it, at a point the player can walk to straight (open ground)
 local SMOOTH_SPAN = 150 -- yards: the longest straightened line''',
-                '''local LOOK_AHEAD = 32  -- [kkowo-polestar-nav v1] 路上直线前瞻（原 40）
-local SMOOTH_SPAN = 65 -- [kkowo-polestar-nav v1] 限制路径拉直跨度（原 150），保留山路与盘山拐弯''',
+                '''local LOOK_AHEAD = 32  -- [kkowo-polestar-nav v3] 路上直线前瞻（原 40）
+local SMOOTH_SPAN = 65 -- [kkowo-polestar-nav v3] 限制路径拉直跨度（原 150），保留山路与盘山拐弯''',
             ),
         ],
     ),
@@ -107,13 +122,13 @@ local SMOOTH_SPAN = 65 -- [kkowo-polestar-nav v1] 限制路径拉直跨度（原
 \tABOVE = 1, -- levels above the player a spot's mobs may be
 \tDWELL = 7, -- seconds in a place with no progress before the arrow moves on
 \tSTILL = 10, -- yards the player may move while a dwell is counted''',
-                '''ns._kkowoNavOpt = true -- [kkowo-polestar-nav v2]
+                '''ns._kkowoNavOpt = true -- [kkowo-polestar-nav v3]
 local Spots = {
-\tSWITCH = 25, -- [kkowo-polestar-nav v2] yards (原 40，更灵敏切换就近怪区)
+\tSWITCH = 25, -- [kkowo-polestar-nav v3] yards (原 40，更灵敏切换就近怪区)
 \tLEAVE = 4, -- yards past the arrival radius
-\tFORGET = 90, -- [kkowo-polestar-nav v2] seconds (原 300，缩短拉黑时长)
-\tABOVE = 3, -- [kkowo-polestar-nav v2] levels (原 1，避免怪高 2 级就跳过脚下怪区)
-\tDWELL = 20, -- [kkowo-polestar-nav v2] seconds (原 7，避免喝水/找怪/等刷新 7 秒被踢去别区)
+\tFORGET = 90, -- [kkowo-polestar-nav v3] seconds (原 300，缩短拉黑时长)
+\tABOVE = 3, -- [kkowo-polestar-nav v3] levels (原 1，避免怪高 2 级就跳过脚下怪区)
+\tDWELL = 20, -- [kkowo-polestar-nav v3] seconds (原 7，避免喝水/找怪/等刷新 7 秒被踢去别区)
 \tSTILL = 10, -- yards the player may move while a dwell is counted''',
             ),
             (
@@ -142,6 +157,105 @@ local Spots = {
 \t\tif not (moveOn and s == cur) and (manual or not s.alt) and not (cap and (s.lvl or lvl or 0) > cap) then''',
                 '''\tlocal function fresh(s)
 \t\tif Spots.isLeft(goal, s, now) then return false end
+\t\t-- [kkowo-polestar-nav v3] 仅对 spread 巡逻搜索点按 workedNear 跳过；普通刷怪营地刚打过怪说明此地有怪，不拉黑
+\t\tif spread and not exact and Own.workedNear(goal, s, now) then
+\t\t\tlocal d = not moveOn and c and Spots.edge(goal, s, c, px, py)
+\t\t\tif not (d and d <= reach + Spots.SWITCH) then return false end
+\t\tend
+\t\tlocal t = (spread or moveOn) and Spots.seen[s]
+\t\tif not t or now - t > Spots.FORGET then return true end
+\t\tif moveOn or not c or exact then return false end
+\t\tlocal d = Spots.edge(goal, s, c, px, py)
+\t\treturn d ~= nil and d <= reach
+\tend
+\t-- Nearest fresh spot (unknown distances rank after known ones, in order
+\t-- from the current spot); with none fresh, the one visited longest ago.
+\tlocal at = 0
+\tfor i, s in ipairs(spots) do
+\t\tif s == cur then at = i end
+\tend
+\tlocal best, bestKey, old, oldT
+\tfor i, s in ipairs(spots) do
+\t\t-- [kkowo-polestar-nav v3] 玩家正位于或紧邻备选怪区（alt，<= 48 码）时纳入自动候选，不再硬拖去远处主点
+\t\tlocal altNear = s.alt and not moveOn and c and (Spots.edge(goal, s, c, px, py) or 1e9) <= reach + 40
+\t\tif not (moveOn and s == cur) and (manual or not s.alt or altNear) and not (cap and (s.lvl or lvl or 0) > cap) then''',
+            ),
+            (
+                '''\tif Own.workedNear(goal, place, now) then return false end
+\tif now - st.since < Spots.DWELL then return false end
+\tSpots.left[place], Spots.seen[place] = now, now''',
+                '''\tif Own.workedNear(goal, place, now) then return false end
+\t-- [kkowo-polestar-nav v3] 周围视野/目标存在存活任务怪时重置停留计时，绝不把玩家从怪堆里赶走
+\tif type(_G.kkowoUI_PolestarHasNearbyQuestMob) == "function" then
+\t\tlocal okNear, hasMob = pcall(_G.kkowoUI_PolestarHasNearbyQuestMob, goal)
+\t\tif okNear and not (issecretvalue and issecretvalue(hasMob)) and hasMob == true then
+\t\t\tst.since, st.x, st.y = now, px, py
+\t\t\treturn false
+\t\tend
+\tend
+\tif now - st.since < Spots.DWELL then return false end
+\tSpots.left[place], Spots.seen[place] = now, now''',
+            ),
+        ],
+    ),
+]
+
+
+# 支持从 v2 原地无损升级至 v3（清理残留 v1/v2 注释并加入 12.x issecretvalue 守卫）
+V2_UPGRADES = {
+    'Polestar.toc': [
+        ('# [kkowo-polestar-nav v2]\n## Title: Polestar by kkowo\n', '# [kkowo-polestar-nav v3]\n## Title: Polestar by kkowo\n'),
+    ],
+    'Nav/Walk.lua': [
+        (
+            '''local STRAY = 18            -- [kkowo-polestar-nav v2] yards off the path: ask again (原 25)
+local JOIN = 30             -- [kkowo-polestar-nav v2] yards from a path's start (原 50，避免斜穿山坡)
+local ASK_EVERY = 1.0       -- [kkowo-polestar-nav v2] seconds between asks for the same goal (原 2)
+local ASK_FAR, ASK_FAR_EVERY = 2000, 2.5 -- [kkowo-polestar-nav v2] 长路偏离后最快 2.5s 重算（原 10s）
+local GOAL_MOVED = 1        -- yards: the goal is another one
+local FAIL_RETRY, FAIL_MOVED, FAIL_AGAIN = 4, 4, 1.5 -- [kkowo-polestar-nav v2] 寻路失败后更快重试（原 15, 5, 2）''',
+            FILE_PATCHES[1][1][0][1],
+        ),
+        (
+            '''\tlocal every = lastLeft > ASK_FAR and ASK_FAR_EVERY or ASK_EVERY
+\t-- [kkowo-polestar-nav v1] 偏离超过 32 码时无视 fstate.sighted 强制重算，走上正确山路后立刻贴合新路线
+\tif (fstate.off > 32 or (fstate.off > STRAY and not fstate.sighted)) and token == nil and not wanted and GetTime() - askedAt >= every then ask(P, pc, px, py) end
+\treturn pc, ax, ay, lastLeft''',
+            FILE_PATCHES[1][1][1][1],
+        ),
+    ],
+    'Nav/Follow.lua': [
+        (
+            '''local PAD = 12         -- [kkowo-polestar-nav v2] 收紧道路走廊容差（原 20），减少山路切弯
+local CORNER_PAD = 6   -- [kkowo-polestar-nav v2] 减少拐角内切（原 10）''',
+            FILE_PATCHES[2][1][0][1],
+        ),
+        (
+            '''local OPEN = 45        -- [kkowo-polestar-nav v1] 缩小允许离路直瞄的范围（原 100），避免走上另一条路不重算
+local SIGHT_AHEAD = 75 -- [kkowo-polestar-nav v1] 缩短直线前瞻距离（原 150），贴合弯道与山路''',
+            FILE_PATCHES[2][1][1][1],
+        ),
+        (
+            '''local LOOK_AHEAD = 32  -- [kkowo-polestar-nav v1] 路上直线前瞻（原 40）
+local SMOOTH_SPAN = 65 -- [kkowo-polestar-nav v1] 限制路径拉直跨度（原 150），保留山路与盘山拐弯''',
+            FILE_PATCHES[2][1][2][1],
+        ),
+    ],
+    'Core/Engine.lua': [
+        (
+            '''ns._kkowoNavOpt = true -- [kkowo-polestar-nav v2]
+local Spots = {
+\tSWITCH = 25, -- [kkowo-polestar-nav v2] yards (原 40，更灵敏切换就近怪区)
+\tLEAVE = 4, -- yards past the arrival radius
+\tFORGET = 90, -- [kkowo-polestar-nav v2] seconds (原 300，缩短拉黑时长)
+\tABOVE = 3, -- [kkowo-polestar-nav v2] levels (原 1，避免怪高 2 级就跳过脚下怪区)
+\tDWELL = 20, -- [kkowo-polestar-nav v2] seconds (原 7，避免喝水/找怪/等刷新 7 秒被踢去别区)
+\tSTILL = 10, -- yards the player may move while a dwell is counted''',
+            FILE_PATCHES[3][1][0][1],
+        ),
+        (
+            '''\tlocal function fresh(s)
+\t\tif Spots.isLeft(goal, s, now) then return false end
 \t\t-- [kkowo-polestar-nav v1] 仅对 spread 巡逻搜索点按 workedNear 跳过；普通刷怪营地刚打过怪说明此地有怪，不拉黑
 \t\tif spread and not exact and Own.workedNear(goal, s, now) then
 \t\t\tlocal d = not moveOn and c and Spots.edge(goal, s, c, px, py)
@@ -164,12 +278,10 @@ local Spots = {
 \t\t-- [kkowo-polestar-nav v1] 玩家正位于或紧邻备选怪区（alt，<= 48 码）时纳入自动候选，不再硬拖去远处主点
 \t\tlocal altNear = s.alt and not moveOn and c and (Spots.edge(goal, s, c, px, py) or 1e9) <= reach + 40
 \t\tif not (moveOn and s == cur) and (manual or not s.alt or altNear) and not (cap and (s.lvl or lvl or 0) > cap) then''',
-            ),
-            (
-                '''\tif Own.workedNear(goal, place, now) then return false end
-\tif now - st.since < Spots.DWELL then return false end
-\tSpots.left[place], Spots.seen[place] = now, now''',
-                '''\tif Own.workedNear(goal, place, now) then return false end
+            FILE_PATCHES[3][1][1][1],
+        ),
+        (
+            '''\tif Own.workedNear(goal, place, now) then return false end
 \t-- [kkowo-polestar-nav v1] 周围视野/目标存在存活任务怪时重置停留计时，绝不把玩家从怪堆里赶走
 \tif type(_G.kkowoUI_PolestarHasNearbyQuestMob) == "function" then
 \t\tlocal okNear, hasMob = pcall(_G.kkowoUI_PolestarHasNearbyQuestMob, goal)
@@ -180,10 +292,10 @@ local Spots = {
 \tend
 \tif now - st.since < Spots.DWELL then return false end
 \tSpots.left[place], Spots.seen[place] = now, now''',
-            ),
-        ],
-    ),
-]
+            FILE_PATCHES[3][1][2][1],
+        ),
+    ],
+}
 
 
 def get_version(root):
@@ -191,7 +303,7 @@ def get_version(root):
         if n.endswith('.toc'):
             m = re.search(
                 r'^## Version:\s*(\S+)',
-                open(os.path.join(root, n), encoding='utf-8', errors='replace').read(),
+                open(os.path.join(root, n), encoding='utf-8-sig', errors='replace').read(),
                 re.M,
             )
             if m:
@@ -200,11 +312,23 @@ def get_version(root):
 
 
 def read_text(path):
-    raw = open(path, 'rb').read().decode('utf-8')
-    return raw.replace('\r\n', '\n'), '\r\n' in raw
+    raw_bytes = open(path, 'rb').read()
+    has_bom = raw_bytes.startswith(b'\xef\xbb\xbf')
+    raw = raw_bytes.decode('utf-8-sig')
+    return raw.replace('\r\n', '\n'), '\r\n' in raw, has_bom
 
 
-def run(addon_dir=DEFAULT_DIR, check_only=False):
+def write_text(path, text, crlf, has_bom):
+    out = text.replace('\n', '\r\n') if crlf else text
+    data = out.encode('utf-8')
+    if has_bom:
+        data = b'\xef\xbb\xbf' + data
+    open(path, 'wb').write(data)
+
+
+def run(addon_dir=None, check_only=False):
+    if addon_dir is None:
+        addon_dir = os.path.join(os.environ.get('WOW_FOREVER_DIR', WOW_ROOT), 'Interface', 'AddOns', 'Polestar')
     if not os.path.isdir(addon_dir):
         return ('MISSING', f'未找到目录: {addon_dir}')
     ver = get_version(addon_dir)
@@ -216,36 +340,48 @@ def run(addon_dir=DEFAULT_DIR, check_only=False):
         path = os.path.join(addon_dir, *rel.split('/'))
         if not os.path.exists(path):
             return ('MISSING', f'缺少文件: {rel} (v{ver})')
-        text, crlf = read_text(path)
-        if MARK in text:
+        text, crlf, has_bom = read_text(path)
+        if all(new in text for _, new in hunks) and not any(m in text for m in OLD_MARKS):
             already += 1
             continue
-        if any(m in text for m in OLD_MARKS):
+        if MARK in text or any(m in text for m in OLD_MARKS):
             src = os.path.join(bdir, *rel.split('/'))
             if os.path.exists(src):
-                text, crlf = read_text(src)
+                text, crlf, has_bom = read_text(src)
             else:
+                up = V2_UPGRADES.get(rel)
+                if up and all(text.count(o) == 1 for o, _ in up):
+                    for o, n in up:
+                        text = text.replace(o, n, 1)
+                    if all(new in text for _, new in hunks) and not any(m in text for m in OLD_MARKS):
+                        pending_writes.append((rel, path, text, crlf, has_bom))
+                        continue
                 return ('APPLIED_LEGACY', f'{rel} 已含旧版补丁 (v{ver})；下次 Polestar 更新后自动应用新版 {MARK}')
         for idx, (old, new) in enumerate(hunks, 1):
             cnt = text.count(old)
             if cnt != 1:
                 return ('ANCHOR_MISMATCH', f'{rel} 第 {idx} 段锚点匹配数={cnt}（Polestar 可能已更新）')
             text = text.replace(old, new)
-        pending_writes.append((rel, path, text, crlf))
+        pending_writes.append((rel, path, text, crlf, has_bom))
 
     if not pending_writes:
         return ('APPLIED', f'已应用 {MARK} ({already}/{len(FILE_PATCHES)} 个文件, v{ver})')
     if check_only:
         return ('READY', f'可安全应用 {MARK} ({len(pending_writes)}/{len(FILE_PATCHES)} 个文件待打, v{ver})')
 
-    for rel, path, text, crlf in pending_writes:
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    snap_dir = os.path.join(BACKUP_ROOT, f'Polestar_{ver}_补丁前_{stamp}')
+    for rel, path, text, crlf, has_bom in pending_writes:
         dst = os.path.join(bdir, *rel.split('/'))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        cur, _ = read_text(path)
+        cur, _, _ = read_text(path)
         if not os.path.exists(dst) and MARK not in cur and not any(m in cur for m in OLD_MARKS):
             shutil.copy2(path, dst)
-        out = text.replace('\n', '\r\n') if crlf else text
-        open(path, 'wb').write(out.encode('utf-8'))
+        else:
+            s_dst = os.path.join(snap_dir, *rel.split('/'))
+            os.makedirs(os.path.dirname(s_dst), exist_ok=True)
+            shutil.copy2(path, s_dst)
+        write_text(path, text, crlf, has_bom)
     return ('PATCHED', f'已成功打补丁 {MARK} ({len(pending_writes)} 个文件, v{ver})')
 
 
@@ -254,6 +390,9 @@ if __name__ == '__main__':
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     chk = '--check' in sys.argv
     args = [a for a in sys.argv[1:] if a != '--check']
-    status, msg = run(args[0] if args else DEFAULT_DIR, check_only=chk)
+    if not chk and wow_running():
+        print('[polestar_nav_optimize] GAME_RUNNING: 魔兽世界正在运行，请完全退出游戏后再打补丁。')
+        sys.exit(2)
+    status, msg = run(args[0] if args else None, check_only=chk)
     print(f'[polestar_nav_optimize] {status}: {msg}')
     sys.exit(0 if status in ('APPLIED', 'READY', 'PATCHED') else 1)

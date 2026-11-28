@@ -19,6 +19,8 @@ local ST = F.StyleTokens
 local M = F.Motion
 local mod = CH.mod
 local CreateWingBar = CH.CreateWingBar
+local DEBUFF_TYPE_COLORS = CH.DEBUFF_TYPE_COLORS
+local UnitExistsSafe = CH.UnitExistsSafe
 
 ----------------------------------------------------------------------
 --  2) 独立宠物圆角框体（PetHUD）+ 猎人快乐度悬停提示与安全喂食网格菜单
@@ -130,15 +132,22 @@ local function ShowPetIconTooltip(anchor)
 end
 
 local function HidePetFeedMenu()
-    if petFeedCloseFrame then
-        petFeedCloseFrame:UnregisterAllEvents()
+    if not (petFeedMenu and petFeedMenu:IsShown()) then
+        if petFeedCloseFrame then
+            petFeedCloseFrame:UnregisterAllEvents()
+        end
+        return
     end
-    if not (petFeedMenu and petFeedMenu:IsShown()) then return end
     if InCombatLockdown and InCombatLockdown() then
+        -- 战斗中延迟关闭：保留事件监听，待脱战真正隐藏后由 OnHide 注销（P3-03）
         F.CombatDefer("kkowoUI_PetFeedHide", function()
             if petFeedMenu then petFeedMenu:Hide() end
+            if petFeedCloseFrame then petFeedCloseFrame:UnregisterAllEvents() end
         end)
         return
+    end
+    if petFeedCloseFrame then
+        petFeedCloseFrame:UnregisterAllEvents()
     end
     petFeedMenu:Hide()
 end
@@ -238,6 +247,9 @@ local function EnsurePetFeedMenu()
     end
 
     m:Hide()
+    if type(_G.RegisterStateDriver) == "function" then
+        pcall(_G.RegisterStateDriver, m, "visibility", "[combat] hide")
+    end
     petFeedMenu = m
     return m
 end
@@ -489,8 +501,10 @@ local function BuildPetHUD()
         defaultRelPoint = "CENTER",
         defaultX = -270,
         defaultY = -241,
+        allowShiftDrag = false,
         isHidden = function() return not (mod._active and mod:GetDB().showPetFrame ~= false and _G.UnitExists and _G.UnitExists("pet")) end,
     })
+    f:EnableMouse(false)
 
     f:Hide()
     CH.petFrame = f
@@ -585,6 +599,14 @@ local function BuildTopTargetHUD()
     totBar:Hide()
     f._totBar = totBar
 
+    -- 目标增益/减益容器（挂在蓝条正下方，宽度与血蓝条 256px 对齐，绝不与右侧头像或目标的目标重叠）
+    local auraHost = CreateFrame("Frame", nil, f)
+    auraHost:SetPoint("TOPLEFT", ppBar, "BOTTOMLEFT", 0, -6)
+    auraHost:SetSize(256, 52)
+    auraHost:SetFrameLevel(hpBar:GetFrameLevel() + 2)
+    auraHost:EnableMouse(false)
+    f._auraHost = auraHost
+
     F.Mover.Register({
         key = "TopTargetHUD",
         label = "顶部极简目标条",
@@ -594,14 +616,624 @@ local function BuildTopTargetHUD()
         defaultRelPoint = "TOP",
         defaultX = 0,
         defaultY = -88,
+        allowShiftDrag = false,
         isHidden = function() return not (mod._active and mod:GetDB().enableTopTarget ~= false) end,
     })
+    f:EnableMouse(false)
 
     f:Hide()
     CH.topTargetFrame = f
+end
+
+----------------------------------------------------------------------
+--  3b) 目标增益与减益图标系统（支持怪物、友方/敌对玩家、队友）
+--      • 优先接入 EllesmereUI AuraKit 引擎光环容器（无限服副本/战斗保密值完全可读，
+--        自动呈现冷却扇形、倒计时文字、层数、驱散类型彩色描边与悬停提示，且点击穿透）；
+--      • 无 AuraKit 环境自动退回安全扫描池，保持一致圆角风格与完整提示。
+----------------------------------------------------------------------
+local TARGET_AURA_ROW_W = 256
+local TARGET_AURA_GAP = 3
+local TARGET_AURA_ROW_GAP = 4
+local TARGET_MAX_MY_DEBUFFS = 10
+local TARGET_MAX_OTHER_DEBUFFS = 10
+local TARGET_MAX_BUFFS = 12
+
+local tgtAuraState = {
+    container = nil,
+    gen = 0,
+    debuffStyleKey = nil,
+    buffStyleKey = nil,
+    layoutFP = nil,
+    capDebuff = nil,
+    capBuff = nil,
+    engineFailed = false,
+    fallbackSlots = {},
+    eventFrame = nil,
+    scanPending = false,
+}
+
+local function GetTargetAK()
+    local EUI = _G.EllesmereUI
+    local AK = EUI and EUI.AuraKit or nil
+    if AK and type(AK.CreateContainerShell) == "function"
+        and type(AK.AddGroupToContainer) == "function"
+        and type(AK.FinishContainer) == "function"
+        and type(AK.styles) == "table" then
+        return AK
+    end
+    return nil
+end
+
+local function TargetAuraMetrics()
+    local db = mod:GetDB()
+    local sz = math_floor(math_max(18, math_min(28, F.PlainNumber(db.targetAuraSize, 22) or 22)) + 0.5)
+    local rad = math_min(ST.GetCornerRadius(5), 5)
+    if rad < 0 then rad = 0 end
+    local wantBuffs = db.showTargetBuffs ~= false
+    local wantDebuffs = db.showTargetDebuffs ~= false
+    return sz, rad, wantBuffs, wantDebuffs
+end
+
+local function ApplyTargetAuraText(button, d)
+    if d.duration then
+        if not d._kkTgtDurStyled then
+            d._kkTgtDurStyled = true
+            ST.ApplyText(d.duration, 9, 0.96, 0.98, 1.00, 1)
+            d.duration:SetShadowOffset(1, -1)
+            d.duration:SetJustifyH("CENTER")
+        end
+        if d._kkTgtDurAnchor ~= "BOTTOM" then
+            d.duration:ClearAllPoints()
+            d.duration:SetPoint("BOTTOM", button, "BOTTOM", 0, 2)
+            d._kkTgtDurAnchor = "BOTTOM"
+        end
+    end
+    if d.stack then
+        if not d._kkTgtStkStyled then
+            d._kkTgtStkStyled = true
+            ST.ApplyText(d.stack, 9, 1.00, 0.96, 0.82, 1)
+            d.stack:SetShadowOffset(1, -1)
+            d.stack:SetJustifyH("RIGHT")
+        end
+        if d._kkTgtStkAnchor ~= "TOPRIGHT" then
+            d.stack:ClearAllPoints()
+            d.stack:SetPoint("TOPRIGHT", button, "TOPRIGHT", -1, -1)
+            d._kkTgtStkAnchor = "TOPRIGHT"
+        end
+    end
+end
+
+local function BuildTargetAuraStyleTable(sz, rad, isDebuff)
+    local br, bg, bb, ba
+    if isDebuff then
+        br, bg, bb, ba = 0.88, 0.26, 0.30, 0.94
+    else
+        br, bg, bb, ba = 0.14, 0.16, 0.22, 0.90
+    end
+    return {
+        width = sz,
+        height = sz,
+        texCoord = { 0.08, 0.92, 0.08, 0.92 },
+        border = { br, bg, bb, ba, size = 1, cornerRadius = (rad > 0) and rad or nil },
+        dispelBorder = true,
+        dispelHelpful = (not isDebuff) or nil,
+        dispelBorderPx = 1,
+        cooldownReverse = true,
+        cooldownDrawEdge = false,
+        noDefaultFonts = true,
+        hideDurationText = false,
+        noTooltips = false,
+        applyExtra = ApplyTargetAuraText,
+    }
+end
+
+local function HideFallbackTargetSlots()
+    for _, slot in ipairs(tgtAuraState.fallbackSlots) do
+        slot:Hide()
+    end
+end
+
+local function ReleaseTargetAuraEngine()
+    local c = tgtAuraState.container
+    tgtAuraState.container = nil
+    tgtAuraState.layoutFP = nil
+    tgtAuraState.capDebuff = nil
+    tgtAuraState.capBuff = nil
+    local AK = GetTargetAK()
+    if AK then
+        if tgtAuraState.debuffStyleKey then AK.styles[tgtAuraState.debuffStyleKey] = nil end
+        if tgtAuraState.buffStyleKey then AK.styles[tgtAuraState.buffStyleKey] = nil end
+    end
+    tgtAuraState.debuffStyleKey = nil
+    tgtAuraState.buffStyleKey = nil
+    if c then
+        local function DoRelease()
+            if AK and AK.ReleaseContainer then
+                pcall(AK.ReleaseContainer, c)
+            else
+                pcall(c.Hide, c)
+            end
+        end
+        if InCombatLockdown and InCombatLockdown() and F.RunOutOfCombat then
+            F.RunOutOfCombat("kkowoUI_CoreHUD_ReleaseTargetAuras", DoRelease)
+        else
+            DoRelease()
+        end
+    end
+end
+
+local function EnsureTargetAuraEngine()
+    local AK = GetTargetAK()
+    local f = CH.topTargetFrame
+    local host = f and f._auraHost
+    if not (AK and host) or tgtAuraState.engineFailed then return false end
+    local sz, rad, wantBuffs, wantDebuffs = TargetAuraMetrics()
+    local fp = sz .. "|" .. rad
+
+    if tgtAuraState.container then
+        local c = tgtAuraState.container
+        local needLayout = (tgtAuraState.layoutFP ~= fp)
+        local needCapD = (tgtAuraState.capDebuff ~= wantDebuffs)
+        local needCapB = (tgtAuraState.capBuff ~= wantBuffs)
+        if (needLayout or needCapD or needCapB) and InCombatLockdown and InCombatLockdown() then
+            F.RunOutOfCombat("kkowoUI_CoreHUD_TargetAuras", function()
+                if mod._active and CH.SyncTargetAuras then CH.SyncTargetAuras() end
+            end)
+            return true
+        end
+        if needLayout then
+            tgtAuraState.layoutFP = fp
+            AK.styles[tgtAuraState.debuffStyleKey] = BuildTargetAuraStyleTable(sz, rad, true)
+            AK.styles[tgtAuraState.buffStyleKey] = BuildTargetAuraStyleTable(sz, rad, false)
+            local gLayout = {
+                elementWidth = sz, elementHeight = sz,
+                elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
+                groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
+            }
+            if c.SetAuraGroupLayout then
+                gLayout.layoutIndex = 1; gLayout.forceNewLine = nil
+                pcall(c.SetAuraGroupLayout, c, "kk_tgt_my_debuffs", gLayout)
+                gLayout.layoutIndex = 2; gLayout.forceNewLine = nil
+                pcall(c.SetAuraGroupLayout, c, "kk_tgt_other_debuffs", gLayout)
+                gLayout.layoutIndex = 3; gLayout.forceNewLine = true
+                pcall(c.SetAuraGroupLayout, c, "kk_tgt_buffs", gLayout)
+            end
+            if AK.RestyleSoon then
+                pcall(AK.RestyleSoon, tgtAuraState.debuffStyleKey)
+                pcall(AK.RestyleSoon, tgtAuraState.buffStyleKey)
+            elseif AK.Restyle then
+                pcall(AK.Restyle, tgtAuraState.debuffStyleKey)
+                pcall(AK.Restyle, tgtAuraState.buffStyleKey)
+            end
+        end
+        if tgtAuraState.capDebuff ~= wantDebuffs then
+            tgtAuraState.capDebuff = wantDebuffs
+            if AK.SetGroupCap then
+                pcall(AK.SetGroupCap, c, "kk_tgt_my_debuffs", wantDebuffs and TARGET_MAX_MY_DEBUFFS or 0)
+                pcall(AK.SetGroupCap, c, "kk_tgt_other_debuffs", wantDebuffs and TARGET_MAX_OTHER_DEBUFFS or 0)
+            end
+        end
+        if tgtAuraState.capBuff ~= wantBuffs then
+            tgtAuraState.capBuff = wantBuffs
+            if AK.SetGroupCap then
+                pcall(AK.SetGroupCap, c, "kk_tgt_buffs", wantBuffs and TARGET_MAX_BUFFS or 0)
+            end
+        end
+        return true
+    end
+
+    if InCombatLockdown and InCombatLockdown() then
+        F.RunOutOfCombat("kkowoUI_CoreHUD_TargetAuras", function()
+            if mod._active and CH.SyncTargetAuras then CH.SyncTargetAuras() end
+        end)
+        return false
+    end
+
+    tgtAuraState.gen = tgtAuraState.gen + 1
+    local dKey = "kkowoUI_tgt_debuffs_" .. tgtAuraState.gen
+    local bKey = "kkowoUI_tgt_buffs_" .. tgtAuraState.gen
+    AK.styles[dKey] = BuildTargetAuraStyleTable(sz, rad, true)
+    AK.styles[bKey] = BuildTargetAuraStyleTable(sz, rad, false)
+
+    local ok = pcall(function()
+        local c = AK.CreateContainerShell(host, {
+            point = { "TOPLEFT", host, "TOPLEFT", 0, 0 },
+        })
+        tgtAuraState.container = c
+        tgtAuraState.debuffStyleKey = dKey
+        tgtAuraState.buffStyleKey = bKey
+        tgtAuraState.layoutFP = fp
+        tgtAuraState.capDebuff = wantDebuffs
+        tgtAuraState.capBuff = wantBuffs
+
+        local FlowDir = _G.AnchorUtil and _G.AnchorUtil.FlowDirection
+        if AK.SetContainerAxis then pcall(AK.SetContainerAxis, c, false) end
+        AK.ApplyContainerLayout(c, {
+            anchorPoint = "TOPLEFT",
+            padding = { 0, 0, 0, 0 },
+            rowWidth = TARGET_AURA_ROW_W + 0.4,
+            growthH = FlowDir and FlowDir.Right or nil,
+            growthV = FlowDir and FlowDir.Down or nil,
+        })
+        local SM = _G.AuraContainerSortMethod
+        local sortDefault = SM and SM.Default or nil
+        local myDebuffLayout = {
+            elementWidth = sz, elementHeight = sz,
+            elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
+            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
+            layoutIndex = 1,
+        }
+        local otherDebuffLayout = {
+            elementWidth = sz, elementHeight = sz,
+            elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
+            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
+            layoutIndex = 2,
+        }
+        local buffLayout = {
+            elementWidth = sz, elementHeight = sz,
+            elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
+            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
+            forceNewLine = true,
+            layoutIndex = 3,
+        }
+        -- 第 1 排：玩家自身减益优先，紧接队友/其他来源减益；第 2 排：目标增益（无减益时自动顶上不留空行）
+        AK.AddGroupToContainer(c, {
+            key = "kk_tgt_my_debuffs",
+            filter = { "HARMFUL", "PLAYER" },
+            maxFrameCount = wantDebuffs and TARGET_MAX_MY_DEBUFFS or 0,
+            sortMethod = sortDefault,
+            style = dKey,
+            layout = myDebuffLayout,
+        })
+        AK.AddGroupToContainer(c, {
+            key = "kk_tgt_other_debuffs",
+            filter = { "HARMFUL", "!PLAYER" },
+            maxFrameCount = wantDebuffs and TARGET_MAX_OTHER_DEBUFFS or 0,
+            sortMethod = sortDefault,
+            style = dKey,
+            layout = otherDebuffLayout,
+        })
+        AK.AddGroupToContainer(c, {
+            key = "kk_tgt_buffs",
+            filter = { "HELPFUL" },
+            maxFrameCount = wantBuffs and TARGET_MAX_BUFFS or 0,
+            sortMethod = sortDefault,
+            style = bKey,
+            layout = buffLayout,
+        })
+        if c.SetAuraGroupLayout then
+            pcall(c.SetAuraGroupLayout, c, "kk_tgt_my_debuffs", myDebuffLayout)
+            pcall(c.SetAuraGroupLayout, c, "kk_tgt_other_debuffs", otherDebuffLayout)
+            pcall(c.SetAuraGroupLayout, c, "kk_tgt_buffs", buffLayout)
+        end
+        if c.SetEnabled then pcall(c.SetEnabled, c, true) end
+        AK.FinishContainer(c, "target")
+    end)
+
+    if not ok then
+        tgtAuraState.engineFailed = true
+        ReleaseTargetAuraEngine()
+        return false
+    end
+    HideFallbackTargetSlots()
+    if tgtAuraState.eventFrame then tgtAuraState.eventFrame:UnregisterAllEvents() end
+    return true
+end
+
+local function AcquireTargetFallbackSlot(index)
+    local slot = tgtAuraState.fallbackSlots[index]
+    if slot then return slot end
+    local host = CH.topTargetFrame and CH.topTargetFrame._auraHost
+    if not host then return nil end
+    slot = CreateFrame("Button", nil, host)
+    slot:SetSize(22, 22)
+    slot:EnableMouse(true)
+    if slot.SetMouseClickEnabled then pcall(slot.SetMouseClickEnabled, slot, false) end
+    if slot.SetMouseMotionEnabled then pcall(slot.SetMouseMotionEnabled, slot, true) end
+
+    local bg = slot:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints()
+    bg:SetColorTexture(0.04, 0.045, 0.06, 0.90)
+    slot._bg = bg
+
+    local icon = slot:CreateTexture(nil, "ARTWORK")
+    icon:SetAllPoints()
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    slot._icon = icon
+
+    local cd = CreateFrame("Cooldown", nil, slot, "CooldownFrameTemplate")
+    cd:SetAllPoints()
+    if cd.SetDrawEdge then pcall(cd.SetDrawEdge, cd, false) end
+    if cd.SetReverse then pcall(cd.SetReverse, cd, true) end
+    if cd.SetDrawBling then pcall(cd.SetDrawBling, cd, false) end
+    if cd.SetHideCountdownNumbers then pcall(cd.SetHideCountdownNumbers, cd, false) end
+    if cd.EnableMouse then pcall(cd.EnableMouse, cd, false) end
+    slot._cd = cd
+
+    local textHost = CreateFrame("Frame", nil, slot)
+    textHost:SetAllPoints()
+    textHost:SetFrameLevel(slot:GetFrameLevel() + 5)
+    textHost:EnableMouse(false)
+    local stacks = textHost:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(stacks, 9, 1.00, 0.96, 0.82, 1)
+    stacks:SetPoint("TOPRIGHT", slot, "TOPRIGHT", -1, -1)
+    stacks:SetShadowOffset(1, -1)
+    stacks:SetJustifyH("RIGHT")
+    slot._stacks = stacks
+
+    slot:SetScript("OnEnter", function(self)
+        if not (_G.GameTooltip and UnitExistsSafe("target")) then return end
+        _G.GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT", 0, -4)
+        local okTip = false
+        if type(self._auraInstanceID) ~= "nil" then
+            if self._isDebuff and _G.GameTooltip.SetUnitDebuffByAuraInstanceID then
+                okTip = pcall(_G.GameTooltip.SetUnitDebuffByAuraInstanceID, _G.GameTooltip, "target", self._auraInstanceID) == true
+            elseif (not self._isDebuff) and _G.GameTooltip.SetUnitBuffByAuraInstanceID then
+                okTip = pcall(_G.GameTooltip.SetUnitBuffByAuraInstanceID, _G.GameTooltip, "target", self._auraInstanceID) == true
+            end
+        end
+        if not okTip and self._auraIndex then
+            if self._isDebuff and _G.GameTooltip.SetUnitDebuff then
+                pcall(_G.GameTooltip.SetUnitDebuff, _G.GameTooltip, "target", self._auraIndex)
+            elseif (not self._isDebuff) and _G.GameTooltip.SetUnitBuff then
+                pcall(_G.GameTooltip.SetUnitBuff, _G.GameTooltip, "target", self._auraIndex)
+            elseif _G.GameTooltip.SetUnitAura then
+                pcall(_G.GameTooltip.SetUnitAura, _G.GameTooltip, "target", self._auraIndex, self._isDebuff and "HARMFUL" or "HELPFUL")
+            end
+        end
+        _G.GameTooltip:Show()
+    end)
+    slot:SetScript("OnLeave", function()
+        if _G.GameTooltip then _G.GameTooltip:Hide() end
+    end)
+
+    slot:Hide()
+    tgtAuraState.fallbackSlots[index] = slot
+    return slot
+end
+
+local function CollectTargetAurasFallback(filter, maxCount)
+    local mine, others = {}, {}
+    local getByIdx = _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDataByIndex
+    if getByIdx then
+        for i = 1, 40 do
+            local ok, aura = pcall(getByIdx, "target", i, filter)
+            if not ok or type(aura) == "nil" then break end
+            if not F.IsSecret(aura) and type(aura) == "table" and type(aura.icon) ~= "nil" then
+                local fromMe = (not F.IsSecret(aura.isFromPlayerOrPlayerPet)) and aura.isFromPlayerOrPlayerPet == true
+                local item = {
+                    index = i,
+                    auraInstanceID = aura.auraInstanceID,
+                    icon = aura.icon,
+                    applications = aura.applications,
+                    duration = aura.duration,
+                    expirationTime = aura.expirationTime,
+                    dispelName = F.PlainString(aura.dispelName, nil),
+                }
+                if filter == "HARMFUL" and fromMe then
+                    mine[#mine + 1] = item
+                else
+                    others[#others + 1] = item
+                end
+            end
+        end
+    else
+        local fn = (filter == "HARMFUL") and _G.UnitDebuff or _G.UnitBuff
+        if fn then
+            for i = 1, 40 do
+                local ok, nm, ic, count, dispelType, dur, expTime, source = pcall(fn, "target", i)
+                if not ok or (not F.IsSecret(nm) and not nm) then break end
+                if type(ic) ~= "nil" then
+                    local src = F.PlainString(source, nil)
+                    local item = {
+                        index = i,
+                        icon = ic,
+                        applications = count,
+                        duration = dur,
+                        expirationTime = expTime,
+                        dispelName = F.PlainString(dispelType, nil),
+                    }
+                    if filter == "HARMFUL" and (src == "player" or src == "pet") then
+                        mine[#mine + 1] = item
+                    else
+                        others[#others + 1] = item
+                    end
+                end
+            end
+        end
+    end
+    local out = {}
+    for _, it in ipairs(mine) do
+        if #out >= maxCount then break end
+        out[#out + 1] = it
+    end
+    for _, it in ipairs(others) do
+        if #out >= maxCount then break end
+        out[#out + 1] = it
+    end
+    return out
+end
+
+local function PaintTargetFallbackSlot(slot, data, isDebuff, sz, rad)
+    slot:SetSize(sz, sz)
+    slot._auraIndex = data.index
+    slot._auraInstanceID = data.auraInstanceID
+    slot._isDebuff = isDebuff
+    pcall(slot._icon.SetTexture, slot._icon, data.icon)
+
+    local cd = slot._cd
+    local appliedCD = false
+    if type(data.auraInstanceID) ~= "nil" and _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDuration and cd.SetCooldownFromDurationObject then
+        local okD, durObj = pcall(_G.C_UnitAuras.GetAuraDuration, "target", data.auraInstanceID)
+        if okD and type(durObj) ~= "nil" then
+            appliedCD = pcall(cd.SetCooldownFromDurationObject, cd, durObj) == true
+        end
+    end
+    if not appliedCD then
+        local d = F.PlainNumber(data.duration, nil)
+        local e = F.PlainNumber(data.expirationTime, nil)
+        if d and e and d > 0 then
+            pcall(cd.SetCooldown, cd, e - d, d)
+            appliedCD = true
+        end
+    end
+    cd:SetShown(appliedCD)
+    if appliedCD and cd.GetRegions then
+        for _, reg in ipairs({ cd:GetRegions() }) do
+            if reg and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                ST.ApplyText(reg, 9, 0.96, 0.98, 1.00, 1)
+                reg:ClearAllPoints()
+                reg:SetPoint("BOTTOM", slot, "BOTTOM", 0, 2)
+                reg:SetJustifyH("CENTER")
+                reg:SetShadowOffset(1, -1)
+            end
+        end
+    end
+
+    local stacks = F.PlainNumber(data.applications, 0) or 0
+    if stacks > 1 then
+        slot._stacks:SetText(tostring(stacks))
+        slot._stacks:Show()
+    else
+        slot._stacks:Hide()
+    end
+
+    if slot._lastRad ~= rad then
+        slot._lastRad = rad
+        ST.ClearRoundedMask(slot)
+        if rad > 0 then
+            ST.SetHostIconMode(slot, true)
+            ST.MaskTexture(slot, slot._bg, rad)
+            ST.MaskIcon(slot, slot._icon, rad)
+        end
+    end
+    local br, bg, bb, ba
+    if isDebuff then
+        local dc = (data.dispelName and DEBUFF_TYPE_COLORS and DEBUFF_TYPE_COLORS[data.dispelName]) or { 0.88, 0.26, 0.30 }
+        br, bg, bb, ba = dc[1], dc[2], dc[3], 0.94
+    else
+        local dc = (data.dispelName and DEBUFF_TYPE_COLORS and DEBUFF_TYPE_COLORS[data.dispelName]) or nil
+        if dc then
+            br, bg, bb, ba = dc[1], dc[2], dc[3], 0.94
+        else
+            br, bg, bb, ba = 0.14, 0.16, 0.22, 0.90
+        end
+    end
+    ST.ApplyRoundedBorder(slot, rad, br, bg, bb, ba, 4)
+    slot:Show()
+end
+
+local function UpdateTargetAurasFallback()
+    local f = CH.topTargetFrame
+    local host = f and f._auraHost
+    if not (host and mod._active and mod:GetDB().enableTopTarget ~= false and UnitExistsSafe("target")) then
+        HideFallbackTargetSlots()
+        return
+    end
+    local sz, rad, wantBuffs, wantDebuffs = TargetAuraMetrics()
+    local debuffs = wantDebuffs and CollectTargetAurasFallback("HARMFUL", 16) or {}
+    local buffs = wantBuffs and CollectTargetAurasFallback("HELPFUL", TARGET_MAX_BUFFS) or {}
+    local perRow = math_max(1, math_floor((TARGET_AURA_ROW_W + TARGET_AURA_GAP) / (sz + TARGET_AURA_GAP)))
+    local stepX = sz + TARGET_AURA_GAP
+    local stepY = sz + TARGET_AURA_ROW_GAP
+    local used = 0
+    local yCursor = 0
+
+    if #debuffs > 0 then
+        for i, data in ipairs(debuffs) do
+            used = used + 1
+            local slot = AcquireTargetFallbackSlot(used)
+            if slot then
+                local col = (i - 1) % perRow
+                local row = math_floor((i - 1) / perRow)
+                slot:ClearAllPoints()
+                slot:SetPoint("TOPLEFT", host, "TOPLEFT", col * stepX, -(yCursor + row * stepY))
+                PaintTargetFallbackSlot(slot, data, true, sz, rad)
+            end
+        end
+        local debuffRows = math_floor((#debuffs - 1) / perRow) + 1
+        yCursor = yCursor + debuffRows * stepY + 1
+    end
+
+    if #buffs > 0 then
+        for i, data in ipairs(buffs) do
+            used = used + 1
+            local slot = AcquireTargetFallbackSlot(used)
+            if slot then
+                local col = (i - 1) % perRow
+                local row = math_floor((i - 1) / perRow)
+                slot:ClearAllPoints()
+                slot:SetPoint("TOPLEFT", host, "TOPLEFT", col * stepX, -(yCursor + row * stepY))
+                PaintTargetFallbackSlot(slot, data, false, sz, rad)
+            end
+        end
+    end
+
+    for i = used + 1, #tgtAuraState.fallbackSlots do
+        tgtAuraState.fallbackSlots[i]:Hide()
+    end
+end
+
+local function SyncTargetAuras()
+    local f = CH.topTargetFrame
+    local host = f and f._auraHost
+    if not host then return end
+    local db = mod:GetDB()
+    local featureOn = mod._active == true and db.enableTopTarget ~= false
+        and (db.showTargetBuffs ~= false or db.showTargetDebuffs ~= false)
+    if not featureOn then
+        host:Hide()
+        HideFallbackTargetSlots()
+        if tgtAuraState.eventFrame then tgtAuraState.eventFrame:UnregisterAllEvents() end
+        return
+    end
+    -- 在脱战登录期就预先创建引擎容器（即使当前尚未选中目标），保证首次进战点选怪物时立刻显示光环；
+    -- auraHost 挂在 topTargetFrame 下，无目标时随父框体自动隐藏
+    host:Show()
+    local hasTarget = UnitExistsSafe("target")
+    if EnsureTargetAuraEngine() then
+        if hasTarget and tgtAuraState.container and tgtAuraState.container.UpdateAllAuras then
+            pcall(tgtAuraState.container.UpdateAllAuras, tgtAuraState.container)
+        end
+        return
+    end
+    if not hasTarget then
+        HideFallbackTargetSlots()
+        return
+    end
+    -- 兜底扫描模式：为 target 单独挂 UNIT_AURA 监听（不占用模块主事件帧上 player 的 UNIT_AURA）
+    if not tgtAuraState.eventFrame then
+        local ef = CreateFrame("Frame")
+        ef:SetScript("OnEvent", function()
+            if tgtAuraState.scanPending or not mod._active then return end
+            tgtAuraState.scanPending = true
+            _G.C_Timer.After(0.06, function()
+                tgtAuraState.scanPending = false
+                if mod._active and not tgtAuraState.container then
+                    UpdateTargetAurasFallback()
+                end
+            end)
+        end)
+        tgtAuraState.eventFrame = ef
+    end
+    pcall(tgtAuraState.eventFrame.RegisterUnitEvent, tgtAuraState.eventFrame, "UNIT_AURA", "target")
+    UpdateTargetAurasFallback()
+end
+
+local function ReleaseTargetAuras()
+    tgtAuraState.engineFailed = false
+    tgtAuraState.scanPending = false
+    if tgtAuraState.eventFrame then tgtAuraState.eventFrame:UnregisterAllEvents() end
+    ReleaseTargetAuraEngine()
+    HideFallbackTargetSlots()
+    if CH.topTargetFrame and CH.topTargetFrame._auraHost then
+        CH.topTargetFrame._auraHost:Hide()
+    end
 end
 
 
 CH.HidePetFeedMenu = HidePetFeedMenu
 CH.BuildPetHUD = BuildPetHUD
 CH.BuildTopTargetHUD = BuildTopTargetHUD
+CH.SyncTargetAuras = SyncTargetAuras
+CH.ReleaseTargetAuras = ReleaseTargetAuras

@@ -164,10 +164,10 @@ local function ApplyEllesmereUIQoL()
 end
 
 local function ApplyAll()
-    ApplyGTFO()
-    ApplyAuctionator()
-    ApplyBigWigsClassic()
-    ApplyEllesmereUIQoL()
+    pcall(ApplyGTFO)
+    pcall(ApplyAuctionator)
+    pcall(ApplyBigWigsClassic)
+    pcall(ApplyEllesmereUIQoL)
 end
 
 ApplyAll()

@@ -1235,6 +1235,20 @@ local function CreateFrames()
     xpHitBox:RegisterForDrag("LeftButton")
 
     local hitDragging = false
+    local function StopHitDrag(savePos)
+        if not hitDragging then return end
+        hitDragging = false
+        if not xpFrame or (_G.InCombatLockdown and _G.InCombatLockdown()) then return end
+        pcall(xpFrame.StopMovingOrSizing, xpFrame)
+        if savePos then
+            local pt, _, rpt, x, y = xpFrame:GetPoint(1)
+            if type(pt) == "string" and type(x) == "number" and type(y) == "number" and F.DB and F.DB.SavePosition then
+                F.DB.SavePosition("XPBar", pt, type(rpt) == "string" and rpt or pt, x, y)
+            end
+        end
+    end
+    xpFrame._stopHitDrag = StopHitDrag
+
     xpHitBox:SetScript("OnDragStart", function()
         if _G.IsShiftKeyDown and _G.IsShiftKeyDown() and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
             hitDragging = true
@@ -1242,20 +1256,10 @@ local function CreateFrames()
         end
     end)
     xpHitBox:SetScript("OnDragStop", function()
-        if not hitDragging then return end
-        hitDragging = false
-        xpFrame:StopMovingOrSizing()
-        local pt, _, rpt, x, y = xpFrame:GetPoint(1)
-        if type(pt) == "string" and type(x) == "number" and type(y) == "number" and F.DB and F.DB.SavePosition then
-            F.DB.SavePosition("XPBar", pt, type(rpt) == "string" and rpt or pt, x, y)
-        end
+        StopHitDrag(true)
     end)
     xpHitBox:HookScript("OnHide", function()
-        if not hitDragging then return end
-        hitDragging = false
-        if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
-            xpFrame:StopMovingOrSizing()
-        end
+        StopHitDrag(false)
     end)
     xpHitBox:SetScript("OnMouseUp", function(self, btn)
         if btn == "RightButton" and not hitDragging then
@@ -1282,6 +1286,7 @@ local function CreateFrames()
         label = "经验条",
         frame = xpFrame,
         order = 15,
+        allowShiftDrag = false,
         -- 默认贴屏幕顶部视觉居中（计入左侧职业徽印宽度偏移，确保整体视觉中轴与屏幕中线对齐）
         defaultPoint = "TOP",
         defaultRelPoint = "TOP",
@@ -1311,6 +1316,7 @@ local function CreateFrames()
     -- 同款圆角暗玻声望条
     repFrame = CreateFrame("Frame", "kkowoUI_RepBar", _G.UIParent)
     repFrame:SetFrameStrata("LOW")
+    repFrame:EnableMouse(false)
     BuildPillTrack(repFrame)
 
     repBar = CreateFrame("StatusBar", nil, repFrame)
@@ -1331,6 +1337,7 @@ local function CreateFrames()
         label = "声望条",
         frame = repFrame,
         order = 16,
+        allowShiftDrag = false,
         defaultPoint = "TOP",
         defaultRelPoint = "TOP",
         defaultX = 0,
@@ -1416,10 +1423,16 @@ function mod:OnEnable()
         UpdateRep()
         if updateXPFade then updateXPFade(ThemeCombatAlpha()) end
         C_Timer.After(0.8, function()
+            if not mod._active then return end
             questXPDirty = true
             UpdateXP()
             UpdateRep()
         end)
+    end)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        if xpFrame and xpFrame._stopHitDrag then
+            xpFrame._stopHitDrag(true)
+        end
     end)
     if liveTicker then liveTicker:Cancel() end
     liveTicker = C_Timer.NewTicker(10, function()

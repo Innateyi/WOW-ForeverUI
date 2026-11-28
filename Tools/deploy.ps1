@@ -9,10 +9,14 @@
 #   - 改名迁移：存档 ForeverUI.lua / KkowoUI.lua(.bak) → kkowoUI.lua(.bak)，存档变量名改成 kkowoUIDB / kkowoUICharDB；
 #     原文件移进备份后再写新文件。各角色 AddOns.txt 先备份，再把旧名那一行改成 kkowoUI。
 param(
-    [string]$AddOns = 'E:\Program Files\World of Warcraft\_forever_\Interface\AddOns'
+    [string]$AddOns = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $AddOns) {
+    $wowRoot = if ($env:WOW_FOREVER_DIR) { $env:WOW_FOREVER_DIR } else { 'E:\Program Files\World of Warcraft\_forever_' }
+    $AddOns = Join-Path $wowRoot 'Interface\AddOns'
+}
 $root = Split-Path -Parent $PSScriptRoot
 $addonBase = Join-Path $root 'Addon'
 $name = 'kkowoUI'
@@ -33,6 +37,29 @@ $bk = Join-Path $backupRoot "kkowoUI部署前_$stamp"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Ensure-Dir([string]$p) { New-Item -ItemType Directory -Force -Path $p | Out-Null }
+
+function Test-LuaSvBalanced([string]$text) {
+    if ([string]::IsNullOrWhiteSpace($text)) { return $false }
+    $depth = 0
+    $inStr = $false
+    $esc = $false
+    for ($i = 0; $i -lt $text.Length; $i++) {
+        $ch = $text[$i]
+        if ($inStr) {
+            if ($esc) { $esc = $false; continue }
+            if ($ch -eq '\') { $esc = $true; continue }
+            if ($ch -eq '"') { $inStr = $false }
+            continue
+        }
+        if ($ch -eq '"') { $inStr = $true; continue }
+        if ($ch -eq '{') { $depth++ }
+        elseif ($ch -eq '}') {
+            $depth--
+            if ($depth -lt 0) { return $false }
+        }
+    }
+    return (-not $inStr) -and ($depth -eq 0)
+}
 
 # ---------- 1) 旧插件文件夹 / 目录链接 ----------
 $oldNames = @('KkowoUI', 'ForeverUI') + ($pkgDirs | ForEach-Object { $_.Name })
@@ -81,9 +108,9 @@ if (Test-Path -LiteralPath $wtfAccount) {
         } else {
             $newText = [regex]::Replace($text, '\b(ForeverUI|KkowoUI)(Char)?DB\b', 'kkowoUI${2}DB')   # 区分大小写
         }
-        # 保险：迁移结果里绝不允许出现把新变量置空的行
-        if ($newText -cmatch '(?m)^kkowoUI(Char)?DB = nil') {
-            Write-Host "跳过 $($f.FullName)：迁移会生成 kkowoUIDB = nil，保持原样。" -ForegroundColor Yellow
+        # 保险：迁移结果里绝不允许出现把新变量置空的行或括号失衡
+        if ($newText -cmatch '(?m)^kkowoUI(Char)?DB = nil' -or -not (Test-LuaSvBalanced $newText)) {
+            Write-Host "跳过 $($f.FullName)：迁移结果未通过语法/非空校验，保持原样。" -ForegroundColor Yellow
             continue
         }
         if (-not $isForever -and $f.Name -ceq $newName -and $newText -ceq $text) { continue }   # 已是新名字
@@ -107,6 +134,10 @@ if (Test-Path -LiteralPath $wtfAccount) {
         $eText = [System.IO.File]::ReadAllText($ef.FullName, [System.Text.Encoding]::UTF8)
         $eNew = [regex]::Replace($eText, '(?i)Interface(\\\\|\\)AddOns(\\\\|\\)(?:kkowoUI|ForeverUI)(\\\\|\\)Media(\\\\|\\)Fonts(\\\\|\\)', 'Interface$1AddOns$2kkowoUI_Media$3Media$4Fonts$5')
         if ($eNew -cne $eText) {
+            if (-not (Test-LuaSvBalanced $eNew)) {
+                Write-Host "跳过 $($ef.FullName)：替换后括号失衡，保持原样。" -ForegroundColor Yellow
+                continue
+            }
             $rel = $ef.FullName.Substring($accRoot.Length).TrimStart('\')
             $bakPath = Join-Path $bk ('WTF\' + $rel)
             Ensure-Dir (Split-Path -Parent $bakPath)

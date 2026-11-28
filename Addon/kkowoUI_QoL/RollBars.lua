@@ -32,8 +32,47 @@ local MAX_BARS = 12
 local nextSeq = 0
 local nativeHooksInstalled = false
 local hideNativePending = false
+local nativeShowHooked = setmetatable({}, { __mode = "k" })
+local hiddenNativeFrames = {}
 
 local ApplyBarBorder -- 前向声明
+local HideNativeRollFrames -- 前向声明
+local ScheduleHideNativeRollFrames -- 前向声明
+local RestoreNativeRollFrames -- 前向声明
+local DisableContainerMouse -- 前向声明
+
+local function SafeBool(v, fallback)
+    if F.IsSecret(v) then return fallback end
+    return v == true
+end
+
+local function IsObjForbidden(obj)
+    if not obj then return true end
+    if obj.IsForbidden then
+        local ok, forb = pcall(obj.IsForbidden, obj)
+        if not ok or forb then return true end
+    end
+    return false
+end
+
+DisableContainerMouse = function(frame)
+    if not frame then return end
+    if frame.EnableMouse then pcall(frame.EnableMouse, frame, false) end
+    if frame.SetMouseClickEnabled then pcall(frame.SetMouseClickEnabled, frame, false) end
+    if frame.SetMouseMotionEnabled then pcall(frame.SetMouseMotionEnabled, frame, false) end
+end
+
+local function SetBarMouseHoverOnly(bar, hoverOn)
+    if not bar then return end
+    if hoverOn then
+        if bar.EnableMouse then pcall(bar.EnableMouse, bar, true) end
+        -- 条体仅用于悬停查看装备提示，绝不吞掉左右键点击/视角拖动（按钮与图标按钮独立响应点击）
+        if bar.SetMouseClickEnabled then pcall(bar.SetMouseClickEnabled, bar, false) end
+        if bar.SetMouseMotionEnabled then pcall(bar.SetMouseMotionEnabled, bar, true) end
+    else
+        DisableContainerMouse(bar)
+    end
+end
 
 local function LayoutRollButtons(bar, showDis)
     if not bar then return end
@@ -111,11 +150,17 @@ local function LayoutBars()
         return (a._seq or 0) < (b._seq or 0)
     end)
 
-    -- 容器固定单条尺寸且绝不拦截鼠标：
+    -- 容器固定单条尺寸、无条时立刻隐藏且绝不拦截鼠标：
     -- 1) 解锁模式锚框与第 1 条严格对齐，增减装备时剩余条不再整体跳动；
-    -- 2) 实战置 HIGH 层（高于 MEDIUM 层核心 HUD / 常驻 BUFF / 动作条，低于 DIALOG 拾取绑定弹窗与 TOOLTIP），杜绝多件装备重叠时点击被下层框体吞掉。
+    -- 2) 无可见掷点条时隐藏容器本身，彻底杜绝残留空框体拦截副本内左/右键点击；
+    -- 3) 实战置 HIGH 层（高于 MEDIUM 层核心 HUD / 常驻 BUFF / 动作条，低于 DIALOG 拾取绑定弹窗与 TOOLTIP）。
     container:SetSize(w, h)
-    container:EnableMouse(false)
+    DisableContainerMouse(container)
+    if #visible == 0 then
+        container:Hide()
+        return
+    end
+    container:Show()
     local strata = hasPreview and "FULLSCREEN_DIALOG" or "HIGH"
     local baseLvl = hasPreview and 200 or 50
     container:SetFrameStrata(strata)
@@ -152,33 +197,109 @@ local function EUILootRollsInUse()
     return ok and inUse == true
 end
 
-local function HideNativeRollFrames()
-    if not (mod._active and not EUILootRollsInUse()) then
-        return
-    end
-    local c = _G.GroupLootContainer
-    local maxN = (c and F.PlainNumber(c.maxIndex, 4)) or 4
-    if maxN < 4 then maxN = 4 end
-    for i = 1, maxN do
-        local f = _G["GroupLootFrame" .. i]
-        if f and f.IsShown and f:IsShown() then
-            pcall(f.Hide, f)
-        end
-    end
-    if c and type(c.rollFrames) == "table" then
-        local bonus = _G.BonusRollFrame
-        for _, rf in pairs(c.rollFrames) do
-            if rf and rf ~= bonus and rf.IsShown and rf:IsShown() then
-                local nm = rf.GetName and F.PlainString(rf:GetName(), "") or ""
-                if nm:find("GroupLootFrame", 1, true) or rf.rollID ~= nil then
-                    pcall(rf.Hide, rf)
-                end
+local function HideOneNativeFrame(f)
+    if IsObjForbidden(f) then return end
+    if f.IsShown then
+        local okS, shown = pcall(f.IsShown, f)
+        if okS and shown then
+            if pcall(f.Hide, f) then
+                hiddenNativeFrames[f] = true
             end
         end
     end
 end
 
-local function ScheduleHideNativeRollFrames()
+RestoreNativeRollFrames = function()
+    local pendingCombat = false
+    for f in pairs(hiddenNativeFrames) do
+        if not IsObjForbidden(f) then
+            if _G.InCombatLockdown and _G.InCombatLockdown() and f.IsProtected then
+                local okP, prot = pcall(f.IsProtected, f)
+                if okP and prot then
+                    pendingCombat = true
+                else
+                    hiddenNativeFrames[f] = nil
+                    pcall(f.Show, f)
+                end
+            else
+                hiddenNativeFrames[f] = nil
+                pcall(f.Show, f)
+            end
+        else
+            hiddenNativeFrames[f] = nil
+        end
+    end
+    if pendingCombat and F.RunOutOfCombat then
+        F.RunOutOfCombat("kkowoUI_RollBars_RestoreNative", RestoreNativeRollFrames)
+    end
+end
+
+HideNativeRollFrames = function()
+    if not (mod._active and not EUILootRollsInUse()) then
+        return
+    end
+    local c = _G.GroupLootContainer
+    if c and IsObjForbidden(c) then c = nil end
+    local maxN = (c and F.PlainNumber(c.maxIndex, 4)) or 4
+    if maxN < 4 then maxN = 4 end
+    local bonus = _G.BonusRollFrame
+    if bonus and IsObjForbidden(bonus) then bonus = nil end
+    for i = 1, maxN do
+        local f = _G["GroupLootFrame" .. i]
+        if f and not IsObjForbidden(f) then
+            if f.HookScript and not nativeShowHooked[f] then
+                nativeShowHooked[f] = true
+                f:HookScript("OnShow", function(self)
+                    if mod._active and not EUILootRollsInUse() then
+                        HideOneNativeFrame(self)
+                    end
+                end)
+            end
+            HideOneNativeFrame(f)
+        end
+    end
+    local hasOtherVisible = false
+    if bonus and bonus.IsShown then
+        local okB, bShown = pcall(bonus.IsShown, bonus)
+        hasOtherVisible = okB and bShown == true
+    end
+    if c and type(c.rollFrames) == "table" then
+        for _, rf in pairs(c.rollFrames) do
+            if rf and rf ~= bonus and not IsObjForbidden(rf) then
+                local nm = rf.GetName and F.PlainString(rf:GetName(), "") or ""
+                if nm:find("GroupLootFrame", 1, true) or rf.rollID ~= nil then
+                    if rf.HookScript and not nativeShowHooked[rf] then
+                        nativeShowHooked[rf] = true
+                        rf:HookScript("OnShow", function(self)
+                            if mod._active and not EUILootRollsInUse() then
+                                HideOneNativeFrame(self)
+                            end
+                        end)
+                    end
+                    HideOneNativeFrame(rf)
+                elseif rf.IsShown then
+                    local okR, rShown = pcall(rf.IsShown, rf)
+                    if okR and rShown then hasOtherVisible = true end
+                end
+            end
+        end
+    end
+    if c then
+        if c.HookScript and not nativeShowHooked[c] then
+            nativeShowHooked[c] = true
+            c:HookScript("OnShow", function()
+                if mod._active and not EUILootRollsInUse() then
+                    ScheduleHideNativeRollFrames()
+                end
+            end)
+        end
+        if not hasOtherVisible then
+            HideOneNativeFrame(c)
+        end
+    end
+end
+
+ScheduleHideNativeRollFrames = function()
     if hideNativePending or not (mod._active and not EUILootRollsInUse()) then
         return
     end
@@ -197,6 +318,7 @@ local function CloseBar(bar)
     if not bar then return end
     if bar._animIn then bar._animIn:Stop() end
     bar:SetAlpha(1)
+    SetBarMouseHoverOnly(bar, false)
     if GameTooltip and GameTooltip.IsOwned then
         local owner = GameTooltip.GetOwner and GameTooltip:GetOwner()
         if owner and (owner == bar or owner == bar._iconBtn
@@ -208,6 +330,7 @@ local function CloseBar(bar)
     bar.rollID = nil
     bar.endTime = nil
     bar.bop = nil
+    bar._checkAccum = nil
     bar._slotPt = nil
     bar._slotY = nil
     bar._slotW = nil
@@ -230,22 +353,92 @@ local function CloseRollID(rollID)
     end
 end
 
+local function PruneStaleRolls()
+    local getLeft = _G.GetLootRollTimeLeft
+    local now = GetTime()
+    local changed = false
+    for _, bar in ipairs(bars) do
+        if bar:IsShown() and bar.rollID ~= nil then
+            -- 绝不因 GetLootRollTimeLeft 返回 nil/机密值/0 而误关真实掷点条（K5）：
+            -- 仅在读到有效正剩余时间时校准 endTime，否则依靠本地计时器与 CANCEL_LOOT_ROLL 结束。
+            if getLeft then
+                local ok, ms = pcall(getLeft, bar.rollID)
+                local rem = ok and F.PlainNumber(ms, nil) or nil
+                if rem and rem > 0 then
+                    bar.endTime = now + rem / 1000
+                end
+            end
+            if not bar.endTime or bar.endTime <= now then
+                CloseBar(bar)
+                changed = true
+            end
+        end
+    end
+    if changed then
+        LayoutBars()
+    end
+end
+
+local function RecoverActiveRolls()
+    if not mod._active or EUILootRollsInUse() then return end
+    local getIds = _G.GetActiveLootRollIDs
+    if type(getIds) ~= "function" then return end
+    local ok, ids = pcall(getIds)
+    if not ok or F.IsSecret(ids) or type(ids) ~= "table" then return end
+    for _, rid in ipairs(ids) do
+        if not F.IsSecret(rid) and rid ~= nil then
+            local already = false
+            for _, b in ipairs(bars) do
+                if b:IsShown() and b.rollID == rid then
+                    already = true
+                    break
+                end
+            end
+            if not already then
+                local leftMs = 60000
+                if _G.GetLootRollTimeLeft then
+                    local okL, ms = pcall(_G.GetLootRollTimeLeft, rid)
+                    local n = okL and F.PlainNumber(ms, nil) or nil
+                    if n and n > 0 then leftMs = n end
+                end
+                mod:OnStartRoll("RECOVER_LOOT_ROLL", rid, leftMs)
+            end
+        end
+    end
+end
+
 local function EnsureNativeHooks()
     if nativeHooksInstalled then return end
     nativeHooksInstalled = true
+    -- 仅延后到下一帧隐藏原生容器，避免在 GroupLootContainer_Update/AddFrame 同步布局栈内改写受管布局导致 taint
+    if type(_G.GroupLootFrame_OpenNewFrame) == "function" then
+        _G.hooksecurefunc("GroupLootFrame_OpenNewFrame", function()
+            ScheduleHideNativeRollFrames()
+        end)
+    end
+    if type(_G.GroupLootContainer_OpenNewFrame) == "function" then
+        _G.hooksecurefunc("GroupLootContainer_OpenNewFrame", function()
+            ScheduleHideNativeRollFrames()
+        end)
+    end
     if type(_G.GroupLootContainer_AddFrame) == "function" then
-        _G.hooksecurefunc("GroupLootContainer_AddFrame", ScheduleHideNativeRollFrames)
+        _G.hooksecurefunc("GroupLootContainer_AddFrame", function()
+            ScheduleHideNativeRollFrames()
+        end)
     end
     if type(_G.GroupLootContainer_Update) == "function" then
-        _G.hooksecurefunc("GroupLootContainer_Update", ScheduleHideNativeRollFrames)
+        _G.hooksecurefunc("GroupLootContainer_Update", function()
+            ScheduleHideNativeRollFrames()
+        end)
     end
     if type(_G.ConfirmLootRoll) == "function" then
         _G.hooksecurefunc("ConfirmLootRoll", function(rollID)
-            if mod._active and not EUILootRollsInUse() and rollID then
+            if mod._active and not EUILootRollsInUse() and not F.IsSecret(rollID) and rollID ~= nil then
                 CloseRollID(rollID)
             end
         end)
     end
+    HideNativeRollFrames()
 end
 
 local function CreateRollButton(bar, host, iconFile, color, tip, rollAction, offsetX)
@@ -381,7 +574,7 @@ local function AcquireBar(rollID)
         return oldest, false
     end
     local bar = CreateFrame("Frame", nil, container)
-    bar:EnableMouse(true)
+    SetBarMouseHoverOnly(bar, false)
     bar:SetClampedToScreen(true)
     F.Theme.StyleLuminousCard(bar, {
         radius = 6,
@@ -423,6 +616,7 @@ local function AcquireBar(rollID)
     local aFade = animIn:CreateAnimation("Alpha")
     aFade:SetOrder(2); aFade:SetFromAlpha(0); aFade:SetToAlpha(1); aFade:SetDuration(0.34); aFade:SetSmoothing("OUT")
     animIn:SetScript("OnFinished", function() bar:SetAlpha(1) end)
+    animIn:SetScript("OnStop", function() if bar:IsShown() then bar:SetAlpha(1) end end)
     bar._animIn = animIn
 
     local iconBtn = CreateFrame("Button", nil, bar)
@@ -479,13 +673,30 @@ local function AcquireBar(rollID)
     bar.btnGreed  = CreateRollButton(bar, ov, "RollGreed.tga",      { 0.96, 0.78, 0.34 }, "贪婪", 2, -52)
     bar.btnNeed   = CreateRollButton(bar, ov, "RollNeed.tga",       { 0.37, 0.85, 0.64 }, "需求", 1, -76)
 
-    bar:SetScript("OnUpdate", function(self)
+    bar:SetScript("OnUpdate", function(self, elapsed)
         if not self.endTime then return end
         local rem = self.endTime - GetTime()
         if rem <= 0 then
             CloseBar(self)
             LayoutBars()
             return
+        end
+        if self.rollID ~= nil and _G.GetLootRollTimeLeft then
+            local acc = (self._checkAccum or 0) + (elapsed or 0)
+            if acc >= 0.5 then
+                self._checkAccum = 0
+                local ok, ms = pcall(_G.GetLootRollTimeLeft, self.rollID)
+                local leftMs = ok and F.PlainNumber(ms, nil) or nil
+                -- 仅在读到有效正剩余时间时校准本地倒计时；读不到/机密/返回 0 时绝不误关条（K5）
+                if leftMs and leftMs > 0 then
+                    local syncedEnd = GetTime() + leftMs / 1000
+                    if (syncedEnd - self.endTime) > 1.5 or (self.endTime - syncedEnd) > 1.5 then
+                        self.endTime = syncedEnd
+                    end
+                end
+            else
+                self._checkAccum = acc
+            end
         end
         self.status:SetValue(rem)
         if self.timeFS then
@@ -512,6 +723,7 @@ local function EnsureContainer()
     container:SetSize(db.width or 300, db.height or 30)
     container:SetFrameStrata("HIGH")
     container:SetFrameLevel(50)
+    DisableContainerMouse(container)
     F.Mover.Register({
         key = "RollBars",
         label = "Roll 点增强条",
@@ -521,12 +733,16 @@ local function EnsureContainer()
         defaultRelPoint = "CENTER",
         defaultX = 0,
         defaultY = -140,
+        allowShiftDrag = false,
         isHidden = function() return not mod._active end,
     })
+    -- 无可见掷点条时隐藏容器并彻底禁鼠，防止副本外/副本内空锚点拦截左右键点击
+    DisableContainerMouse(container)
+    container:Hide()
 end
 
 function mod:OnStartRoll(_, rollID, rollTime)
-    if not (_G.GetLootRollItemInfo and rollID) then
+    if not _G.GetLootRollItemInfo or F.IsSecret(rollID) or rollID == nil then
         return
     end
     if EUILootRollsInUse() then
@@ -538,12 +754,19 @@ function mod:OnStartRoll(_, rollID, rollTime)
     ScheduleHideNativeRollFrames()
 
     local okInfo, texture, name, _, quality, bindOnPickUp, canNeed, canGreed, canDisenchant = pcall(_G.GetLootRollItemInfo, rollID)
-    if not (okInfo and name) then
+    if not okInfo or (not F.IsSecret(name) and type(name) == "nil") then
         return
     end
+    local dispName = F.PlainString(name, nil) or ("战利品 #" .. tostring(F.PlainNumber(rollID, 0) or ""))
+    local safeTex = (not F.IsSecret(texture) and (type(texture) == "number" or type(texture) == "string")) and texture or 134400
+    local safeBop = SafeBool(bindOnPickUp, false)
+    local safeNeed = SafeBool(canNeed, true)
+    local safeGreed = SafeBool(canGreed, true)
+    local safeDis = SafeBool(canDisenchant, false)
+
     local bar, existed = AcquireBar(rollID)
     bar.rollID = rollID
-    bar.bop = (bindOnPickUp == true)
+    bar.bop = safeBop
     if not existed then
         nextSeq = nextSeq + 1
         bar._seq = nextSeq
@@ -578,16 +801,18 @@ function mod:OnStartRoll(_, rollID, rollTime)
     end
     bar._borderColor = { qr, qg, qb }
     bar._lastSec = nil
-    bar.icon:SetTexture(texture or 134400)
-    bar.nameText:SetText(name)
+    bar.icon:SetTexture(safeTex)
+    bar.nameText:SetText(dispName)
     bar.nameText:SetTextColor(qr, qg, qb, 1)
 
     bar.btnPass:SetEnabled(true); bar.btnPass:SetAlpha(1)
-    bar.btnNeed:SetEnabled(canNeed == true); bar.btnNeed:SetAlpha(canNeed == true and 1 or 0.25)
-    bar.btnGreed:SetEnabled(canGreed == true); bar.btnGreed:SetAlpha(canGreed == true and 1 or 0.25)
-    local showDis = (canDisenchant == true)
+    bar.btnNeed:SetEnabled(safeNeed); bar.btnNeed:SetAlpha(safeNeed and 1 or 0.25)
+    bar.btnGreed:SetEnabled(safeGreed); bar.btnGreed:SetAlpha(safeGreed and 1 or 0.25)
+    local showDis = safeDis
     bar.btnDis:SetEnabled(showDis); bar.btnDis:SetAlpha(showDis and 1 or 0.25)
     LayoutRollButtons(bar, showDis)
+    bar._checkAccum = 0
+    SetBarMouseHoverOnly(bar, true)
     if not existed and bar._animIn then
         bar._animIn:Stop()
         bar:SetAlpha(0)
@@ -609,10 +834,12 @@ function mod:OnCancelRoll(_, rollID)
 end
 
 function mod:ShowPreview()
+    if not self._active then return end
     EnsureContainer()
     local bar = AcquireBar(nil)
     bar.rollID = nil
     bar.bop = false
+    bar._checkAccum = 0
     nextSeq = nextSeq + 1
     bar._seq = nextSeq
     bar.endTime = GetTime() + 12
@@ -644,6 +871,7 @@ function mod:ShowPreview()
     bar.btnNeed:SetEnabled(true); bar.btnGreed:SetEnabled(true); bar.btnDis:SetEnabled(false)
     bar.btnNeed:SetAlpha(1); bar.btnGreed:SetAlpha(1); bar.btnDis:SetAlpha(0.25)
     LayoutRollButtons(bar, false)
+    SetBarMouseHoverOnly(bar, true)
     if bar._animIn then
         bar._animIn:Stop()
         bar:SetAlpha(0)
@@ -666,11 +894,18 @@ function mod:OnEnable()
     self:RegisterEvent("START_LOOT_ROLL", self.OnStartRoll)
     self:RegisterEvent("CANCEL_LOOT_ROLL", self.OnCancelRoll)
     self:RegisterEvent("CANCEL_ALL_LOOT_ROLLS", function() self:OnCancelRoll(nil, nil) end)
-    self:RegisterEvent("LOOT_ROLLS_COMPLETE", function() self:OnCancelRoll(nil, nil) end)
+    self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+        PruneStaleRolls()
+        HideNativeRollFrames()
+        RecoverActiveRolls()
+    end)
+    RecoverActiveRolls()
+    LayoutBars()
 end
 
 function mod:OnDisable()
     self:OnCancelRoll(nil, nil)
+    RestoreNativeRollFrames()
 end
 
 function mod:OnThemeChanged()

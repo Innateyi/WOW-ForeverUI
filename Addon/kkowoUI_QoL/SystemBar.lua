@@ -429,6 +429,7 @@ local function EnsureMicroAlertBanner()
 
     -- C++ AnimationGroup 丝滑淡入 → 停留 3.4 秒 → 淡出消失（零 OnUpdate）
     local ag = f:CreateAnimationGroup()
+    ag:SetToFinalAlpha(true)
     local fadeIn = ag:CreateAnimation("Alpha")
     fadeIn:SetOrder(1)
     fadeIn:SetFromAlpha(0)
@@ -450,6 +451,10 @@ local function EnsureMicroAlertBanner()
     fadeOut:SetSmoothing("IN")
 
     ag:SetScript("OnFinished", function()
+        f:SetAlpha(0)
+        f:Hide()
+    end)
+    ag:SetScript("OnStop", function()
         f:SetAlpha(0)
         f:Hide()
     end)
@@ -548,6 +553,24 @@ local function ResolveMicroAlertButtonId(frame, text)
     return nil
 end
 
+local function IsSafeTipObj(obj)
+    if not obj then return false end
+    if obj.IsForbidden then
+        local ok, forb = pcall(obj.IsForbidden, obj)
+        if not ok or forb then return false end
+    end
+    return true
+end
+
+local function CanHideTipObj(obj)
+    if not IsSafeTipObj(obj) then return false end
+    if _G.InCombatLockdown and _G.InCombatLockdown() and obj.IsProtected then
+        local okP, prot = pcall(obj.IsProtected, obj)
+        if okP and prot then return false end
+    end
+    return true
+end
+
 local function SuppressBlizzardMicroHelpTips(triggerBanner)
     if not (mod._active and mod:GetDB().replaceMicroAlerts ~= false) then return end
 
@@ -556,12 +579,12 @@ local function SuppressBlizzardMicroHelpTips(triggerBanner)
     if HT and HT.framePool and HT.framePool.EnumerateActive then
         pcall(function()
             for tip in HT.framePool:EnumerateActive() do
-                if tip and tip:IsShown() then
+                if IsSafeTipObj(tip) and tip.IsShown and tip:IsShown() then
                     local info = tip.info
                     local rawTxt = info and F.PlainString(info.text, nil) or nil
                     local btnId = ResolveMicroAlertButtonId(tip.relativeRegion or tip:GetParent(), rawTxt)
                     if btnId then
-                        tip:Hide()
+                        if CanHideTipObj(tip) then pcall(tip.Hide, tip) end
                         if triggerBanner and rawTxt and rawTxt ~= "" then
                             if btnId == "PlayerSpells" then
                                 local pts = GetUnspentTalentPoints()
@@ -584,7 +607,7 @@ local function SuppressBlizzardMicroHelpTips(triggerBanner)
     -- 2) 兜底隐藏经典版独立微菜单提醒框
     for _, globalName in ipairs({ "TalentMicroButtonAlert", "CollectionsMicroButtonAlert", "LFDMicroButtonAlert" }) do
         local af = _G[globalName]
-        if af and af.IsShown and af:IsShown() then
+        if CanHideTipObj(af) and af.IsShown and af:IsShown() then
             pcall(af.Hide, af)
         end
     end
@@ -1183,6 +1206,10 @@ local function CreateBar()
     clockFS:SetJustifyV("MIDDLE")
     clockFS:SetPoint("CENTER", 0, 0)
     clockBtn:SetScript("OnClick", function()
+        if _G.InCombatLockdown and _G.InCombatLockdown() then
+            F.Print("战斗中无法打开日历，请脱战后再试。")
+            return
+        end
         if _G.ToggleCalendar then
             pcall(_G.ToggleCalendar)
         elseif _G.TimeManager_Toggle then
@@ -1251,6 +1278,7 @@ local function CreateBar()
         defaultRelPoint = "BOTTOM",
         defaultX = 0,
         defaultY = 4,
+        allowShiftDrag = false,
     })
 
     updateFade = F.Theme.AttachCombatFade(barFrame, function()

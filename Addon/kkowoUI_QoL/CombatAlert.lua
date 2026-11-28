@@ -110,6 +110,8 @@ local function FinishCurrent()
     if #alertQueue > 0 then
         local nextType = table_remove(alertQueue, 1)
         PlayAlert(nextType, false)
+    elseif alertFrame then
+        alertFrame:Hide()
     end
 end
 
@@ -120,6 +122,7 @@ local function BuildFrames()
     alertFrame = CreateFrame("Frame", "kkowoUI_CombatAlert", _G.UIParent)
     alertFrame:SetFrameStrata("FULLSCREEN_DIALOG")
     alertFrame:SetSize(160, 140)
+    alertFrame:EnableMouse(false)
 
     F.Mover.Register({
         key = "CombatAlert",
@@ -130,8 +133,11 @@ local function BuildFrames()
         defaultRelPoint = "CENTER",
         defaultX = 0,
         defaultY = 260,
+        allowShiftDrag = false,
         isHidden = function() return not mod._active end,
     })
+    alertFrame:EnableMouse(false)
+    alertFrame:Hide()
 
     animFrame = CreateFrame("Frame", nil, alertFrame)
     animFrame:SetPoint("TOP", alertFrame, "TOP", 0, 0)
@@ -206,6 +212,7 @@ local function BuildFrames()
     textFrame.beamLine = beamLine
 
     local beamAnim = beamLine:CreateAnimationGroup()
+    beamAnim:SetToFinalAlpha(true)
     local bSc1 = AddAnim(beamAnim, "Scale", 0.22, 0); bSc1:SetOrder(1); bSc1:SetOrigin("CENTER", 0, 0); bSc1:SetScaleFrom(0.08, 1.0); bSc1:SetScaleTo(1.08, 1.0); bSc1:SetSmoothing("OUT")
     local bAl1 = AddAnim(beamAnim, "Alpha", 0.12, 0); bAl1:SetOrder(1); bAl1:SetFromAlpha(0); bAl1:SetToAlpha(0.92); bAl1:SetSmoothing("OUT")
     local bSc2 = AddAnim(beamAnim, "Scale", 0.36, 0.24); bSc2:SetOrder(2); bSc2:SetOrigin("CENTER", 0, 0); bSc2:SetScaleFrom(1.08, 1.0); bSc2:SetScaleTo(0.68, 1.0); bSc2:SetSmoothing("IN")
@@ -225,6 +232,7 @@ local function BuildFrames()
     end
 
     textFrame.enter = textFrame:CreateAnimationGroup()
+    textFrame.enter:SetToFinalAlpha(true)
     textFrame.enter.up = AddAnim(textFrame.enter, "Translation", 0.38, 0)
     textFrame.enter.down = AddAnim(textFrame.enter, "Translation", 0.1, 0.38)
     local tin = AddAnim(textFrame.enter, "Alpha", 0.45, 0); tin:SetFromAlpha(0); tin:SetToAlpha(1); tin:SetSmoothing("IN")
@@ -232,6 +240,7 @@ local function BuildFrames()
     textFrame.enter:SetScript("OnFinished", onTextFinished)
 
     textFrame.leave = textFrame:CreateAnimationGroup()
+    textFrame.leave:SetToFinalAlpha(true)
     local ltin = AddAnim(textFrame.leave, "Alpha", 0.3, 0); ltin:SetFromAlpha(0); ltin:SetToAlpha(1); ltin:SetSmoothing("IN")
     textFrame.leave.up = AddAnim(textFrame.leave, "Translation", 0.55, 0.55)
     local ltout = AddAnim(textFrame.leave, "Alpha", 0.55, 0.55); ltout:SetFromAlpha(1); ltout:SetToAlpha(0); ltout:SetSmoothing("OUT")
@@ -239,6 +248,7 @@ local function BuildFrames()
 
     -- 现代粗斜体缩放弹入 + 平滑淡出动效（零 OnUpdate，分段 Order 防止缩放重叠冲突）
     textFrame.modernPop = textFrame:CreateAnimationGroup()
+    textFrame.modernPop:SetToFinalAlpha(true)
     local mIn = AddAnim(textFrame.modernPop, "Alpha", 0.14, 0); mIn:SetOrder(1); mIn:SetFromAlpha(0); mIn:SetToAlpha(1); mIn:SetSmoothing("OUT")
     local mSc1 = AddAnim(textFrame.modernPop, "Scale", 0.16, 0); mSc1:SetOrder(1); mSc1:SetOrigin("CENTER", 0, 0); mSc1:SetScaleFrom(0.72, 0.72); mSc1:SetScaleTo(1.06, 1.06); mSc1:SetSmoothing("OUT")
     local mSc2 = AddAnim(textFrame.modernPop, "Scale", 0.10, 0); mSc2:SetOrder(2); mSc2:SetOrigin("CENTER", 0, 0); mSc2:SetScaleFrom(1.06, 1.06); mSc2:SetScaleTo(1.0, 1.0); mSc2:SetSmoothing("IN")
@@ -318,11 +328,11 @@ local function ApplySizes()
 end
 
 PlayAlert = function(alertType, preview)
+    if not mod._active then return end
     if not alertFrame then
         BuildFrames()
         ApplySizes()
     end
-    if not alertFrame:IsShown() then alertFrame:Show() end
     local db = mod:GetDB()
     local style = db.alertStyle or "modern"
     local useAnim = (style ~= "modern") and (db.animation ~= false)
@@ -331,6 +341,7 @@ PlayAlert = function(alertType, preview)
     if not preview and not useAnim and not useText and not db.sound then
         return
     end
+    if not alertFrame:IsShown() then alertFrame:Show() end
     if isPlaying then
         if preview then
             table_wipe(alertQueue)
@@ -352,7 +363,7 @@ PlayAlert = function(alertType, preview)
     curUseAnim = useAnim
     alertGen = alertGen + 1
 
-    if preview or db.sound then
+    if db.sound then
         local kitKey = (alertType == "ENTER") and db.soundEnter or db.soundLeave
         local kitID = SOUND_KITS[kitKey]
         if kitID and _G.PlaySound then
@@ -498,7 +509,10 @@ end
 function mod:OnEnable()
     BuildFrames()
     ApplySizes()
-    if alertFrame then alertFrame:Show() end
+    if alertFrame then
+        alertFrame:EnableMouse(false)
+        if not isPlaying then alertFrame:Hide() end
+    end
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         -- 过图若打断播放中的动效，暴雪不会补发 OnFinished，必须复位队列防止后续进/脱战提醒卡死
         table_wipe(alertQueue)
@@ -506,6 +520,7 @@ function mod:OnEnable()
         isPlaying = false
         curAlertType = nil
         curUseAnim = false
+        if alertFrame then alertFrame:Hide() end
     end)
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function() PlayAlert("ENTER", false) end)
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function() PlayAlert("LEAVE", false) end)

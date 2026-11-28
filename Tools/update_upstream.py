@@ -186,13 +186,15 @@ def load_tool(name):
 
 def wow_running():
     try:
-        out = subprocess.run(
+        res = subprocess.run(
             ['tasklist', '/FI', 'IMAGENAME eq Wow.exe'],
             capture_output=True, text=True, encoding='mbcs', errors='replace', timeout=10,
-        ).stdout
-        return 'Wow.exe' in out
+        )
+        if res.returncode != 0:
+            return True
+        return 'wow.exe' in res.stdout.lower()
     except Exception:
-        return False
+        return True
 
 
 def local_version(folder):

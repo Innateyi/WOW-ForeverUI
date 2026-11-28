@@ -54,7 +54,7 @@ end
 
 local function UpdatePauseBadge(show)
     local qf = _G.QuestFrame
-    if not qf then
+    if not qf or (qf.IsForbidden and qf:IsForbidden()) then
         return
     end
     if show and not pauseBadge then
@@ -79,11 +79,35 @@ local function TakeOverEUIQuestAuto()
     for eqtKey, ourKey in pairs(map) do
         local ok, on = pcall(EQT.Cfg, eqtKey)
         if ok and on == true then
+            if type(db.savedEUIQuestAuto) ~= "table" then
+                db.savedEUIQuestAuto = {}
+            end
+            if db.savedEUIQuestAuto[eqtKey] == nil then
+                db.savedEUIQuestAuto[eqtKey] = true
+            end
             db[ourKey] = true
             pcall(EQT.Set, eqtKey, false)
             changed = true
         end
     end
+    if changed and EQT.SyncAutoQuests then
+        pcall(EQT.SyncAutoQuests)
+    end
+end
+
+local function RestoreEUIQuestAuto()
+    local db = mod:GetDB()
+    if type(db.savedEUIQuestAuto) ~= "table" then return end
+    local EQT = _G.EllesmereUIQuestTracker
+    if not (EQT and EQT.Set) then return end
+    local changed = false
+    for eqtKey, prev in pairs(db.savedEUIQuestAuto) do
+        if prev == true then
+            pcall(EQT.Set, eqtKey, true)
+            changed = true
+        end
+    end
+    db.savedEUIQuestAuto = nil
     if changed and EQT.SyncAutoQuests then
         pcall(EQT.SyncAutoQuests)
     end
@@ -116,20 +140,28 @@ local function HasUsableEquipReward(n)
     local isUsable = _G.IsUsableItem or (_G.C_Item and _G.C_Item.IsUsableItem)
     local playerLvl = (_G.UnitLevel and F.PlainNumber(_G.UnitLevel("player"), 1)) or 1
     for i = 1, n do
-        local link = _G.GetQuestItemLink and _G.GetQuestItemLink("choice", i)
+        local okL, rawLink = pcall(_G.GetQuestItemLink or function() return nil end, "choice", i)
+        local link = okL and F.PlainString(rawLink, nil) or nil
         if not link then
             return true -- 物品未缓存时保守停手
         end
-        local itemName, _, _, _, minLevel, _, _, _, equipLoc = GetItemInfoCompat(link)
+        local okI, itemName, _, _, _, minLevel, _, _, _, equipLoc = pcall(GetItemInfoCompat, link)
+        itemName = okI and F.PlainString(itemName, nil) or nil
+        minLevel = okI and F.PlainNumber(minLevel, nil) or nil
+        equipLoc = okI and F.PlainString(equipLoc, nil) or nil
         if not itemName then
             return true -- 链接已有但物品数据未缓存：同样保守停手，绝不替玩家选奖励
         end
         if equipLoc and equipLoc ~= "" and equipLoc ~= "INVTYPE_BAG" then
             -- 高等级跨级任务奖励装备会被 IsUsableItem 因等级不足判 false，同样保守停手保护升级装
-            if type(minLevel) == "number" and minLevel > playerLvl then
+            if minLevel and minLevel > playerLvl then
                 return true
             end
-            if not isUsable or isUsable(link) then
+            if not isUsable then
+                return true
+            end
+            local okU, usable = pcall(isUsable, link)
+            if not okU or F.IsSecret(usable) or usable then
                 return true
             end
         end
@@ -140,12 +172,14 @@ end
 local function BestVendorRewardIndex(n)
     local best, bestPrice = nil, -1
     for i = 1, n do
-        local link = _G.GetQuestItemLink and _G.GetQuestItemLink("choice", i)
+        local okL, rawLink = pcall(_G.GetQuestItemLink or function() return nil end, "choice", i)
+        local link = okL and F.PlainString(rawLink, nil) or nil
         if not link then
             return nil
         end
-        local price = select(11, GetItemInfoCompat(link))
-        if type(price) ~= "number" then
+        local okI, price = pcall(function() return select(11, GetItemInfoCompat(link)) end)
+        price = okI and F.PlainNumber(price, nil) or nil
+        if not price then
             return nil
         end
         if price > bestPrice then
@@ -280,7 +314,7 @@ function mod:OnQuestEvent(event)
             if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then return end
             if not (_G.QuestFrame and _G.QuestFrame:IsShown()) then return end
             if _G.QuestFrameProgressPanel and not _G.QuestFrameProgressPanel:IsShown() then return end
-            local money = (_G.GetQuestMoneyToGet and _G.GetQuestMoneyToGet()) or 0
+            local money = (_G.GetQuestMoneyToGet and F.PlainNumber(_G.GetQuestMoneyToGet(), 0)) or 0
             if money > 0 then
                 Note("该任务需要支付金币才能交付，已暂停自动提交。")
                 return
@@ -304,12 +338,12 @@ function mod:OnQuestEvent(event)
             if _G.IsShiftKeyDown and _G.IsShiftKeyDown() then return end
             if not (_G.QuestFrame and _G.QuestFrame:IsShown()) then return end
             if _G.QuestFrameRewardPanel and not _G.QuestFrameRewardPanel:IsShown() then return end
-            local money = (_G.GetQuestMoneyToGet and _G.GetQuestMoneyToGet()) or 0
+            local money = (_G.GetQuestMoneyToGet and F.PlainNumber(_G.GetQuestMoneyToGet(), 0)) or 0
             if money > 0 then
                 Note("该任务需要支付金币才能交付，已暂停自动提交。")
                 return
             end
-            local n = (_G.GetNumQuestChoices and _G.GetNumQuestChoices()) or 0
+            local n = (_G.GetNumQuestChoices and F.PlainNumber(_G.GetNumQuestChoices(), 0)) or 0
             if n > 1 then
                 if not db.pickBestReward then
                     Note(("有 %d 个奖励可选，请手动挑选。"):format(n))
@@ -344,11 +378,15 @@ function mod:OnConfirmEvent(event, slotOrRoll, roll, ...)
     if not db.autoConfirmBind then
         return
     end
+    local id = F.PlainNumber(slotOrRoll, nil)
+    if not id then return end
     if event == "CONFIRM_LOOT_ROLL" and _G.ConfirmLootRoll then
-        pcall(_G.ConfirmLootRoll, slotOrRoll, roll)
+        local rType = F.PlainNumber(roll, nil)
+        if not rType then return end
+        pcall(_G.ConfirmLootRoll, id, rType)
         if _G.StaticPopup_Hide then pcall(_G.StaticPopup_Hide, "CONFIRM_LOOT_ROLL") end
     elseif event == "LOOT_BIND_CONFIRM" and _G.ConfirmLootSlot then
-        pcall(_G.ConfirmLootSlot, slotOrRoll)
+        pcall(_G.ConfirmLootSlot, id)
         if _G.StaticPopup_Hide then pcall(_G.StaticPopup_Hide, "LOOT_BIND") end
     end
 end
@@ -382,6 +420,7 @@ end
 
 function mod:OnDisable()
     UpdatePauseBadge(false)
+    RestoreEUIQuestAuto()
 end
 
 function mod:BuildOptions(W, parent, y, enableSlot, blank)

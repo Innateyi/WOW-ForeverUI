@@ -10,15 +10,33 @@ local _G = _G
 ns._addonName = addonName
 ns._artPath = "Interface\\AddOns\\" .. addonName .. "\\Vendor\\art\\"
 
-local function IsStandaloneLoaded()
-    local fn = (_G.C_AddOns and _G.C_AddOns.IsAddOnLoaded) or _G.IsAddOnLoaded
-    if type(fn) ~= "function" then
-        return false
+local function IsStandaloneActive()
+    local ca = _G.C_AddOns
+    local isLoaded = (ca and ca.IsAddOnLoaded) or _G.IsAddOnLoaded
+    if type(isLoaded) == "function" then
+        local ok, loaded = pcall(isLoaded, "PrettyTooltip")
+        if ok and loaded == true then
+            return true
+        end
     end
-    local ok, loaded = pcall(fn, "PrettyTooltip")
-    return ok and loaded == true
+    local getState = (ca and ca.GetAddOnEnableState) or _G.GetAddOnEnableState
+    if type(getState) == "function" then
+        local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+        local ok, state
+        if guid then
+            ok, state = pcall(getState, "PrettyTooltip", guid)
+            if ok and type(state) == "number" and state > 0 then
+                return true
+            end
+        end
+        ok, state = pcall(getState, "PrettyTooltip")
+        if ok and type(state) == "number" and state > 0 then
+            return true
+        end
+    end
+    return false
 end
 
-if IsStandaloneLoaded() then
+if IsStandaloneActive() then
     ns._yielded = true
 end

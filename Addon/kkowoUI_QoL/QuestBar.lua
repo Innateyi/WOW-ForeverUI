@@ -107,7 +107,7 @@ local function IsTrackerBlocked(EQT)
                     if inEncounter then return true end
                     if _G.C_InstanceEncounter and _G.C_InstanceEncounter.IsEncounterInProgress then
                         local okEnc, inEnc = pcall(_G.C_InstanceEncounter.IsEncounterInProgress)
-                        if okEnc and inEnc then return true end
+                        if okEnc and not F.IsSecret(inEnc) and inEnc == true then return true end
                     end
                 end
             end
@@ -254,11 +254,11 @@ end
 
 local function FindTrackerHeader()
     local tracker = _G.EUI_CustomQuestTracker
-    if not (tracker and tracker.GetChildren) then
+    if not (tracker and not (tracker.IsForbidden and tracker:IsForbidden()) and tracker.GetChildren) then
         return nil, nil
     end
     for _, child in ipairs({ tracker:GetChildren() }) do
-        if child and child.count and child.toggle then
+        if child and not (child.IsForbidden and child:IsForbidden()) and child.count and child.toggle then
             return tracker, child
         end
     end
@@ -300,7 +300,7 @@ end
 
 local function HookZoneLines()
     local tracker = _G.EUI_CustomQuestTracker
-    if not (tracker and tracker.GetChildren) then return end
+    if not (tracker and not (tracker.IsForbidden and tracker:IsForbidden()) and tracker.GetChildren) then return end
     local ST = F.StyleTokens
     if ST and tracker.bg then
         local rad = ST.GetCornerRadius(8)
@@ -311,8 +311,8 @@ local function HookZoneLines()
         end
     end
     for _, sf in ipairs({ tracker:GetChildren() }) do
-        local child = sf and sf.GetScrollChild and sf:GetScrollChild()
-        if child then
+        local child = sf and not (sf.IsForbidden and sf:IsForbidden()) and sf.GetScrollChild and sf:GetScrollChild()
+        if child and not (child.IsForbidden and child:IsForbidden()) then
             -- 修复图 8：EUI 任务追踪器的 ScrollFrame 紧贴 header 底边（-HEADER_H），鸿蒙大字号下
             -- 「任务」与快捷钮下划线会遮挡首行区域名。同步将 TOPLEFT 与 BOTTOMRIGHT 整体下移 7px，
             -- 保持 ScrollFrame 视口高度不变（避免缩矮 7px 导致 SyncTrackerClip 误判裁切与末行任务道具按钮隐藏）。
@@ -715,30 +715,33 @@ local function CreateBar()
     barFrame:SetMovable(true)
     barFrame:SetClampedToScreen(true)
 
+    local freeDragging = false
+    local function StopFreeDrag(savePos)
+        if not freeDragging then return end
+        freeDragging = false
+        if not barFrame then return end
+        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
+        pcall(barFrame.StopMovingOrSizing, barFrame)
+        if savePos and not isDockedNow then
+            local pt, _, rpt, x, y = barFrame:GetPoint(1)
+            if pt then F.DB.SavePosition("QuestBar", pt, rpt, x, y) end
+        end
+    end
+    barFrame._stopFreeDrag = StopFreeDrag
+
     local function AttachFreeDrag(f)
-        local dragging = false
         f:RegisterForDrag("LeftButton")
         f:SetScript("OnDragStart", function()
             if not isDockedNow and _G.IsShiftKeyDown and _G.IsShiftKeyDown() and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
-                dragging = true
+                freeDragging = true
                 barFrame:StartMoving()
             end
         end)
         f:SetScript("OnDragStop", function()
-            if not dragging then return end
-            dragging = false
-            barFrame:StopMovingOrSizing()
-            if not isDockedNow then
-                local pt, _, rpt, x, y = barFrame:GetPoint(1)
-                if pt then F.DB.SavePosition("QuestBar", pt, rpt, x, y) end
-            end
+            StopFreeDrag(true)
         end)
         f:HookScript("OnHide", function()
-            if not dragging then return end
-            dragging = false
-            if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
-                barFrame:StopMovingOrSizing()
-            end
+            StopFreeDrag(false)
         end)
     end
     AttachFreeDrag(barFrame)
@@ -908,7 +911,7 @@ function mod:OnEnable()
     end
     if _G.C_InstanceEncounter and _G.C_InstanceEncounter.IsEncounterInProgress then
         local okEnc, inEnc = pcall(_G.C_InstanceEncounter.IsEncounterInProgress)
-        inEncounter = okEnc and inEnc == true
+        inEncounter = okEnc and not F.IsSecret(inEnc) and inEnc == true
     else
         inEncounter = false
     end
@@ -962,6 +965,11 @@ function mod:OnEnable()
                 EnsureEmptyTrackerShown(_G.EUI_CustomQuestTracker)
             end
         end)
+    end)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        if barFrame and barFrame._stopFreeDrag then
+            barFrame._stopFreeDrag(true)
+        end
     end)
     self:RegisterEvent("ZONE_CHANGED_NEW_AREA", RefreshButtons)
     self:RegisterEvent("QUEST_WATCH_LIST_CHANGED", function()

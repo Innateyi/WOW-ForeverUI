@@ -48,13 +48,16 @@ TEXT_EXT = ('.lua', '.xml', '.toc')
 
 def wow_running():
     try:
-        out = subprocess.run(
+        r = subprocess.run(
             ['tasklist', '/FI', 'IMAGENAME eq Wow.exe'],
             capture_output=True, text=True, encoding='mbcs', errors='replace', timeout=10,
-        ).stdout
-        return 'Wow.exe' in out
+        )
+        if r.returncode != 0:
+            return True
+        return 'Wow.exe' in r.stdout
     except Exception:
-        return False
+        # fail-closed：无法确认游戏是否退出时禁止改盘
+        return True
 
 
 def toc_version(d):
@@ -110,12 +113,16 @@ def rewrite_toc(toc_path):
     open(toc_path, 'wb').write(text.encode('utf-8'))
 
 
-def rewrite_tree(d):
-    # 清除网易 DD 来源指纹文件
+def rewrite_tree(d, meta_backup_dir=None):
+    # 清除网易 DD 来源指纹文件（移入 backups，绝不直接删除）
     for fn in DD_META_FILES:
         p = os.path.join(d, fn)
         if os.path.exists(p):
-            os.remove(p)
+            if meta_backup_dir:
+                os.makedirs(meta_backup_dir, exist_ok=True)
+                shutil.move(p, os.path.join(meta_backup_dir, fn))
+            else:
+                os.replace(p, p + '.disabled_meta')
 
     # 替换所有代码/TOC 中写死的贴图路径
     for base, _, files in os.walk(d):
@@ -146,8 +153,8 @@ def rewrite_tree(d):
         rewrite_toc(dst)
 
 
-def account_dirs():
-    acc_root = os.path.join(WOW_ROOT, 'WTF', 'Account')
+def account_dirs(wow_root=None):
+    acc_root = os.path.join(wow_root or os.environ.get('WOW_FOREVER_DIR', WOW_ROOT), 'WTF', 'Account')
     if not os.path.isdir(acc_root):
         return []
     return [
@@ -169,9 +176,9 @@ def char_dirs(acc):
     return res
 
 
-def migrate_saved_variables(check_only):
+def migrate_saved_variables(check_only, wow_root=None):
     todo = done = 0
-    for acc in account_dirs():
+    for acc in account_dirs(wow_root):
         places = [os.path.join(acc, 'SavedVariables')] + [os.path.join(c, 'SavedVariables') for c in char_dirs(acc)]
         for sv in places:
             src = os.path.join(sv, OLD_NAME + '.lua')
@@ -184,9 +191,11 @@ def migrate_saved_variables(check_only):
     return todo, done
 
 
-def migrate_addons_txt(check_only):
+def migrate_addons_txt(check_only, wow_root=None, bk_dir=None):
     todo = done = 0
-    for acc in account_dirs():
+    root_dir = wow_root or os.environ.get('WOW_FOREVER_DIR', WOW_ROOT)
+    acc_root = os.path.join(root_dir, 'WTF', 'Account')
+    for acc in account_dirs(root_dir):
         for c in char_dirs(acc):
             p = os.path.join(c, 'AddOns.txt')
             if not os.path.exists(p):
@@ -206,6 +215,11 @@ def migrate_addons_txt(check_only):
             if state and not has_new:
                 todo += 1
                 if not check_only:
+                    if bk_dir:
+                        rel = os.path.relpath(p, acc_root)
+                        b_dst = os.path.join(bk_dir, 'AddOnsTxt', rel)
+                        os.makedirs(os.path.dirname(b_dst), exist_ok=True)
+                        shutil.copy2(p, b_dst)
                     while lines and lines[-1] == '':
                         lines.pop()
                     lines.append(f'{NEW_NAME}: {state}')
@@ -235,11 +249,12 @@ def dir_has_files(d):
     return False
 
 
-def rmtree_retry(d, retries=6, delay=0.4):
+def move_retry(src, dst, retries=6, delay=0.4):
     last_err = None
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
     for _ in range(retries):
         try:
-            shutil.rmtree(d)
+            shutil.move(src, dst)
             return True, None
         except OSError as e:
             last_err = e
@@ -248,28 +263,34 @@ def rmtree_retry(d, retries=6, delay=0.4):
 
 
 def run(check_only=False):
-    has_old_dir = os.path.isdir(OLD_DIR)
-    has_old = has_old_dir and dir_has_files(OLD_DIR)
+    wow_root = os.environ.get('WOW_FOREVER_DIR', WOW_ROOT)
+    addons_dir = os.path.join(wow_root, 'Interface', 'AddOns')
+    old_dir = os.path.join(addons_dir, OLD_NAME)
+    new_dir = os.path.join(addons_dir, NEW_NAME)
+    backup_root = os.environ.get('WOW_BACKUP_ROOT', BACKUP_ROOT)
+
+    has_old_dir = os.path.isdir(old_dir)
+    has_old = has_old_dir and dir_has_files(old_dir)
     has_old_empty = has_old_dir and not has_old
-    has_new = os.path.isdir(NEW_DIR) and dir_has_files(NEW_DIR)
+    has_new = os.path.isdir(new_dir) and dir_has_files(new_dir)
     if not has_old and not has_new:
         return ('SKIPPED', f'未安装 {OLD_NAME}（可选插件，已跳过）')
 
-    sv_todo, _ = migrate_saved_variables(True)
-    txt_todo, _ = migrate_addons_txt(True)
-    new_dirty = has_new and (bool(has_dd_meta(NEW_DIR)) or title_needs_update(NEW_DIR))
+    sv_todo, _ = migrate_saved_variables(True, wow_root)
+    txt_todo, _ = migrate_addons_txt(True, wow_root)
+    new_dirty = has_new and (bool(has_dd_meta(new_dir)) or title_needs_update(new_dir))
 
     if not has_old and not has_old_empty and not sv_todo and not txt_todo and not new_dirty:
-        left = leftover_paths(NEW_DIR)
+        left = leftover_paths(new_dir)
         if left:
             return ('BROKEN', f'{NEW_NAME} 里仍有 {len(left)} 个文件指向旧文件夹：{left[:3]}')
-        return ('APPLIED', f'已改名为 {NEW_NAME} (Scales by kkowo, v{toc_version(NEW_DIR)})')
+        return ('APPLIED', f'已改名为 {NEW_NAME} (Scales by kkowo, v{toc_version(new_dir)})')
 
     what = []
     if has_old:
-        what.append(f'{OLD_NAME} (v{toc_version(OLD_DIR)}) 待改名为 {NEW_NAME}' + ('并替换现有版' if has_new else ''))
+        what.append(f'{OLD_NAME} (v{toc_version(old_dir)}) 待改名为 {NEW_NAME}' + ('并替换现有版' if has_new else ''))
     elif has_old_empty:
-        what.append(f'空残留目录 {OLD_NAME} 待清理')
+        what.append(f'空残留目录 {OLD_NAME} 待移入备份')
     if new_dirty and not has_old:
         what.append(f'{NEW_NAME} 待统一标题并清理 DD/Curse 指纹')
     if sv_todo:
@@ -283,39 +304,39 @@ def run(check_only=False):
         return ('GAME_RUNNING', '游戏正在运行：请完全退出魔兽世界后再执行（存档与 AddOns.txt 会在退出时被覆盖）')
 
     stamp = time.strftime('%Y%m%d_%H%M%S')
-    os.makedirs(BACKUP_ROOT, exist_ok=True)
+    bk_session = os.path.join(backup_root, f'{OLD_NAME}_rename_{stamp}')
+    os.makedirs(bk_session, exist_ok=True)
     lock_note = ''
     if has_old:
-        ver = toc_version(OLD_DIR)
-        tmp = os.path.join(BACKUP_ROOT, f'_scales_build_{stamp}')
-        shutil.copytree(OLD_DIR, tmp)
-        rewrite_tree(tmp)
+        ver = toc_version(old_dir)
+        tmp = os.path.join(bk_session, f'_scales_build_{stamp}')
+        shutil.copytree(old_dir, tmp)
+        rewrite_tree(tmp, meta_backup_dir=os.path.join(bk_session, 'removed_dd_meta'))
         left = leftover_paths(tmp)
         if left:
-            shutil.rmtree(tmp, ignore_errors=True)
-            return ('ANCHOR_MISMATCH', f'改名后仍有文件指向旧文件夹：{left[:3]}，未做任何改动')
+            return ('ANCHOR_MISMATCH', f'改名后仍有文件指向旧文件夹：{left[:3]}，未做任何改动（暂存见 {tmp}）')
         if has_new:
-            shutil.move(NEW_DIR, os.path.join(BACKUP_ROOT, f'{NEW_NAME}_v{toc_version(NEW_DIR)}_替换前_{stamp}'))
-        shutil.move(tmp, NEW_DIR)
-        bk_old = os.path.join(BACKUP_ROOT, f'{OLD_NAME}_v{ver}_改名前原文件夹_{stamp}')
-        shutil.copytree(OLD_DIR, bk_old)
-        ok_rm, err_rm = rmtree_retry(OLD_DIR)
-        if not ok_rm:
-            lock_note = f'（旧空目录 {OLD_NAME} 仍被占用：{err_rm}，关闭网易DD后再删即可）'
+            shutil.move(new_dir, os.path.join(bk_session, f'{NEW_NAME}_v{toc_version(new_dir)}_替换前'))
+        shutil.move(tmp, new_dir)
+        bk_old = os.path.join(bk_session, f'{OLD_NAME}_v{ver}_改名前原文件夹')
+        ok_mv, err_mv = move_retry(old_dir, bk_old)
+        if not ok_mv:
+            lock_note = f'（旧目录 {OLD_NAME} 仍被占用：{err_mv}，关闭网易DD后再运行即可移入备份）'
     elif has_old_empty:
-        ok_rm, err_rm = rmtree_retry(OLD_DIR)
-        if not ok_rm:
-            lock_note = f'（空目录 {OLD_NAME} 仍被占用：{err_rm}，请先关闭网易DD后再运行）'
+        bk_empty = os.path.join(bk_session, f'{OLD_NAME}_空残留目录')
+        ok_mv, err_mv = move_retry(old_dir, bk_empty)
+        if not ok_mv:
+            lock_note = f'（空目录 {OLD_NAME} 仍被占用：{err_mv}，请先关闭网易DD后再运行）'
     if new_dirty and not has_old:
-        shutil.copytree(NEW_DIR, os.path.join(BACKUP_ROOT, f'{NEW_NAME}_v{toc_version(NEW_DIR)}_清理前_{stamp}'))
-        rewrite_tree(NEW_DIR)
+        shutil.copytree(new_dir, os.path.join(bk_session, f'{NEW_NAME}_v{toc_version(new_dir)}_清理前'))
+        rewrite_tree(new_dir, meta_backup_dir=os.path.join(bk_session, 'removed_dd_meta'))
 
-    _, sv_done = migrate_saved_variables(False)
-    _, txt_done = migrate_addons_txt(False)
+    _, sv_done = migrate_saved_variables(False, wow_root)
+    _, txt_done = migrate_addons_txt(False, wow_root, bk_dir=bk_session)
     status = 'WARN_LOCKED' if lock_note else 'PATCHED'
     return (
         status,
-        f'{NEW_NAME} (Scales by kkowo, v{toc_version(NEW_DIR)}) 就绪；'
+        f'{NEW_NAME} (Scales by kkowo, v{toc_version(new_dir)}) 就绪；'
         f'复制存档 {sv_done} 份，补 AddOns.txt {txt_done} 个{lock_note}',
     )
 

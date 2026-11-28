@@ -1,10 +1,11 @@
 ----------------------------------------------------------------------
 --  kkowoUI_Options — Diagnostics.lua (LoadOnDemand: 1)
 --  内置诊断与验收工具集：
---    • /kk harvest  ：官方译名合规采集 + CVar/插件盘点（写入 kkowoUIDB.harvest）
---    • /kk probe    ：聊天标签逐帧探针 + 姓名板标记矩阵被动记录（写入 kkowoUIDB.probe）
---    • /kk markcal  ：头顶标记视觉校准滑块（写入 kkowoUIDB.markcal）
---    • /kk selftest ：自动化回归断言套件（写入 kkowoUIDB.selftest，战斗中拒绝执行）
+--    • /kk harvest    ：官方译名合规采集 + CVar/插件盘点（写入 kkowoUIDB.harvest）
+--    • /kk probe      ：聊天标签逐帧探针 + 姓名板标记矩阵被动记录（写入 kkowoUIDB.probe）
+--    • /kk markcal    ：头顶标记视觉校准滑块（写入 kkowoUIDB.markcal）
+--    • /kk selftest   ：自动化回归断言套件（写入 kkowoUIDB.selftest，战斗中拒绝执行）
+--    • /kk clickcheck ：只读战斗安全隐形挡点击排查（鼠标下框体栈 + 全屏隐形吃点击扫描）
 ----------------------------------------------------------------------
 local _G = _G
 local F = _G.kkowoUI
@@ -94,6 +95,7 @@ local function EnsureHarvestUI()
     f:SetPoint("BOTTOMRIGHT", _G.UIParent, "BOTTOMRIGHT", -24, 96)
     f:SetFrameStrata("DIALOG")
     f:SetFrameLevel(120)
+    f:EnableMouse(false)
     if F.Theme and F.Theme.StylePanel then
         F.Theme.StylePanel(f, 0.90, 0.85)
     end
@@ -228,7 +230,7 @@ end
 local scanTooltip = nil
 local function ScanNpcNameByTooltip(id)
     if not scanTooltip then
-        scanTooltip = CreateFrame("GameTooltip", "kkowoUI_HarvestScanTip", _G.UIParent, "GameTooltipTemplate")
+        scanTooltip = CreateFrame("GameTooltip", "kkowoUI_HarvestScanTip", _G.UIParent, "SharedTooltipTemplate")
         scanTooltip:SetOwner(_G.UIParent, "ANCHOR_NONE")
     end
     scanTooltip:ClearLines()
@@ -535,6 +537,19 @@ local function InstallProbeCounters()
     end
 end
 
+local function SafeBoolMethod(obj, method)
+    if not (obj and type(obj[method]) == "function") then return nil end
+    local ok, v = pcall(obj[method], obj)
+    if not ok or F.IsSecret(v) then return nil end
+    return v == true
+end
+
+local function SafeBoolFn(fn, ...)
+    if type(fn) ~= "function" then return false end
+    local ok, v = pcall(fn, ...)
+    return ok and not F.IsSecret(v) and v == true
+end
+
 local function CaptureChatFrameSnapshot(frameIdx, dt)
     local cf1 = _G.ChatFrame1
     local cf2 = _G.ChatFrame2
@@ -563,22 +578,22 @@ local function CaptureChatFrameSnapshot(frameIdx, dt)
         local fsc = cf2.FontStringContainer
         local pt, rel, rpt, x, y = cf2:GetPoint(1)
         snap.cf2 = {
-            shown = cf2:IsShown() == true,
+            shown = SafeBoolMethod(cf2, "IsShown") == true,
             alpha = Round2(cf2:GetAlpha()),
-            fscAlpha = fsc and Round2(fsc:GetAlpha()) or nil,
+            fscAlpha = fsc and IsSafeFrame(fsc) and Round2(fsc:GetAlpha()) or nil,
             w = Round2(cf2:GetWidth()),
             h = Round2(cf2:GetHeight()),
             left = Round2(cf2:GetLeft()),
             bottom = Round2(cf2:GetBottom()),
             pt = F.PlainString(pt, nil),
-            rel = rel and rel.GetName and F.PlainString(rel:GetName(), nil) or nil,
+            rel = rel and IsSafeFrame(rel) and rel.GetName and F.PlainString(rel:GetName(), nil) or nil,
             rpt = F.PlainString(rpt, nil),
             x = Round2(x),
             y = Round2(y),
-            msgs = cf2.GetNumMessages and F.PlainNumber(cf2:GetNumMessages(), nil) or nil,
-            scroll = cf2.GetScrollOffset and F.PlainNumber(cf2:GetScrollOffset(), nil) or nil,
-            atBot = cf2.AtBottom and (cf2:AtBottom() == true) or nil,
-            fading = cf2.GetFading and (cf2:GetFading() == true) or nil,
+            msgs = cf2.GetNumMessages and F.PlainNumber(select(2, pcall(cf2.GetNumMessages, cf2)), nil) or nil,
+            scroll = cf2.GetScrollOffset and F.PlainNumber(select(2, pcall(cf2.GetScrollOffset, cf2)), nil) or nil,
+            atBot = SafeBoolMethod(cf2, "AtBottom"),
+            fading = SafeBoolMethod(cf2, "GetFading"),
             locked = cf2.isLocked == true,
         }
         -- 检查 EUI bg 几何
@@ -599,10 +614,10 @@ local function CaptureChatFrameSnapshot(frameIdx, dt)
     end
     if cf1 and IsSafeFrame(cf1) then
         snap.cf1 = {
-            shown = cf1:IsShown() == true,
-            msgs = cf1.GetNumMessages and F.PlainNumber(cf1:GetNumMessages(), nil) or nil,
-            scroll = cf1.GetScrollOffset and F.PlainNumber(cf1:GetScrollOffset(), nil) or nil,
-            atBot = cf1.AtBottom and (cf1:AtBottom() == true) or nil,
+            shown = SafeBoolMethod(cf1, "IsShown") == true,
+            msgs = cf1.GetNumMessages and F.PlainNumber(select(2, pcall(cf1.GetNumMessages, cf1)), nil) or nil,
+            scroll = cf1.GetScrollOffset and F.PlainNumber(select(2, pcall(cf1.GetScrollOffset, cf1)), nil) or nil,
+            atBot = SafeBoolMethod(cf1, "AtBottom"),
             locked = cf1.isLocked == true,
         }
     end
@@ -638,12 +653,12 @@ local function InspectMarkerMatrix(reason)
     }
 
     local function InspectUnit(u, np)
-        local isForb = np and np.IsForbidden and np:IsForbidden() or false
+        local isForb = not IsSafeFrame(np)
         local rec = {
             unit = u,
             forbidden = isForb,
         }
-        if u and _G.UnitExists and _G.UnitExists(u) then
+        if u and SafeBoolFn(_G.UnitExists, u) then
             local okP, isPl = pcall(_G.UnitIsPlayer, u)
             rec.isPlayer = okP and not F.IsSecret(isPl) and isPl == true or false
             local okS, isSelf = pcall(_G.UnitIsUnit, u, "player")
@@ -726,7 +741,7 @@ local function InspectMarkerMatrix(reason)
 
     -- 玩家自身与当前目标
     matrix.units[#matrix.units + 1] = InspectUnit("player", _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit and select(2, pcall(_G.C_NamePlate.GetNamePlateForUnit, "player")) or nil)
-    if _G.UnitExists and _G.UnitExists("target") then
+    if SafeBoolFn(_G.UnitExists, "target") then
         local tnp = _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit and select(2, pcall(_G.C_NamePlate.GetNamePlateForUnit, "target")) or nil
         matrix.units[#matrix.units + 1] = InspectUnit("target", tnp)
     end
@@ -736,8 +751,8 @@ local function InspectMarkerMatrix(reason)
         if ok and type(list) == "table" then
             for _, np in ipairs(list) do
                 if np then
-                    local isForb = np.IsForbidden and np:IsForbidden() or false
-                    local u = (not isForb) and F.PlainString(np.namePlateUnitToken or (np.UnitFrame and np.UnitFrame.unit), nil) or nil
+                    local isForb = not IsSafeFrame(np)
+                    local u = (not isForb) and F.PlainString(np.namePlateUnitToken or (np.UnitFrame and IsSafeFrame(np.UnitFrame) and np.UnitFrame.unit), nil) or nil
                     matrix.units[#matrix.units + 1] = InspectUnit(u or "forbidden_plate", np)
                 end
             end
@@ -855,6 +870,7 @@ function Diag.OpenMarkCalibrator()
         f:RegisterForDrag("LeftButton")
         f:SetScript("OnDragStart", f.StartMoving)
         f:SetScript("OnDragStop", f.StopMovingOrSizing)
+        f:HookScript("OnHide", f.StopMovingOrSizing)
         if F.Theme and F.Theme.StylePanel then F.Theme.StylePanel(f, 0.94, 0.90) end
         if F.Theme and F.Theme.RegisterEscapeClose then F.Theme.RegisterEscapeClose(f) end
 
@@ -1159,4 +1175,379 @@ function Diag.RunSelfTest()
             end
         end
     end
+end
+
+----------------------------------------------------------------------
+--  5) /kk clickcheck — 实机只读隐形挡点击排查（战斗中 100% 安全，绝不改任何框体）
+----------------------------------------------------------------------
+local BLIZZ_KNOWN_PREFIXES = {
+    "GroupLoot", "BonusRoll", "LootFrame", "BottomManagedFrame", "TopManagedFrame",
+    "BuffFrame", "DebuffFrame", "DurabilityFrame", "MainMenu", "MultiBar",
+    "ActionButton", "StaticPopup", "HelpTip", "GameMenu", "PlayerFrame",
+    "TargetFrame", "FocusFrame", "PartyFrame", "CompactRaid", "ChatFrame",
+    "GeneralDockManager", "Minimap", "ObjectiveTracker", "WorldMap",
+    "CharacterFrame", "CharacterModel", "PaperDoll", "SpellBook", "PlayerSpells",
+    "MacroFrame", "TradeFrame", "TaxiFrame", "GossipFrame", "QuestFrame",
+    "GhostFrame", "ZoneAbility", "ExtraAction", "OverrideAction", "AlertFrame",
+    "QueueStatus", "UIErrors", "RaidBossEmote", "MirrorTimer",
+}
+
+local function SafeFrameBool(obj, method)
+    if not (obj and type(obj[method]) == "function") then return nil end
+    local ok, val = pcall(obj[method], obj)
+    if not ok or F.IsSecret(val) then return nil end
+    return val == true
+end
+
+local function SafeFrameString(obj, method)
+    if not (obj and type(obj[method]) == "function") then return nil end
+    local ok, val = pcall(obj[method], obj)
+    if not ok then return nil end
+    return F.PlainString(val, nil)
+end
+
+local function SafeFrameNumber(obj, method, fallback)
+    if not (obj and type(obj[method]) == "function") then return fallback end
+    local ok, val = pcall(obj[method], obj)
+    if not ok then return fallback end
+    return F.PlainNumber(val, fallback)
+end
+
+local function MatchAnyPrefix(name, list)
+    if type(name) ~= "string" or name == "" then return false end
+    for i = 1, #list do
+        local p = list[i]
+        if name:sub(1, #p) == p then return true end
+    end
+    return false
+end
+
+local function ClassifyFrameOwner(frame)
+    local cur = frame
+    for _ = 1, 5 do
+        if not cur or not IsSafeFrame(cur) then break end
+        local nm = SafeFrameString(cur, "GetName")
+        if nm and nm ~= "" then
+            if nm:sub(1, 7) == "kkowoUI" or nm:sub(1, 4) == "FUI_" then
+                return "kkowoUI"
+            end
+            if nm:sub(1, 9) == "Ellesmere" or nm:sub(1, 4) == "EUI_"
+                or nm:sub(1, 4) == "ERB_" or nm:sub(1, 5) == "ECME_"
+                or nm:sub(1, 4) == "EAB_" then
+                return "EUI"
+            end
+            if MatchAnyPrefix(nm, BLIZZ_KNOWN_PREFIXES) then
+                return "Blizzard"
+            end
+        end
+        local okP, par = pcall(cur.GetParent, cur)
+        if not okP or par == cur or par == _G.UIParent or par == _G.WorldFrame then
+            break
+        end
+        cur = par
+    end
+    if SafeFrameBool(frame, "IsProtected") == true then
+        return "Blizzard"
+    end
+    return "Other"
+end
+
+local function DescribeFrameName(frame)
+    local nm = SafeFrameString(frame, "GetName")
+    if nm and nm ~= "" then return nm end
+    local ot = SafeFrameString(frame, "GetObjectType") or "Frame"
+    local cur = frame
+    for depth = 1, 3 do
+        local okP, par = pcall(cur.GetParent, cur)
+        if not okP or not par or par == cur or not IsSafeFrame(par) then break end
+        local pnm = SafeFrameString(par, "GetName")
+        if pnm and pnm ~= "" then
+            return string_format("%s.<anon %s d%d>", pnm, ot, depth)
+        end
+        cur = par
+    end
+    return "<anon " .. ot .. ">"
+end
+
+local function ComputeEffectiveAlpha(frame)
+    local ea = SafeFrameNumber(frame, "GetEffectiveAlpha", nil)
+    if ea ~= nil then return ea end
+    local acc = 1
+    local cur = frame
+    for _ = 1, 12 do
+        if not cur or not IsSafeFrame(cur) then break end
+        local a = SafeFrameNumber(cur, "GetAlpha", 1) or 1
+        acc = acc * a
+        local okP, par = pcall(cur.GetParent, cur)
+        if not okP or not par or par == cur or par == _G.WorldFrame then break end
+        cur = par
+    end
+    return acc
+end
+
+local function RegionLooksVisible(reg)
+    if not reg or not IsSafeFrame(reg) then return false end
+    if SafeFrameBool(reg, "IsShown") == false then return false end
+    local a = SafeFrameNumber(reg, "GetAlpha", 1) or 1
+    if a <= 0.02 then return false end
+    local ot = SafeFrameString(reg, "GetObjectType")
+    if ot == "FontString" then
+        if type(reg.GetText) ~= "function" then return true end
+        local okT, txt = pcall(reg.GetText, reg)
+        if not okT then return false end
+        if F.IsSecret(txt) then return true end
+        return type(txt) == "string" and txt ~= ""
+    elseif ot == "Texture" then
+        if type(reg.GetAtlas) == "function" then
+            local okA, atl = pcall(reg.GetAtlas, reg)
+            if okA and (F.IsSecret(atl) or (type(atl) == "string" and atl ~= "")) then
+                return true
+            end
+        end
+        if type(reg.GetTexture) == "function" then
+            local okT, tex = pcall(reg.GetTexture, reg)
+            if okT and (F.IsSecret(tex) or (type(tex) ~= "nil" and tex ~= "")) then
+                return true
+            end
+        end
+        -- 某些纯色贴图在 mock 或旧端仅保留顶点色，保守检查 GetColorTexture / _colorTex
+        if reg._colorTexture ~= nil or reg._texture ~= nil then return true end
+        return false
+    elseif ot == "MaskTexture" then
+        return false
+    end
+    return true
+end
+
+local VISUAL_WIDGET_TYPES = {
+    StatusBar = true, EditBox = true, ScrollingMessageFrame = true,
+    SimpleHTML = true, Cooldown = true, PlayerModel = true,
+    DressUpModel = true, Model = true, ModelScene = true, Slider = true,
+}
+
+local function FrameHasVisibleVisual(frame, depth)
+    depth = depth or 0
+    if depth > 3 or not IsSafeFrame(frame) then return false end
+    if SafeFrameBool(frame, "IsShown") == false then return false end
+    local a = SafeFrameNumber(frame, "GetAlpha", 1) or 1
+    if a <= 0.02 then return false end
+
+    local ot = SafeFrameString(frame, "GetObjectType")
+    if depth > 0 and ot and VISUAL_WIDGET_TYPES[ot] then
+        return true
+    end
+
+    if type(frame.GetRegions) == "function" then
+        local okR, regs = pcall(function() return { frame:GetRegions() } end)
+        if okR and type(regs) == "table" then
+            for i = 1, #regs do
+                if RegionLooksVisible(regs[i]) then
+                    return true
+                end
+            end
+        end
+    end
+
+    if depth < 3 and type(frame.GetChildren) == "function" then
+        local okC, children = pcall(function() return { frame:GetChildren() } end)
+        if okC and type(children) == "table" then
+            for i = 1, #children do
+                if FrameHasVisibleVisual(children[i], depth + 1) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function InspectFrameForClickCheck(f)
+    if not IsSafeFrame(f) then return nil end
+    local shown = SafeFrameBool(f, "IsShown")
+    local visible = SafeFrameBool(f, "IsVisible")
+    if visible == nil then visible = shown end
+    local mouseClick = SafeFrameBool(f, "IsMouseClickEnabled")
+    local mouseMotion = SafeFrameBool(f, "IsMouseMotionEnabled")
+    local mouseAny = SafeFrameBool(f, "IsMouseEnabled")
+    if mouseClick == nil then mouseClick = (mouseAny == true) end
+    if mouseMotion == nil then mouseMotion = (mouseAny == true) end
+
+    local effAlpha = ComputeEffectiveAlpha(f)
+    local alpha = SafeFrameNumber(f, "GetAlpha", 1) or 1
+    local w = SafeFrameNumber(f, "GetWidth", 0) or 0
+    local h = SafeFrameNumber(f, "GetHeight", 0) or 0
+    local hasVisual = visible == true and effAlpha >= 0.05 and FrameHasVisibleVisual(f, 0) or false
+    local invisible = (effAlpha < 0.05) or (not hasVisual)
+    local isClickBlocker = (visible == true) and (mouseClick == true) and (w > 0 and h > 0) and invisible
+
+    return {
+        frame = f,
+        name = DescribeFrameName(f),
+        owner = ClassifyFrameOwner(f),
+        objectType = SafeFrameString(f, "GetObjectType") or "Frame",
+        strata = SafeFrameString(f, "GetFrameStrata") or "?",
+        level = SafeFrameNumber(f, "GetFrameLevel", 0) or 0,
+        w = Round2(w) or 0,
+        h = Round2(h) or 0,
+        alpha = Round2(alpha) or 0,
+        effAlpha = Round2(effAlpha) or 0,
+        shown = shown == true,
+        visible = visible == true,
+        mouseClick = mouseClick == true,
+        mouseMotion = mouseMotion == true,
+        hasVisual = hasVisual,
+        reason = (effAlpha < 0.05) and "effAlpha<0.05" or ((not hasVisual) and "noVisibleRegion" or "visible"),
+        isClickBlocker = isClickBlocker,
+    }
+end
+
+function Diag.ScanClickBlockers(opts)
+    opts = type(opts) == "table" and opts or {}
+    local inCombat = (InCombatLockdown and InCombatLockdown()) == true
+    local inInst, instType = false, "none"
+    if type(_G.IsInInstance) == "function" then
+        local okI, flag, typ = pcall(_G.IsInInstance)
+        if okI then
+            inInst = (not F.IsSecret(flag)) and flag == true
+            instType = F.PlainString(typ, "none") or "none"
+        end
+    end
+
+    -- 1) 鼠标指针下方框体栈（同时兼容 12.x GetMouseFoci 与旧接口 GetMouseFocus）
+    local mouseFoci = {}
+    local rawFoci = nil
+    if type(_G.GetMouseFoci) == "function" then
+        local okF, list = pcall(_G.GetMouseFoci)
+        if okF and type(list) == "table" then
+            rawFoci = list
+        end
+    elseif type(_G.GetMouseFocus) == "function" then
+        local okF, single = pcall(_G.GetMouseFocus)
+        if okF and single then
+            rawFoci = { single }
+        end
+    end
+    if rawFoci then
+        for i = 1, #rawFoci do
+            local rec = InspectFrameForClickCheck(rawFoci[i])
+            if rec then
+                mouseFoci[#mouseFoci + 1] = rec
+            end
+        end
+    end
+
+    -- 2) 全屏枚举：已显示 + 接收鼠标点击 + 实际看不见（effAlpha < 0.05 或无任何可见区域）
+    local invisibleBlockers = {}
+    local byOwner = { kkowoUI = {}, Blizzard = {}, EUI = {}, Other = {} }
+    local enumFn = _G.EnumerateFrames
+    if type(enumFn) == "function" then
+        local okNext, cur = pcall(enumFn)
+        local guard = 0
+        while okNext and cur and guard < 60000 do
+            guard = guard + 1
+            if cur ~= _G.WorldFrame and cur ~= _G.UIParent and IsSafeFrame(cur) then
+                local visible = SafeFrameBool(cur, "IsVisible")
+                if visible == nil then visible = SafeFrameBool(cur, "IsShown") end
+                if visible == true then
+                    local mc = SafeFrameBool(cur, "IsMouseClickEnabled")
+                    if mc == nil then mc = SafeFrameBool(cur, "IsMouseEnabled") end
+                    if mc == true then
+                        local rec = InspectFrameForClickCheck(cur)
+                        if rec and rec.isClickBlocker then
+                            if not opts.ownerFilter or opts.ownerFilter == rec.owner then
+                                invisibleBlockers[#invisibleBlockers + 1] = rec
+                                local bucket = byOwner[rec.owner] or byOwner.Other
+                                bucket[#bucket + 1] = rec
+                            end
+                        end
+                    end
+                end
+            end
+            okNext, cur = pcall(enumFn, cur)
+        end
+    end
+
+    return {
+        timestamp = NowStamp(),
+        inCombat = inCombat,
+        inInstance = inInst,
+        instanceType = instType,
+        mouseFoci = mouseFoci,
+        invisibleBlockers = invisibleBlockers,
+        byOwner = byOwner,
+    }
+end
+
+local OWNER_COLOR = {
+    kkowoUI = "|cffff6b6b[kkowoUI]|r",
+    Blizzard = "|cffffd166[Blizzard]|r",
+    EUI = "|cff6ec6ff[EUI]|r",
+    Other = "|cffb0b8c8[其它]|r",
+}
+
+function Diag.ClickCheck(arg)
+    local filter = nil
+    local cleanArg = F.PlainString(arg, "") or ""
+    cleanArg = cleanArg:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+    if cleanArg == "kk" or cleanArg == "kkowoui" then
+        filter = "kkowoUI"
+    elseif cleanArg == "blizz" or cleanArg == "blizzard" then
+        filter = "Blizzard"
+    elseif cleanArg == "eui" then
+        filter = "EUI"
+    end
+
+    local res = Diag.ScanClickBlockers({ ownerFilter = filter })
+    F.Print(string_format(
+        "隐形挡点击排查（只读·%s·地点=%s）：鼠标下 %d 个框体，全屏疑似隐形吃点击 %d 个（kkowoUI=%d / Blizzard=%d / EUI=%d / 其它=%d）",
+        res.inCombat and "战斗中" or "脱战",
+        tostring(res.instanceType),
+        #res.mouseFoci,
+        #res.invisibleBlockers,
+        #res.byOwner.kkowoUI,
+        #res.byOwner.Blizzard,
+        #res.byOwner.EUI,
+        #res.byOwner.Other
+    ))
+
+    if #res.mouseFoci > 0 then
+        _G.print("  |cffdca77f--- 鼠标指针下方框体栈（自上而下）---|r")
+        local limit = math_min(#res.mouseFoci, 12)
+        for i = 1, limit do
+            local r = res.mouseFoci[i]
+            local warn = r.isClickBlocker and " |cffff4444<< 疑似隐形挡点击(" .. r.reason .. ")|r" or ""
+            _G.print(string_format(
+                "  #%d %s %s [%s:%d] %.0fx%.0f a=%.2f(eff=%.2f) click=%s motion=%s%s",
+                i, OWNER_COLOR[r.owner] or "[?]", r.name, r.strata, r.level,
+                r.w, r.h, r.alpha, r.effAlpha, tostring(r.mouseClick), tostring(r.mouseMotion), warn
+            ))
+        end
+    else
+        _G.print("  鼠标指针下方无框体（或正对 WorldFrame）。")
+    end
+
+    if #res.invisibleBlockers > 0 then
+        _G.print("  |cffdca77f--- 全屏已显示 + 吃点击 + 不可见框体 ---|r")
+        local shownCount = 0
+        local order = { "kkowoUI", "Blizzard", "EUI", "Other" }
+        for _, grp in ipairs(order) do
+            local list = res.byOwner[grp]
+            for i = 1, #list do
+                if shownCount >= 24 then break end
+                shownCount = shownCount + 1
+                local r = list[i]
+                _G.print(string_format(
+                    "  %s %s [%s:%d] %.0fx%.0f effA=%.2f 原因=%s",
+                    OWNER_COLOR[r.owner] or "[?]", r.name, r.strata, r.level,
+                    r.w, r.h, r.effAlpha, r.reason
+                ))
+            end
+        end
+        if #res.invisibleBlockers > shownCount then
+            _G.print(string_format("  ...其余 %d 个已省略（可用 /kk clickcheck kk 或 blizz 筛选）。", #res.invisibleBlockers - shownCount))
+        end
+    else
+        _G.print("  |cff52d669未发现全屏隐形吃点击框体。|r")
+    end
+    return res
 end

@@ -11,15 +11,20 @@ kkowoUI — 安全插件瘦身与 6 合 1 切换脚本
   python D:\code\wow\kkowoUI\Tools\slim_addons.py
 """
 import datetime
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
 import sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 ADDONS_TXT = os.environ.get("WOW_ADDONS_TXT", r"E:\Program Files\World of Warcraft\_forever_\WTF\Account\<YourAccountID>\<Realm>\<CharName>\AddOns.txt")
 KKOWOUI_SV = os.environ.get("WOW_KKOWOUI_SV", r"E:\Program Files\World of Warcraft\_forever_\WTF\Account\<YourAccountID>\SavedVariables\kkowoUI.lua")
-BACKUP_ROOT = os.environ.get("WOW_BACKUP_ROOT", r"D:\code\wow\backups")
+BACKUP_ROOT = os.environ.get(
+    "WOW_BACKUP_ROOT",
+    os.path.normpath(os.path.join(HERE, "..", "..", "backups")),
+)
 
 # 已合并进 kkowoUI 或被原生接管的旧重叠插件
 MERGED_INTO_KKOWOUI = [
@@ -72,19 +77,33 @@ TO_ENABLE = {
 
 def is_wow_running():
     try:
-        out = subprocess.check_output(
+        res = subprocess.run(
             ["tasklist", "/FO", "CSV", "/NH"],
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             text=True,
-            errors="ignore",
+            encoding="mbcs",
+            errors="replace",
+            timeout=10,
         )
-        for line in out.splitlines():
+        if res.returncode != 0:
+            return "UNKNOWN"
+        for line in res.stdout.splitlines():
             low = line.lower()
             if '"wow' in low and '.exe"' in low:
                 return line.split(",")[0].strip('"')
+        return None
     except Exception:
-        pass
-    return None
+        return "UNKNOWN"
+
+
+def _verify_sv_parse(sv_text):
+    spec = importlib.util.spec_from_file_location("prepare_share_wtf", os.path.join(HERE, "prepare_share_wtf.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    tops = mod.parse_sv(sv_text)
+    if not tops:
+        raise ValueError("解析后无顶层 SavedVariables")
+    return tops
 
 
 def main():
@@ -92,10 +111,12 @@ def main():
     proc = is_wow_running()
     if proc and not force:
         print(f"WOW_RUNNING: {proc}")
-        print("检测到魔兽世界正在运行。为防止游戏退出时覆盖 AddOns.txt，本次未修改文件。")
+        print("检测到魔兽世界正在运行（或无法确认进程状态）。为防止游戏退出时覆盖 AddOns.txt，本次未修改文件。")
         print("请先完全退出游戏，再运行本脚本即可安全应用瘦身配置。")
         sys.exit(2)
 
+    if any(ph in ADDONS_TXT for ph in ("<YourAccountID>", "<Realm>", "<CharName>")):
+        sys.exit(f"WOW_ADDONS_TXT 仍是占位路径：{ADDONS_TXT}\n请先通过环境变量指定真实 AddOns.txt 路径。")
     if not os.path.exists(ADDONS_TXT):
         sys.exit(f"找不到 AddOns.txt：{ADDONS_TXT}")
 
@@ -190,6 +211,11 @@ def main():
             sv_new,
         )
         if removed_pos or empty_realm_n:
+            try:
+                _verify_sv_parse(sv_new2)
+            except Exception as exc:
+                print(f"[WARN] kkowoUI.lua 清理结果未通过 Lua 语法校验（{exc}），已放弃写回并保持原文件不动。")
+                return
             final_sv = sv_new2.replace("\n", "\r\n") if sv_crlf else sv_new2
             open(KKOWOUI_SV, "wb").write(final_sv.encode("utf-8"))
             print(f"已清理 kkowoUI.lua 损坏坐标：{removed_pos}，空服务器键：{empty_realm_n} 处。")

@@ -525,10 +525,13 @@ local function HookNames(P)
     local function WrapSingle(field, kind)
         local orig = N[field]
         if type(orig) ~= "function" then return end
-        N[field] = function(id)
-            local v = orig(id)
-            if ValidStr(v) then return v end
-            return Fallback(kind, id)
+        N[field] = function(id, ...)
+            local ok, v, r2, r3, r4 = pcall(orig, id, ...)
+            if ok and ValidStr(v) then return v, r2, r3, r4 end
+            local fb = Fallback(kind, id)
+            if fb ~= nil then return fb end
+            if ok then return v, r2, r3, r4 end
+            return nil
         end
     end
 
@@ -542,19 +545,25 @@ local function HookNames(P)
 
     if type(N.Get) == "function" then
         local origGet = N.Get
-        N.Get = function(kind, id)
-            local v = origGet(kind, id)
-            if ValidStr(v) then return v end
-            return Fallback(kind, id)
+        N.Get = function(kind, id, ...)
+            local ok, v, r2, r3, r4 = pcall(origGet, kind, id, ...)
+            if ok and ValidStr(v) then return v, r2, r3, r4 end
+            local fb = Fallback(kind, id)
+            if fb ~= nil then return fb end
+            if ok then return v, r2, r3, r4 end
+            return nil
         end
     end
 
     if type(N.Cached) == "function" then
         local origCached = N.Cached
-        N.Cached = function(kind, id, cursor)
-            local v = origCached(kind, id, cursor)
-            if ValidStr(v) then return v end
-            return Fallback(kind, id)
+        N.Cached = function(kind, id, cursor, ...)
+            local ok, v, r2, r3, r4 = pcall(origCached, kind, id, cursor, ...)
+            if ok and ValidStr(v) then return v, r2, r3, r4 end
+            local fb = Fallback(kind, id)
+            if fb ~= nil then return fb end
+            if ok then return v, r2, r3, r4 end
+            return nil
         end
     end
 
@@ -562,13 +571,15 @@ local function HookNames(P)
     if C and type(C.GetMapName) == "function" and not C._kkowoZhMap then
         C._kkowoZhMap = true
         local origMap = C.GetMapName
-        C.GetMapName = function(id)
-            local v = origMap(id)
-            if ValidStr(v) then return v end
+        C.GetMapName = function(id, ...)
+            local ok, v, r2, r3 = pcall(origMap, id, ...)
+            if ok and ValidStr(v) then return v, r2, r3 end
             if IsZhCN(P) and type(id) == "number" then
                 local data = F._PolestarNamesData
-                return data and data.zone and data.zone[id] or nil
+                local fb = data and data.zone and data.zone[id] or nil
+                if fb ~= nil then return fb end
             end
+            if ok then return v, r2, r3 end
             return nil
         end
     end
@@ -714,67 +725,78 @@ local function HookGuideTexts(P)
 
     if type(GT.PackText) == "function" then
         local origPackText = GT.PackText
-        GT.PackText = function(packId, s)
-            local out = origPackText(packId, s)
+        GT.PackText = function(packId, s, ...)
+            local ok, out, r2, r3 = pcall(origPackText, packId, s, ...)
+            if not ok then return s end
             if out == s and IsZhCN(P) and ValidStr(s) then
                 local GUIDE_ZH = F._PolestarGuideZH
                 if type(GUIDE_ZH) == "table" and GUIDE_ZH[s] then
-                    return GUIDE_ZH[s]
+                    return GUIDE_ZH[s], r2, r3
                 end
             end
-            return out
+            return out, r2, r3
         end
     end
 
     if type(GT.Prepare) == "function" then
         local origPrepare = GT.Prepare
-        GT.Prepare = function(def, live)
-            local entry = NewEntry(def)
-            CollectFields(def, entry, true)
-            fbState[def] = entry
-            origPrepare(def, live)
-            ApplyFallback(def, entry, 1, live, nil)
+        GT.Prepare = function(def, live, ...)
+            local entry = type(def) == "table" and NewEntry(def) or nil
+            if entry then
+                pcall(CollectFields, def, entry, true)
+                fbState[def] = entry
+            end
+            local ok, r1, r2, r3 = pcall(origPrepare, def, live, ...)
+            if entry then pcall(ApplyFallback, def, entry, 1, live, nil) end
+            if ok then return r1, r2, r3 end
         end
     end
 
     if type(GT.PrepareSteps) == "function" then
         local origPrepareSteps = GT.PrepareSteps
-        GT.PrepareSteps = function(def)
-            local entry = fbState[def]
-            if not entry then
-                entry = NewEntry(def)
-                fbState[def] = entry
+        GT.PrepareSteps = function(def, ...)
+            local entry = type(def) == "table" and fbState[def] or nil
+            local from = 1
+            if type(def) == "table" then
+                if not entry then
+                    entry = NewEntry(def)
+                    fbState[def] = entry
+                end
+                from = #entry.fields + 1
+                entry.header = entry.header or (from - 1)
+                pcall(CollectFields, def, entry, false)
             end
-            local from = #entry.fields + 1
-            entry.header = entry.header or (from - 1)
-            CollectFields(def, entry, false)
-            origPrepareSteps(def)
-            ApplyFallback(def, entry, from, true, nil)
+            local ok, r1, r2, r3 = pcall(origPrepareSteps, def, ...)
+            if entry then pcall(ApplyFallback, def, entry, from, true, nil) end
+            if ok then return r1, r2, r3 end
         end
     end
 
     if type(GT.DropSteps) == "function" then
         local origDropSteps = GT.DropSteps
-        GT.DropSteps = function(def)
-            origDropSteps(def)
-            local entry = fbState[def]
+        GT.DropSteps = function(def, ...)
+            local ok, r1, r2, r3 = pcall(origDropSteps, def, ...)
+            local entry = type(def) == "table" and fbState[def] or nil
             if entry and entry.header then
                 for i = #entry.fields, entry.header + 1, -1 do
                     entry.fields[i] = nil
                 end
             end
+            if ok then return r1, r2, r3 end
         end
     end
 
     if type(GT.Refresh) == "function" then
         local origRefresh = GT.Refresh
-        GT.Refresh = function(def)
-            local changed = origRefresh(def)
-            local entry = fbState[def]
-            if entry and ApplyFallback(def, entry, 1, true, P.EscapeText) then
-                changed = true
+        GT.Refresh = function(def, ...)
+            local ok, changed, r2, r3 = pcall(origRefresh, def, ...)
+            if not ok then return false end
+            local entry = type(def) == "table" and fbState[def] or nil
+            if entry then
+                local okF, did = pcall(ApplyFallback, def, entry, 1, true, P.EscapeText)
+                if okF and did then changed = true end
             end
-            return changed
+            return changed, r2, r3
         end
     end
     return true
@@ -786,13 +808,14 @@ local function HookCodex(P)
     if C and C._kkowoZhSub then return true end
     if not (C and type(C.Npc) == "function") then return false end
     local orig = C.Npc
-    C.Npc = function(id)
-        local rec = orig(id)
+    C.Npc = function(id, ...)
+        local ok, rec, r2, r3 = pcall(orig, id, ...)
+        if not ok then return nil end
         if type(rec) == "table" and IsZhCN(P) then
             local s = rec.subName
             if type(s) == "string" and SUB[s] then rec.subName = SUB[s] end
         end
-        return rec
+        return rec, r2, r3
     end
     C._kkowoZhSub = true
     return true

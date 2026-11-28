@@ -13,6 +13,7 @@ import argparse
 import datetime
 import os
 import shutil
+import subprocess
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKUP_ROOT = os.environ.get("WOW_BACKUP_ROOT", os.path.normpath(os.path.join(REPO_ROOT, "..", "backups")))
@@ -21,12 +22,28 @@ DST_DIR = os.path.join(os.environ.get("WOW_FOREVER_DIR", r"E:\Program Files\Worl
 DST_BLP = os.path.join(DST_DIR, "UI-RaidTargetingIcons.blp")
 
 
+def wow_running():
+    try:
+        res = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Wow.exe"],
+            capture_output=True, text=True, encoding="mbcs", errors="replace", timeout=10,
+        )
+        if res.returncode != 0:
+            return True
+        return "wow.exe" in res.stdout.lower()
+    except Exception:
+        return True
+
+
 def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--install", action="store_true", help="安装全局团队标记图标覆盖")
     group.add_argument("--uninstall", action="store_true", help="移走客户端覆盖并备份，恢复暴雪原版团队标记")
     args = parser.parse_args()
+
+    if wow_running():
+        raise SystemExit("检测到魔兽世界正在运行（或无法确认进程状态）：请完全退出游戏后再安装/卸载团队标记覆盖。")
 
     if args.install:
         if not os.path.isfile(SRC_BLP):

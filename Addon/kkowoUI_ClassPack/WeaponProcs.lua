@@ -49,13 +49,14 @@ local mod = F.RegisterModule("weaponProcs", {
 -- 烈焰武器、生命偷取、正义之手额外攻击等不加 Buff 的效果只能靠战斗日志，无限服不开放，无法计时。
 ----------------------------------------------------------------------
 local PRESETS = {
-    { key = "crusader",   ids = { 20007 }, fallback = "神圣力量",          source = "附魔：十字军",              color = { 0.98, 0.80, 0.34 } },
-    { key = "felstriker", ids = { 16551 }, fallback = "Felstriker",        item = 12590,                         color = { 0.62, 0.92, 0.36 } },
-    { key = "empyrean",   ids = { 21165 }, fallback = "Haste",             item = 17112,                         color = { 0.98, 0.56, 0.30 } },
-    { key = "untamed",    ids = { 23719 }, fallback = "Untamed Fury",      item = 19334,                         color = { 0.94, 0.38, 0.42 } },
-    { key = "bonereaver", ids = { 21153 }, fallback = "Bonereaver's Edge", item = 17076,                         color = { 0.78, 0.84, 0.94 } },
-    { key = "eskhandar",  ids = { 22640 }, fallback = "Eskhandar's Rage",  item = 18203,                         color = { 0.86, 0.52, 0.98 } },
-    { key = "quickshots", ids = { 6150 },  fallback = "快速射击",          source = "猎人天赋：强化雄鹰守护", classes = { HUNTER = true }, color = { 0.40, 0.86, 0.98 } },
+    { key = "crusader",     ids = { 20007 },  fallback = "神圣力量",          source = "附魔：十字军",              learnByName = true, color = { 0.98, 0.80, 0.34 } },
+    { key = "felstriker",   ids = { 16551 },  fallback = "Felstriker",        item = 12590,                         learnByName = true, color = { 0.62, 0.92, 0.36 } },
+    { key = "empyrean",     ids = { 21165 },  fallback = "Haste",             item = 17112,                                             color = { 0.98, 0.56, 0.30 } },
+    { key = "untamed",      ids = { 23719 },  fallback = "Untamed Fury",      item = 19334,                         learnByName = true, color = { 0.94, 0.38, 0.42 } },
+    { key = "bonereaver",   ids = { 21153 },  fallback = "Bonereaver's Edge", item = 17076,                         learnByName = true, color = { 0.78, 0.84, 0.94 } },
+    { key = "eskhandar",    ids = { 22640 },  fallback = "Eskhandar's Rage",  item = 18203,                         learnByName = true, color = { 0.86, 0.52, 0.98 } },
+    { key = "quickshots",   ids = { 6150 },   fallback = "快速射击",          source = "猎人天赋：强化雄鹰守护",  classes = { HUNTER = true }, learnByName = true, color = { 0.40, 0.86, 0.98 } },
+    { key = "rapidkilling", ids = { 415407 }, fallback = "急速杀戮",          source = "猎人天赋：疾速杀戮",      classes = { HUNTER = true }, learnByName = true, color = { 0.98, 0.50, 0.36 } },
 }
 
 local ENCH_COLOR_DEFAULTS = {
@@ -71,9 +72,9 @@ local CUSTOM_PALETTE = {
 }
 
 local WEAPONS = {
-    { slot = "mh", inv = 16, ws = "MainHand", label = "主手" },
-    { slot = "oh", inv = 17, ws = "OffHand",  label = "副手" },
-    { slot = "rg", inv = 18, ws = "Ranged",   label = "远程" },
+    { slot = "mh", inv = 16, ws = "MainHand", wsIdx = 0, label = "主手" },
+    { slot = "oh", inv = 17, ws = "OffHand",  wsIdx = 1, label = "副手" },
+    { slot = "rg", inv = 18, ws = "Ranged",   wsIdx = 2, label = "远程" },
 }
 
 local MAX_PER_ENTRY = 2     -- 同一特效最多并列两条（双持两把都带十字军时各自触发）
@@ -208,9 +209,9 @@ local function GetProcDurationFormatter(AK)
             local okF, nf = pcall(SU.CreateNumericRuleFormatter)
             if okF and nf and nf.SetBreakpoints then
                 local okB = pcall(nf.SetBreakpoints, nf, {
-                    { threshold = 0,    format = "%.1f", rounding = R.Nearest },
-                    { threshold = 10,   format = "%d",   step = 1,    rounding = R.Up },
-                    { threshold = 90,   format = "%dm",  step = 60,   rounding = R.Up, components = { { div = 60 } } },
+                    { threshold = 0,    format = "%.1f", step = 0.1, rounding = R.Nearest },
+                    { threshold = 10,   format = "%d",   step = 1,   rounding = R.Up },
+                    { threshold = 90,   format = "%dm",  step = 60,  rounding = R.Up, components = { { div = 60 } } },
                     { threshold = 5401, format = "%dh",  step = 3600, rounding = R.Up, components = { { div = 3600 } } },
                 })
                 if okB then tenthsFormatter = nf end
@@ -280,6 +281,11 @@ local function BuildEntries()
             for _, id in ipairs(p.ids) do AddID(e, id) end
             e.label = SpellName(p.ids[1]) or p.fallback
             e.icon = SpellIcon(p.ids[1])
+            -- 名称无歧义的预设允许脱战按名称自动学习无限服新法术 ID，避免客户端改 ID 后追踪失效
+            if p.learnByName then
+                if e.label and e.label ~= "" and not nameIndex[e.label] then nameIndex[e.label] = e end
+                if p.fallback and p.fallback ~= "" and not nameIndex[p.fallback] then nameIndex[p.fallback] = e end
+            end
             Add(e)
         end
     end
@@ -454,8 +460,9 @@ local function BuildRowRegions(host, L, isEngine)
     ApplyShape(track, (r > 0) and inner or 0)
 
     local bar = CreateFrame("StatusBar", nil, host)
-    bar:SetPoint("TOPLEFT", track, "TOPLEFT", 0, 0)
-    bar:SetPoint("BOTTOMRIGHT", track, "BOTTOMRIGHT", 0, 0)
+    -- 直接锚定到宿主 Frame（不锚定到 Texture region），避免引擎按钮创建期布局尺寸为 0 导致进度条不显示
+    bar:SetPoint("TOPLEFT", host, "TOPLEFT", barLeft + px, -px)
+    bar:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -px, px)
     bar:SetStatusBarTexture(ST.TEX.FLAT)
     bar:SetMinMaxValues(0, 1)
     bar:SetValue(1)
@@ -489,10 +496,10 @@ local function BuildRowRegions(host, L, isEngine)
         AddRoundMask(sparkHost, spark, bar, (r > 0) and inner or 0, isEngine)
     end
 
-    -- 文字载体放在填充条与光刃之上
+    -- 文字载体放在填充条与光刃之上（直接锚定 Frame bar，避免锚定到 Texture region bd 导致布局尺寸为 0）
     local carrier = CreateFrame("Frame", nil, host)
-    carrier:SetPoint("TOPLEFT", bd, "TOPLEFT", 0, 0)
-    carrier:SetPoint("BOTTOMRIGHT", bd, "BOTTOMRIGHT", 0, 0)
+    carrier:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
+    carrier:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, 0)
     carrier:SetFrameLevel(barLvl + 2)
     if carrier.EnableMouse then carrier:EnableMouse(false) end
 
@@ -541,6 +548,8 @@ local function PaintRow(row, r, g, b)
         end
     end
     local lr, lg, lb = r * 0.70, g * 0.70, b * 0.70
+    local ft = row.bar and row.bar.GetStatusBarTexture and row.bar:GetStatusBarTexture() or nil
+    if ft and ft.SetVertexColor then pcall(ft.SetVertexColor, ft, 1, 1, 1, 1) end
     ST.ApplyBarGradient(row.bar, lr, lg, lb, math_min(1, r * 1.04), math_min(1, g * 1.04), math_min(1, b * 1.04), 0.96, false)
     if row.spark then
         row.spark:SetVertexColor(
@@ -709,8 +718,9 @@ end
 local function ResolveEnchantNames(list)
     local byInv = {}
     for _, it in ipairs(list) do
+        local canCache = (it.enchantID or 0) > 0
         local ck = it.inv .. ":" .. tostring(it.enchantID)
-        local cached = enchNameCache[ck]
+        local cached = canCache and enchNameCache[ck] or nil
         if cached ~= nil then
             -- false = 读过鼠标提示但没认出名称，不再反复读
             it.enchName = cached or nil
@@ -735,13 +745,14 @@ local function ResolveEnchantNames(list)
                     end
                 end
             end
+            local canCache = (it.enchantID or 0) > 0
             local ck = inv .. ":" .. tostring(it.enchantID)
             if bestI then
                 it.enchName = lines[bestI].name
-                enchNameCache[ck] = it.enchName
+                if canCache then enchNameCache[ck] = it.enchName end
                 table_remove(lines, bestI)
-            elseif lines then
-                enchNameCache[ck] = false
+            elseif lines and #lines > 0 then
+                if canCache then enchNameCache[ck] = false end
             end
         end
     end
@@ -749,55 +760,115 @@ end
 
 local function ReadEnchants()
     local out = {}
+    local seen = {}
+    local seenSlotKind = {}
+    local function AddEnchant(slot, inv, weapon, kind, eid, leftSec, charges, icon)
+        if not (leftSec and leftSec > 0) then return end
+        local idNum = eid or 0
+        local k1 = slot .. ":" .. kind .. ":" .. tostring(idNum)
+        local k2 = slot .. ":" .. tostring(idNum)
+        local kSK = slot .. ":" .. kind
+        if seen[k1] or (idNum > 0 and seen[k2]) or (idNum == 0 and seenSlotKind[kSK]) then return end
+        -- 双路探针同一武器槽位有一方返回 enchantID==0 且剩余时间近似相同时去重
+        for _, ex in ipairs(out) do
+            if ex.slot == slot then
+                local sameId = (idNum > 0 and ex.enchantID == idNum)
+                local zeroNear = (idNum == 0 or ex.enchantID == 0) and math_abs((ex.left or 0) - leftSec) <= 5
+                if sameId or zeroNear then return end
+            end
+        end
+        seen[k1] = true
+        seenSlotKind[kSK] = true
+        if idNum > 0 then seen[k2] = true end
+        out[#out + 1] = {
+            slot = slot, inv = inv, weapon = weapon,
+            kind = kind,
+            enchantID = idNum,
+            left = leftSec,
+            charges = charges or 0,
+            icon = icon,
+        }
+    end
+
+    -- 1) 无限服主通路：C_Item.GetWeaponEnchantInfo（同时返回临时附魔与萨满/盗贼灌注）
     local CI = _G.C_Item
     local WS = _G.Enum and _G.Enum.WeaponSlot
     local ET = _G.Enum and _G.Enum.ItemEnchantType
-    if CI and CI.GetWeaponEnchantInfo and WS then
+    if CI and CI.GetWeaponEnchantInfo then
         for _, w in ipairs(WEAPONS) do
-            local wsv = WS[w.ws]
+            local wsv = (WS and WS[w.ws] ~= nil) and WS[w.ws] or w.wsIdx
             if wsv ~= nil then
                 local ok, list = pcall(CI.GetWeaponEnchantInfo, wsv)
                 if ok and not F.IsSecret(list) and type(list) == "table" then
                     for _, e in ipairs(list) do
                         if type(e) == "table" and not F.IsSecret(e) then
-                            local has = e.hasEnchant
-                            local leftMs = F.PlainNumber(e.timeLeft, nil)
-                            if not F.IsSecret(has) and has == true and leftMs and leftMs > 0 then
-                                local et = F.PlainNumber(e.enchantType, nil)
-                                local imbue = ET ~= nil and ET.Imbue ~= nil and et ~= nil and et == ET.Imbue
-                                out[#out + 1] = {
-                                    slot = w.slot, inv = w.inv, weapon = w.label,
-                                    kind = imbue and "imbue" or "temp",
-                                    enchantID = F.PlainNumber(e.enchantID, 0) or 0,
-                                    left = leftMs / 1000,
-                                    charges = F.PlainNumber(e.charges, 0) or 0,
-                                    icon = PlainIcon(e.enchantIconID),
-                                }
+                            local eSlot = F.PlainNumber(e.slotID, nil)
+                            if not eSlot or eSlot == w.inv then
+                                local has = e.hasEnchant
+                                local leftMs = F.PlainNumber(e.timeLeft, nil) or F.PlainNumber(e.timeRemaining, nil)
+                                if not F.IsSecret(has) and has == true and leftMs and leftMs > 0 then
+                                    local et = F.PlainNumber(e.enchantType, nil)
+                                    local imbue = ET ~= nil and ET.Imbue ~= nil and et ~= nil and et == ET.Imbue
+                                    AddEnchant(
+                                        w.slot, w.inv, w.label,
+                                        imbue and "imbue" or "temp",
+                                        F.PlainNumber(e.enchantID, 0) or 0,
+                                        leftMs / 1000,
+                                        F.PlainNumber(e.charges, 0) or 0,
+                                        PlainIcon(e.enchantIconID)
+                                    )
+                                end
                             end
                         end
                     end
                 end
             end
         end
-        return out
     end
-    if _G.GetWeaponEnchantInfo then
+
+    -- 2) 补齐通路：C_PaperDollInfo.GetTemporaryEnchantmentInfo（暴雪原生 AuraContainer 武器附魔同源接口）
+    local PD = _G.C_PaperDollInfo
+    if PD and PD.GetTemporaryEnchantmentInfo then
+        for _, w in ipairs(WEAPONS) do
+            local ok, info = pcall(PD.GetTemporaryEnchantmentInfo, w.inv)
+            if ok and type(info) == "table" and not F.IsSecret(info) then
+                local hasExp = info.hasExpirationTime
+                local leftMs = F.PlainNumber(info.remainingTimeMs, nil)
+                if not F.IsSecret(hasExp) and hasExp == true and leftMs and leftMs > 0 then
+                    AddEnchant(
+                        w.slot, w.inv, w.label,
+                        "temp",
+                        F.PlainNumber(info.enchantID, 0) or 0,
+                        leftMs / 1000,
+                        F.PlainNumber(info.chargesRemaining, 0) or 0,
+                        nil
+                    )
+                end
+            end
+        end
+    end
+
+    -- 3) 经典全局兜底：GetWeaponEnchantInfo（以上两路均未读到时补底）
+    if #out == 0 and _G.GetWeaponEnchantInfo then
         local ok, hasMH, mhExp, mhCh, mhID, hasOH, ohExp, ohCh, ohID, hasR, rExp, rCh, rID = pcall(_G.GetWeaponEnchantInfo)
-        if not ok then return out end
-        local raw = {
-            { WEAPONS[1], hasMH, mhExp, mhCh, mhID },
-            { WEAPONS[2], hasOH, ohExp, ohCh, ohID },
-            { WEAPONS[3], hasR, rExp, rCh, rID },
-        }
-        for _, t in ipairs(raw) do
-            local w, has, exp = t[1], t[2], F.PlainNumber(t[3], nil)
-            if not F.IsSecret(has) and has and exp and exp > 0 then
-                out[#out + 1] = {
-                    slot = w.slot, inv = w.inv, weapon = w.label, kind = "temp",
-                    enchantID = F.PlainNumber(t[5], 0) or 0,
-                    left = exp / 1000,
-                    charges = F.PlainNumber(t[4], 0) or 0,
-                }
+        if ok then
+            local raw = {
+                { WEAPONS[1], hasMH, mhExp, mhCh, mhID },
+                { WEAPONS[2], hasOH, ohExp, ohCh, ohID },
+                { WEAPONS[3], hasR, rExp, rCh, rID },
+            }
+            for _, t in ipairs(raw) do
+                local w, has, exp = t[1], t[2], F.PlainNumber(t[3], nil)
+                if not F.IsSecret(has) and has and exp and exp > 0 then
+                    AddEnchant(
+                        w.slot, w.inv, w.label,
+                        "temp",
+                        F.PlainNumber(t[5], 0) or 0,
+                        exp / 1000,
+                        F.PlainNumber(t[4], 0) or 0,
+                        nil
+                    )
+                end
             end
         end
     end
@@ -964,6 +1035,7 @@ local function EngineInitButton(button, d, style)
         PaintRow(row, GetColor(style.kkEntryKey))
         row.name:SetText(style.kkLabel or "")
         if row.icon then
+            if row.icon.SetBlockingLoadsRequested then pcall(row.icon.SetBlockingLoadsRequested, row.icon, true) end
             row.icon:SetTexture(style.kkIcon or 134400)
             if row._iconMaskRad and row._iconMaskRad > 0 and button.CreateMaskTexture then
                 local m = button:CreateMaskTexture()
@@ -977,20 +1049,46 @@ local function EngineInitButton(button, d, style)
             end
             pcall(button.SetIcon, button, row.icon)
         end
-        local opts = {}
+        -- 绑定一个不绘制扇形的 Cooldown 作为引擎持续时间源（与 SAO / AuraKit 同法），
+        -- 防止无限服按钮未注册 SetDurationCooldown 时丢失倒计时文字或进度源
+        if button.SetDurationCooldown then
+            local okCD, cd = pcall(CreateFrame, "Cooldown", nil, button, "CooldownFrameTemplate")
+            if okCD and cd then
+                cd:SetAllPoints(button)
+                if cd.SetDrawSwipe then pcall(cd.SetDrawSwipe, cd, false) end
+                if cd.SetDrawEdge then pcall(cd.SetDrawEdge, cd, false) end
+                if cd.SetDrawBling then pcall(cd.SetDrawBling, cd, false) end
+                if cd.SetHideCountdownNumbers then pcall(cd.SetHideCountdownNumbers, cd, true) end
+                if cd.EnableMouse then pcall(cd.EnableMouse, cd, false) end
+                pcall(button.SetDurationCooldown, button, cd)
+                row._durCD = cd
+            end
+        end
         local E = _G.Enum
-        if E and E.StatusBarInterpolation then opts.interpolation = E.StatusBarInterpolation.Immediate end
-        if E and E.StatusBarTimerDirection then opts.direction = E.StatusBarTimerDirection.RemainingTime end
-        -- 与 EUI 团队框架同样的两级尝试：先带选项，不认选项的版本再裸调用
+        local remDir = E and E.StatusBarTimerDirection and E.StatusBarTimerDirection.RemainingTime or nil
+        local immInterp = E and E.StatusBarInterpolation and E.StatusBarInterpolation.Immediate or nil
+        -- 多级探测（完整参数 -> 仅 direction[SAO无限服实测] -> 空表 -> 裸调用）
         local okBar = false
         if button.SetDurationBar then
-            okBar = pcall(button.SetDurationBar, button, row.bar, opts)
+            if immInterp ~= nil or remDir ~= nil then
+                local fullOpts = {}
+                if immInterp ~= nil then fullOpts.interpolation = immInterp end
+                if remDir ~= nil then fullOpts.direction = remDir end
+                okBar = pcall(button.SetDurationBar, button, row.bar, fullOpts)
+            end
+            if not okBar and remDir ~= nil then
+                okBar = pcall(button.SetDurationBar, button, row.bar, { direction = remDir })
+            end
+            if not okBar then okBar = pcall(button.SetDurationBar, button, row.bar, {}) end
             if not okBar then okBar = pcall(button.SetDurationBar, button, row.bar) end
         end
-        if not okBar then engine.initErr = "SetDurationBar 不可用（条不会随时间缩短，倒计时文字仍有效）" end
+        if not okBar then
+            engine.barUnsupported = true
+            engine.initErr = "SetDurationBar 不可用（已自动回退扫描模式）"
+        end
         local fmt = GetProcDurationFormatter(AK)
         if AK.SetDurationTextSafe and AK.BuildDurationTextOpts then
-            AK.SetDurationTextSafe(button, row.time, AK.BuildDurationTextOpts(fmt))
+            AK.SetDurationTextSafe(button, row.time, AK.BuildDurationTextOpts(fmt, AK.DECIMAL_UPDATE_INTERVAL or 0.1))
         else
             pcall(button.SetDurationText, button, row.time, { textFormatter = fmt })
         end
@@ -1019,10 +1117,6 @@ end
 
 local function BuildEngine()
     if not mod._active or engine.failed or not EngineAvailable() or not procAnchor then return end
-    if _G.InCombatLockdown and _G.InCombatLockdown() then
-        F.RunOutOfCombat("kkowoUI_WeaponProcs_Engine", BuildEngine)
-        return
-    end
     local list = {}
     for _, e in ipairs(entries) do
         if e.enabled and e.idList[1] then list[#list + 1] = e end
@@ -1035,28 +1129,45 @@ local function BuildEngine()
 
     local AK = GetAK()
     local L = layout
-    local FlowDir = _G.AnchorUtil and _G.AnchorUtil.FlowDirection
     local corner = L.up and "BOTTOMLEFT" or "TOPLEFT"
     engine.gen = engine.gen + 1
+    engine.initErr = nil
+    engine.barUnsupported = nil
     local ok, err = pcall(function()
+        -- 先建外壳以加载 Blizzard_AuraContainer，随后再读取 AnchorUtil / 排序枚举并显式下发容器与组布局
         local container = AK.CreateContainerShell(procAnchor, {
             point = { corner, procAnchor, corner, 0, 0 },
-            layout = {
-                anchorPoint = corner,
-                padding = { 0, 0, 0, 0 },
-                -- 每行只放得下一条：行宽 = 条宽 + 间距（引擎在每个元素后都追加 elementSpacing）
-                rowWidth = L.rowW + L.spacing,
-                growthH = FlowDir and FlowDir.Right or nil,
-                growthV = FlowDir and (L.up and FlowDir.Up or FlowDir.Down) or nil,
-            },
         })
         engine.container = container
-        if AK.SetContainerAxis then pcall(AK.SetContainerAxis, container, false) end
-        -- 排序枚举随 Blizzard_AuraContainer 按需加载（上面创建容器时才载入），所以这里再取
+        local FlowDir = _G.AnchorUtil and _G.AnchorUtil.FlowDirection
+        local useVerticalAxis = (container.SetFlowLayoutAxis ~= nil)
+            and (_G.AnchorUtil ~= nil and _G.AnchorUtil.FlowLayoutAxis ~= nil)
+        if AK.SetContainerAxis then
+            pcall(AK.SetContainerAxis, container, useVerticalAxis)
+        end
+        local containerLayout = {
+            anchorPoint = corner,
+            padding = { 0, 0, 0, 0 },
+            growthH = FlowDir and FlowDir.Right or nil,
+            growthV = FlowDir and (L.up and FlowDir.Up or FlowDir.Down) or nil,
+        }
+        -- 垂直主轴无需行宽折行；水平主轴回退单列（条宽 + 0.4，与 EUI 姓名板/团队框体一致）
+        if not useVerticalAxis then
+            containerLayout.rowWidth = L.rowW + 0.4
+        end
+        AK.ApplyContainerLayout(container, containerLayout)
         local SM, SD = _G.AuraContainerSortMethod, _G.AuraContainerSortDirection
         local sortMethod = SM and SM.ExpirationOnly or nil
         local sortDir = SD and SD.Reverse or nil
-        for _, e in ipairs(list) do
+        local gLayout = {
+            elementWidth = L.rowW,
+            elementHeight = L.h,
+            elementSpacing = L.spacing,
+            lineSpacing = L.spacing,
+            groupSpacing = 0,
+            groupLineSpacing = L.spacing,
+        }
+        for idx, e in ipairs(list) do
             local styleKey = "kkowoUI_wp_" .. e.key .. "_" .. engine.gen
             AK.styles[styleKey] = {
                 noRegions = true,
@@ -1071,8 +1182,18 @@ local function BuildEngine()
             engine.styleKeys[e.key] = styleKey
             local ids = {}
             for _, id in ipairs(e.idList) do ids[id] = true end
+            local gKey = "kk_" .. e.key
+            local entryLayout = {
+                elementWidth = gLayout.elementWidth,
+                elementHeight = gLayout.elementHeight,
+                elementSpacing = gLayout.elementSpacing,
+                lineSpacing = gLayout.lineSpacing,
+                groupSpacing = gLayout.groupSpacing,
+                groupLineSpacing = gLayout.groupLineSpacing,
+                layoutIndex = idx,
+            }
             AK.AddGroupToContainer(container, {
-                key = "kk_" .. e.key,
+                key = gKey,
                 filter = { "HELPFUL" },
                 maxFrameCount = MAX_PER_ENTRY,
                 sortMethod = sortMethod,
@@ -1080,24 +1201,33 @@ local function BuildEngine()
                 candidateFilters = { includeSpellIDs = ids },
                 style = styleKey,
                 extraInit = EngineInitButton,
-                layout = {
-                    elementWidth = L.rowW,
-                    elementHeight = L.h,
-                    elementSpacing = L.spacing,
-                    lineSpacing = L.spacing,
-                    groupSpacing = 0,
-                    groupLineSpacing = L.spacing,
-                },
+                layout = entryLayout,
             })
+            if container.SetAuraGroupLayout then
+                pcall(container.SetAuraGroupLayout, container, gKey, entryLayout)
+            end
         end
+        if container.SetEnabled then pcall(container.SetEnabled, container, true) end
         AK.FinishContainer(container, "player")
     end)
-    if not ok then
-        engine.failed = true
+    if not ok or engine.barUnsupported then
+        local combatTransient = (not engine.barUnsupported) and (_G.InCombatLockdown and _G.InCombatLockdown())
         ReleaseEngine()
-        F.Print("|cffe05263武器特效已切换兼容模式，战斗中部分新触发可能延迟显示。|r " .. tostring(err))
-    elseif engine.initErr then
-        F.PrintOnce("kkowoUI_wp_initErr", "|cffe05263武器特效条初始化失败，请 /reload 重试：|r" .. engine.initErr)
+        engine.fp = nil
+        if combatTransient then
+            engine.retryOnOOC = true
+            F.RunOutOfCombat("kkowoUI_WeaponProcs_Engine", BuildEngine)
+        else
+            engine.failed = true
+            if not ok then
+                F.Print("|cffe05263武器特效已切换兼容模式，战斗中部分新触发可能延迟显示。|r " .. tostring(err))
+            end
+        end
+    else
+        engine.retryOnOOC = nil
+        if engine.initErr then
+            F.PrintOnce("kkowoUI_wp_initErr", "|cffe05263武器特效条初始化失败，请 /reload 重试：|r" .. engine.initErr)
+        end
     end
     if mod.SyncEngineVisibility then mod.SyncEngineVisibility() end
 end
@@ -1105,6 +1235,7 @@ end
 -- 尾随防抖：连续改动（拖滑块、连续识别到 ID）只在停下 0.35 秒后重建一次。
 -- 每次重建都会新建一批引擎按钮（框体无法销毁），所以绝不能每一步都建
 local engineBuildToken = 0
+local structuralToken = 0
 function mod:ScheduleEngineBuild()
     engineBuildToken = engineBuildToken + 1
     local my = engineBuildToken
@@ -1265,12 +1396,20 @@ local function SyncEngineVisibility()
     if not c then return end
     local hide = previewItems ~= nil
     if hide and not engine.hiddenForPreview then
-        engine.hiddenForPreview = true
-        pcall(c.Hide, c)
+        local okH = pcall(c.Hide, c)
+        if okH then
+            engine.hiddenForPreview = true
+        elseif F.RunOutOfCombat then
+            F.RunOutOfCombat("kkowoUI_WP_SyncEngineVis", SyncEngineVisibility)
+        end
     elseif not hide and engine.hiddenForPreview then
-        engine.hiddenForPreview = false
-        pcall(c.Show, c)
-        if c.UpdateAllAuras then pcall(c.UpdateAllAuras, c) end
+        local okS = pcall(c.Show, c)
+        if okS then
+            engine.hiddenForPreview = false
+            if c.UpdateAllAuras then pcall(c.UpdateAllAuras, c) end
+        elseif F.RunOutOfCombat then
+            F.RunOutOfCombat("kkowoUI_WP_SyncEngineVis", SyncEngineVisibility)
+        end
     end
 end
 mod.SyncEngineVisibility = SyncEngineVisibility
@@ -1456,11 +1595,43 @@ function mod:OnEnable()
     enchSessionStart = GetTime()
     FullRefresh(true)
 
+    local enchDeferredPending = false
+    local lastSpellCastScanAt = 0
+    local function ClearEnchantNameCache()
+        for k in pairs(enchNameCache) do enchNameCache[k] = nil end
+    end
+    local function OnEnchantChanged(clearCache)
+        if clearCache then ClearEnchantNameCache() end
+        RefreshEnchants()
+        Wake()
+        -- 涂抹磨刀石/武器油/毒药/鱼饵时客户端状态与鼠标提示常晚 1 帧就绪，延迟补刷一次确保立即显示与识别名称
+        if not enchDeferredPending and _G.C_Timer and _G.C_Timer.After then
+            enchDeferredPending = true
+            _G.C_Timer.After(0.25, function()
+                enchDeferredPending = false
+                if mod._active then
+                    if clearCache then ClearEnchantNameCache() end
+                    RefreshEnchants()
+                    Wake()
+                end
+            end)
+        end
+    end
+    local function OnEnchantChangedReset() OnEnchantChanged(true) end
+    local function OnSpellcastSucceeded()
+        if inCombat then return end
+        local now = GetTime()
+        if (now - lastSpellCastScanAt) < 0.5 then return end
+        lastSpellCastScanAt = now
+        OnEnchantChanged(false)
+    end
+
     self:RegisterUnitEvent("UNIT_AURA", "player", QueueAuraScan)
-    self:RegisterEvent("WEAPON_ENCHANT_CHANGED", function() RefreshEnchants(); Wake() end)
-    self:RegisterEvent("WEAPON_SLOT_CHANGED", function() RefreshEnchants(); Wake() end)
-    self:RegisterUnitEvent("UNIT_INVENTORY_CHANGED", "player", function() RefreshEnchants(); Wake() end)
-    self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED", function() RefreshEnchants(); Wake() end)
+    self:RegisterEvent("WEAPON_ENCHANT_CHANGED", OnEnchantChangedReset)
+    self:RegisterEvent("WEAPON_SLOT_CHANGED", OnEnchantChangedReset)
+    self:RegisterUnitEvent("UNIT_INVENTORY_CHANGED", "player", OnEnchantChangedReset)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", OnSpellcastSucceeded)
+    self:RegisterEvent("PLAYER_EQUIPMENT_CHANGED", OnEnchantChangedReset)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         enchSessionStart = GetTime()
         FullRefresh(true)
@@ -1484,6 +1655,11 @@ function mod:OnEnable()
     end)
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
         inCombat = false
+        SyncEngineVisibility()
+        if engine.retryOnOOC then
+            engine.retryOnOOC = nil
+            BuildEngine()
+        end
         QueueAuraScan()
         RefreshEnchants()
         Wake()
@@ -1503,13 +1679,20 @@ function mod:OnDisable()
     if EUI and EUI.UnregisterUnlockModeListener then
         pcall(EUI.UnregisterUnlockModeListener, EUI, "kkowoUI_WeaponProcs")
     end
+    engineBuildToken = engineBuildToken + 1
+    structuralToken = structuralToken + 1
+    auraScanPending = false
     previewOn, previewByUnlock, previewItems = false, false, nil
     ReleaseEngine()
     engine.fp = nil
+    engine.retryOnOOC = nil
     if driver then driver:SetScript("OnUpdate", nil) end
     HideRows(procRows)
     HideRows(enchRows)
     for k in pairs(scanItems) do scanItems[k] = nil end
+    for k in pairs(enchItems) do enchItems[k] = nil end
+    for k in pairs(enchTrack) do enchTrack[k] = nil end
+    for k in pairs(enchNameCache) do enchNameCache[k] = nil end
     if procAnchor then procAnchor:Hide() end
     if enchAnchor then enchAnchor:Hide() end
 end
@@ -1524,7 +1707,6 @@ end
 
 -- 设置页改动后调用：只改颜色走轻量重绘，结构性改动（条目 / 尺寸 / 方向）整体重建。
 -- 结构性改动同样尾随防抖：拖滑块时只在停下后重建一次自绘条
-local structuralToken = 0
 local function QueueStructural()
     structuralToken = structuralToken + 1
     local my = structuralToken

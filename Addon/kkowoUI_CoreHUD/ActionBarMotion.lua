@@ -174,7 +174,7 @@ local function GetCDMFrameContext(btn)
 end
 
 local function IsTextureObj(obj)
-    return obj ~= nil and obj.GetObjectType ~= nil and obj:GetObjectType() == "Texture"
+    return IsSafe(obj) and obj.GetObjectType ~= nil and obj:GetObjectType() == "Texture"
 end
 
 local function FindButtonIcon(btn)
@@ -305,7 +305,7 @@ local function ButtonHasVisibleAction(btn)
     local slot = GetButtonActionSlot(btn)
     if slot and _G.HasAction then
         local ok, has = pcall(_G.HasAction, slot)
-        if ok then return has == true end
+        if ok and not F.IsSecret(has) then return has == true end
     end
     local icon = FindButtonIcon(btn)
     if not (icon and icon:IsShown()) then return false end
@@ -612,6 +612,10 @@ local function RegisterActionBtn(btn, isActionSlot)
             local ownerBtn = btn
             if cd.SetCooldown then
                 _G.hooksecurefunc(cd, "SetCooldown", function(self, _, dur)
+                    if F.IsSecret(dur) then
+                        cdLastDur[self] = "secret"
+                        return
+                    end
                     local d = F.PlainNumber(dur, nil)
                     if d then cdLastDur[self] = d end
                 end)
@@ -623,8 +627,9 @@ local function RegisterActionBtn(btn, isActionSlot)
                     local _, fd, _, barData = GetCDMFrameContext(ownerBtn)
                     if IsCDMBuffIcon(ownerBtn, fd, barData) then return end
                     local d = cdLastDur[self]
-                    if d == nil or d > 2.0 then
-                        cdLastDur[self] = nil
+                    cdLastDur[self] = nil
+                    -- 仅明确 >2s 的真实技能冷却结束才闪光；dur 为机密值时无法区分 GCD，绝不误触发（P3-08a）
+                    if type(d) == "number" and d > 2.0 then
                         TriggerButtonFX(ownerBtn, true)
                     end
                 end)
@@ -861,7 +866,7 @@ local function RoundTrackedBar(wrap, forceDisable)
                 ST.MaskIcon(icFrame, icFrame._tex, iRad)
             elseif icFrame.GetRegions then
                 for _, reg in ipairs({ icFrame:GetRegions() }) do
-                    if IsTextureObj(reg) and not (reg.IsObjectType and reg:IsObjectType("MaskTexture")) then
+                    if IsSafe(reg) and IsTextureObj(reg) and not (reg.IsObjectType and reg:IsObjectType("MaskTexture")) then
                         local layer = reg.GetDrawLayer and reg:GetDrawLayer() or nil
                         if layer == "ARTWORK" or layer == "BACKGROUND" then
                             ST.MaskIcon(icFrame, reg, iRad)
@@ -977,7 +982,7 @@ local function ScanButtons()
             if ft then ST.MaskTexture(sb, ft, rad) end
             if sb.GetRegions then
                 for _, reg in ipairs({ sb:GetRegions() }) do
-                    if reg and reg.GetObjectType and reg:GetObjectType() == "Texture" and reg ~= ft then
+                    if IsSafe(reg) and reg.GetObjectType and reg:GetObjectType() == "Texture" and reg ~= ft then
                         local layer = reg.GetDrawLayer and reg:GetDrawLayer()
                         if layer == "BACKGROUND" then
                             ST.MaskTexture(sb, reg, rad)
@@ -1027,19 +1032,30 @@ local function ReadActionCooldown(slot)
     local CAB = _G.C_ActionBar
     if CAB and CAB.GetActionCooldown then
         local ok, info = pcall(CAB.GetActionCooldown, slot)
-        if ok and type(info) == "table" then
-            local en = info.isEnabled
-            if F.IsSecret(en) or en == false then return nil, nil end
-            return F.PlainNumber(info.startTime, nil), F.PlainNumber(info.duration, nil)
+        if ok then
+            if F.IsSecret(info) then return nil, nil, true end
+            if type(info) == "table" then
+                local en = info.isEnabled
+                if F.IsSecret(en) or F.IsSecret(info.startTime) or F.IsSecret(info.duration) then
+                    return nil, nil, true
+                end
+                if en == false then return nil, nil, false end
+                return F.PlainNumber(info.startTime, nil), F.PlainNumber(info.duration, nil), false
+            end
         end
     end
     if _G.GetActionCooldown then
         local ok, s, d, en = pcall(_G.GetActionCooldown, slot)
-        if ok and not F.IsSecret(en) and (en == 1 or en == true) then
-            return F.PlainNumber(s, nil), F.PlainNumber(d, nil)
+        if ok then
+            if F.IsSecret(en) or F.IsSecret(s) or F.IsSecret(d) then
+                return nil, nil, true
+            end
+            if en == 1 or en == true then
+                return F.PlainNumber(s, nil), F.PlainNumber(d, nil), false
+            end
         end
     end
-    return nil, nil
+    return nil, nil, false
 end
 
 local function RefreshCooldownWatches()
@@ -1047,29 +1063,31 @@ local function RefreshCooldownWatches()
     local now = GetTime()
     for slot, btn in pairs(slotToBtn) do
         if IsSafe(btn) and btn:IsVisible() then
-            local start, dur = ReadActionCooldown(slot)
-            start = start or 0
-            dur = dur or 0
-            if start > 0 and dur > 2.0 then
-                local endAt = start + dur
-                local prevEnd = trackedCDs[slot]
-                if not prevEnd or math_abs(endAt - prevEnd) > 0.35 then
-                    trackedCDs[slot] = endAt
-                    local delay = endAt - now
-                    if delay > 0.1 and delay < 180 then
-                        local sKey = slot
-                        local expectEnd = endAt
-                        C_Timer.After(delay, function()
-                            if not (mod._active and mod:GetDB().cdFinishPulse ~= false) then return end
-                            if trackedCDs[sKey] ~= expectEnd then return end
-                            trackedCDs[sKey] = nil
-                            local b = slotToBtn[sKey]
-                            if b then TriggerButtonFX(b, true) end
-                        end)
+            local start, dur, isSecret = ReadActionCooldown(slot)
+            if not isSecret then
+                start = start or 0
+                dur = dur or 0
+                if start > 0 and dur > 2.0 then
+                    local endAt = start + dur
+                    local prevEnd = trackedCDs[slot]
+                    if not prevEnd or math_abs(endAt - prevEnd) > 0.35 then
+                        trackedCDs[slot] = endAt
+                        local delay = endAt - now
+                        if delay > 0.1 and delay < 180 then
+                            local sKey = slot
+                            local expectEnd = endAt
+                            C_Timer.After(delay, function()
+                                if not (mod._active and mod:GetDB().cdFinishPulse ~= false) then return end
+                                if trackedCDs[sKey] ~= expectEnd then return end
+                                trackedCDs[sKey] = nil
+                                local b = slotToBtn[sKey]
+                                if b then TriggerButtonFX(b, true) end
+                            end)
+                        end
                     end
+                else
+                    trackedCDs[slot] = nil
                 end
-            else
-                trackedCDs[slot] = nil
             end
         end
     end
@@ -1216,7 +1234,6 @@ function mod:OnEnable()
     self:RegisterEvent("SPELLS_CHANGED", QueueScan)
     self:RegisterEvent("CHAT_MSG_LOOT", QueueLootScan)
     self:RegisterEvent("CHAT_MSG_MONEY", QueueLootScan)
-    self:RegisterEvent("PLAYER_REGEN_DISABLED", QueueScan)
     self:RegisterEvent("PLAYER_REGEN_ENABLED", QueueScan)
     self:RegisterEvent("GROUP_ROSTER_UPDATE", QueueScan)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
@@ -1237,6 +1254,8 @@ function mod:OnDisable()
             if fl then
                 if fl.ag then fl.ag:Stop() end
                 if fl.tex then fl.tex:SetAlpha(0); fl.tex:Hide() end
+                if fl.bag then fl.bag:Stop() end
+                if fl.bloom then fl.bloom:SetAlpha(0); fl.bloom:Hide() end
             end
             ApplyButtonRound(btn, false)
         end

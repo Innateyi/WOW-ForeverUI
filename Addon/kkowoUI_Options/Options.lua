@@ -228,11 +228,29 @@ local function RestoreInGameSlim()
     local list = charBak or accBak or SLIM_LIST
     if not enable then return end
     if F.db then F.db.autoDisableDeadAddons = false end
+    local seen = {}
+    local count = 0
     for _, name in ipairs(list) do
-        F.SetAddOnEnabledSafely(name, true)
+        if not seen[name] then
+            seen[name] = true
+            F.SetAddOnEnabledSafely(name, true)
+            count = count + 1
+        end
+    end
+    -- 同步还原被无效插件守卫（Guard.lua）自动停用的插件（P45-08）
+    local dgBak = F.charDB and type(F.charDB.deadGuardDisabled) == "table" and F.charDB.deadGuardDisabled or nil
+    if dgBak then
+        for _, name in ipairs(dgBak) do
+            if not seen[name] then
+                seen[name] = true
+                F.SetAddOnEnabledSafely(name, true)
+                count = count + 1
+            end
+        end
+        F.charDB.deadGuardDisabled = nil
     end
     if saveFn then pcall(saveFn) end
-    F.Print("已重新启用 " .. tostring(#list) .. " 个插件，即将重载界面。")
+    F.Print("已重新启用 " .. tostring(count) .. " 个插件，即将重载界面。")
     if _G.ReloadUI then _G.ReloadUI() end
 end
 
@@ -264,6 +282,7 @@ local function PrintHelp(showAll)
         _G.print("  /kk probe — 开关聊天与标记逐帧探针")
         _G.print("  /kk markcal — 打开头顶标记校准滑块")
         _G.print("  /kk selftest — 运行自动化回归自检")
+        _G.print("  /kk clickcheck [kk|blizz|eui] — 只读排查隐形挡点击框体（战斗中可用）")
         _G.print("  /kk nav / beam / friendly / hud / perf / toast / ss / wp — 模块测试命令")
     end
 end
@@ -282,6 +301,8 @@ function UI.HandleSlash(msg)
         if F._Diagnostics and F._Diagnostics.OpenMarkCalibrator then F._Diagnostics.OpenMarkCalibrator() end
     elseif cmd == "selftest" then
         if F._Diagnostics and F._Diagnostics.RunSelfTest then F._Diagnostics.RunSelfTest() end
+    elseif cmd == "clickcheck" or cmd == "cc" then
+        if F._Diagnostics and F._Diagnostics.ClickCheck then F._Diagnostics.ClickCheck(rest) end
     elseif cmd == "status" or cmd == "check" then
         PrintStatus()
     elseif cmd == "loginlog" or cmd == "quiet" then

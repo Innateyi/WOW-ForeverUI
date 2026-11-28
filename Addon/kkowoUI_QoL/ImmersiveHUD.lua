@@ -244,9 +244,10 @@ do
         -- 父子都在名单里时只淡父框体（否则透明度相乘，子框体会淡得过头，例如属性卡片挂在 EUI 属性面板上）
         for i = #targetBuf, 1, -1 do
             local f = targetBuf[i]
-            local p = f.GetParent and f:GetParent() or nil
+            local p = (not (f.IsForbidden and f:IsForbidden())) and f.GetParent and f:GetParent() or nil
             local depth = 0
             while p and depth < 10 do
+                if p.IsForbidden and p:IsForbidden() then break end
                 if seenBuf[p] then
                     table.remove(targetBuf, i)
                     break
@@ -260,21 +261,40 @@ do
 
     local function IsInCombatInstance()
         if not _G.GetInstanceInfo then return false end
-        local _, iType = _G.GetInstanceInfo()
+        local ok, _, rawType = pcall(_G.GetInstanceInfo)
+        local iType = ok and F.PlainString(rawType, nil) or nil
         return iType == "party" or iType == "raid" or iType == "scenario" or iType == "arena" or iType == "pvp"
     end
 
     local function IsPlayerVitalHealthy(db)
-        local hp = F.PlainNumber(_G.UnitHealth and _G.UnitHealth("player"), nil)
-        local hpMax = F.PlainNumber(_G.UnitHealthMax and _G.UnitHealthMax("player"), nil)
-        if hp and hpMax and hpMax > 0 and (hp / hpMax * 100) < (db.hpThreshold or 95) then
-            return false
+        if _G.UnitHealth and _G.UnitHealthMax then
+            local okH, rawHp = pcall(_G.UnitHealth, "player")
+            local okM, rawMax = pcall(_G.UnitHealthMax, "player")
+            -- K5：血量读取失败或为保密值时按「不健康」处理，绝不误淡出 HUD
+            if not okH or not okM or F.IsSecret(rawHp) or F.IsSecret(rawMax) then
+                return false
+            end
+            local hp = F.PlainNumber(rawHp, nil)
+            local hpMax = F.PlainNumber(rawMax, nil)
+            if hp and hpMax and hpMax > 0 and (hp / hpMax * 100) < (db.hpThreshold or 95) then
+                return false
+            end
         end
-        local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("player"), 0) or 0
+        local pType = 0
+        if _G.UnitPowerType then
+            local okPT, rawPT = pcall(_G.UnitPowerType, "player")
+            if not okPT or F.IsSecret(rawPT) then return false end
+            pType = F.PlainNumber(rawPT, 0) or 0
+        end
         -- 仅对蓝条（MANA = 0）检查回蓝不满；怒气/能量/集中值平时为 0 或自回，不触发常亮
-        if pType == 0 then
-            local mp = F.PlainNumber(_G.UnitPower and _G.UnitPower("player", 0), nil)
-            local mpMax = F.PlainNumber(_G.UnitPowerMax and _G.UnitPowerMax("player", 0), nil)
+        if pType == 0 and _G.UnitPower and _G.UnitPowerMax then
+            local okP, rawMp = pcall(_G.UnitPower, "player", 0)
+            local okPM, rawMpMax = pcall(_G.UnitPowerMax, "player", 0)
+            if not okP or not okPM or F.IsSecret(rawMp) or F.IsSecret(rawMpMax) then
+                return false
+            end
+            local mp = F.PlainNumber(rawMp, nil)
+            local mpMax = F.PlainNumber(rawMpMax, nil)
             if mp and mpMax and mpMax > 0 and (mp / mpMax * 100) < (db.powerThreshold or 85) then
                 return false
             end
@@ -289,6 +309,14 @@ do
         return val == true
     end
 
+    -- K5：用于判定「是否处于忙碌状态（进战/有目标）」——若 API 返回保密值或失败，宁可按忙碌处理也不误淡出
+    local function SafeBoolCallBusy(fn, ...)
+        if type(fn) ~= "function" then return false end
+        local ok, val = pcall(fn, ...)
+        if not ok or F.IsSecret(val) then return true end
+        return val == true
+    end
+
     local function SafeHasCast(fn, unit)
         if type(fn) ~= "function" then return false end
         local ok, name = pcall(fn, unit)
@@ -300,8 +328,8 @@ do
         local db = mod:GetDB()
         if _G.EllesmereUI and _G.EllesmereUI._unlockActive then return false end
         if _G.InCombatLockdown and _G.InCombatLockdown() then return false end
-        if SafeBoolCall(_G.UnitAffectingCombat, "player") then return false end
-        if SafeBoolCall(_G.UnitExists, "target") then return false end
+        if SafeBoolCallBusy(_G.UnitAffectingCombat, "player") then return false end
+        if SafeBoolCallBusy(_G.UnitExists, "target") then return false end
         if SafeHasCast(_G.UnitCastingInfo, "player") then return false end
         if SafeHasCast(_G.UnitChannelInfo, "player") then return false end
         if db.disableInInstance ~= false and IsInCombatInstance() then return false end

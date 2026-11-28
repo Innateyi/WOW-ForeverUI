@@ -79,6 +79,9 @@ local mod = F.RegisterModule("coreHUD", {
         showPetFrame = true,
         -- 统一圆角渐变目标条（默认开启）
         enableTopTarget = true,
+        showTargetBuffs = true,
+        showTargetDebuffs = true,
+        targetAuraSize = 22,
         -- 原地增强 EUI 单位框体（保留原框体或回退时提供掉血残影与微淡入）
         enhanceEUIFrames = true,
     },
@@ -127,7 +130,7 @@ local function IsPermanentOrAspectSpell(spellID, spellName)
 end
 
 local function GetSpellNameSafe(spellID)
-    if not spellID or F.IsSecret(spellID) then return nil end
+    if F.IsSecret(spellID) or not spellID then return nil end
     if _G.C_Spell and _G.C_Spell.GetSpellName then
         local ok, nm = pcall(_G.C_Spell.GetSpellName, spellID)
         if ok then return F.PlainString(nm, nil) end
@@ -142,10 +145,10 @@ end
 --  辅助函数（12.x 保密值安全）
 ----------------------------------------------------------------------
 local function GetSpellCastTimeSafe(spellID)
-    if not spellID or F.IsSecret(spellID) then return 0 end
+    if F.IsSecret(spellID) or not spellID then return 0 end
     if _G.C_Spell and _G.C_Spell.GetSpellInfo then
         local ok, info = pcall(_G.C_Spell.GetSpellInfo, spellID)
-        if ok and type(info) == "table" then
+        if ok and not F.IsSecret(info) and type(info) == "table" then
             return F.PlainNumber(info.castTime, 0) or 0
         end
     elseif _G.GetSpellInfo then
@@ -158,14 +161,14 @@ local function GetSpellCastTimeSafe(spellID)
 end
 
 local function GetSpellIconSafe(spellID)
-    if not spellID or F.IsSecret(spellID) then return nil end
+    if F.IsSecret(spellID) or not spellID then return nil end
     if _G.C_Spell and _G.C_Spell.GetSpellTexture then
         local ok, tex = pcall(_G.C_Spell.GetSpellTexture, spellID)
-        if ok and tex and not F.IsSecret(tex) then return tex end
+        if ok and not F.IsSecret(tex) and type(tex) ~= "nil" then return tex end
     end
     if _G.GetSpellTexture then
         local ok, tex = pcall(_G.GetSpellTexture, spellID)
-        if ok and tex and not F.IsSecret(tex) then return tex end
+        if ok and not F.IsSecret(tex) and type(tex) ~= "nil" then return tex end
     end
     return nil
 end
@@ -380,7 +383,7 @@ local function GetActiveShapeshiftInfo()
         local n = F.PlainNumber(_G.GetNumShapeshiftForms(), 0) or 0
         for i = 1, n do
             local ok, icon, active, _, spellID = pcall(_G.GetShapeshiftFormInfo, i)
-            if ok and active == true and icon ~= nil and not F.IsSecret(icon) then
+            if ok and not F.IsSecret(active) and active == true and not F.IsSecret(icon) and type(icon) ~= "nil" then
                 local sid = F.PlainNumber(spellID, nil)
                 local name = sid and GetSpellNameSafe(sid) or nil
                 return icon, name, sid, i

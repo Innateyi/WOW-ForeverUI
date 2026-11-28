@@ -536,6 +536,8 @@ local function PolishMoneyEditBox(eb)
     end
 end
 
+local origScrollBtns = setmetatable({}, WEAK)
+
 local function PolishScrollBar(S, sb)
     if not Usable(sb) then return end
     Call(S.ScrollBar, sb)
@@ -550,6 +552,10 @@ local function PolishScrollBar(S, sb)
     for _, key in ipairs({ "Back", "Forward" }) do
         local b = sb[key]
         if Usable(b) then
+            if origScrollBtns[b] == nil then
+                local okM, mOn = pcall(b.IsMouseEnabled or function() return true end, b)
+                origScrollBtns[b] = { mouse = not okM or mOn ~= false }
+            end
             for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
                 local t = b[g] and b[g](b)
                 if Usable(t) and t.SetAlpha then pcall(t.SetAlpha, t, 0) end
@@ -558,6 +564,21 @@ local function PolishScrollBar(S, sb)
             if b.SetAlpha then pcall(b.SetAlpha, b, 0) end
             if b.EnableMouse then pcall(b.EnableMouse, b, false) end
         end
+    end
+end
+
+local function RestoreScrollBarButtons()
+    for b, orig in _G.pairs(origScrollBtns) do
+        if Usable(b) then
+            for _, g in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
+                local t = b[g] and b[g](b)
+                if Usable(t) and t.SetAlpha then pcall(t.SetAlpha, t, 1) end
+            end
+            if Usable(b.Texture) and b.Texture.SetAlpha then pcall(b.Texture.SetAlpha, b.Texture, 1) end
+            if b.SetAlpha then pcall(b.SetAlpha, b, 1) end
+            if b.EnableMouse then pcall(b.EnableMouse, b, orig.mouse ~= false) end
+        end
+        origScrollBtns[b] = nil
     end
 end
 
@@ -862,6 +883,7 @@ end
 function mod:OnDisable()
     if Usable(scanBtnRef) then scanBtnRef:Hide() end
     if Usable(scanStatusFS) then scanStatusFS:Hide() end
+    RestoreScrollBarButtons()
     SyncEUIZoneDividers(_G.AuctionHouseFrame, false, false)
     LayoutTabRow()
 end

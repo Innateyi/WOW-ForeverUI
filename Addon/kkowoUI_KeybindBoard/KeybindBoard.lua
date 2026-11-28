@@ -152,12 +152,19 @@ local function SaveCurrentBindings()
 end
 
 local function ResolveBindingInfo(cmd)
+    cmd = F.PlainString(cmd, nil)
     if not cmd or cmd == "" then return nil, nil, nil end
     local slot = CMD_TO_SLOT[cmd]
     if slot and _G.GetActionTexture then
-        local tex = _G.GetActionTexture(slot)
+        local okT, tex = pcall(_G.GetActionTexture, slot)
+        if not okT or F.IsSecret(tex) then tex = nil end
         local kind, id
-        if _G.GetActionInfo then kind, id = _G.GetActionInfo(slot) end
+        if _G.GetActionInfo then
+            local okA, k, i = pcall(_G.GetActionInfo, slot)
+            if okA and not F.IsSecret(k) and not F.IsSecret(i) then
+                kind, id = k, i
+            end
+        end
         return tex, "action", slot, kind, id
     end
     local petIdx = cmd:match("^BONUSACTIONBUTTON(%d+)$")
@@ -165,7 +172,7 @@ local function ResolveBindingInfo(cmd)
         local idx = tonumber(petIdx)
         if idx then
             local ok, _, tex = pcall(_G.GetPetActionInfo, idx)
-            if ok and tex then
+            if ok and not F.IsSecret(tex) and tex then
                 return tex, "petaction", idx
             end
         end
@@ -175,24 +182,25 @@ local function ResolveBindingInfo(cmd)
         local tex
         if _G.C_Spell and _G.C_Spell.GetSpellTexture then
             local ok, t = pcall(_G.C_Spell.GetSpellTexture, spellName)
-            if ok then tex = t end
+            if ok and not F.IsSecret(t) then tex = t end
         elseif _G.GetSpellTexture then
             local ok, t = pcall(_G.GetSpellTexture, spellName)
-            if ok then tex = t end
+            if ok and not F.IsSecret(t) then tex = t end
         end
         return tex, "spell", spellName
     end
     local macroName = cmd:match("^MACRO (.+)$")
     if macroName and _G.GetMacroInfo then
         local ok, _, tex = pcall(_G.GetMacroInfo, macroName)
-        return ok and tex or 134400, "macro", macroName
+        if not ok or F.IsSecret(tex) then tex = nil end
+        return tex or 134400, "macro", macroName
     end
     local itemName = cmd:match("^ITEM (.+)$")
     if itemName then
         local tex
         if _G.C_Item and _G.C_Item.GetItemIconByID then
             local ok, t = pcall(_G.C_Item.GetItemIconByID, itemName)
-            if ok then tex = t end
+            if ok and not F.IsSecret(t) then tex = t end
         end
         return tex or 134400, "item", itemName
     end
@@ -508,7 +516,8 @@ RefreshAllKeys = function()
     for _, b in ipairs(keyButtons) do
         if b:IsShown() then
             local fullKey = currentModPrefix .. b._baseKey
-            local cmd = _G.GetBindingAction and _G.GetBindingAction(fullKey, true) or nil
+            local okB, rawCmd = pcall(_G.GetBindingAction or function() return nil end, fullKey, true)
+            local cmd = okB and F.PlainString(rawCmd, nil) or nil
             if cmd and cmd ~= "" then
                 local tex = ResolveBindingInfo(cmd)
                 if tex then
@@ -539,7 +548,8 @@ RefreshAllKeys = function()
             local cmd = spec.cmdPrefix .. i
             sb._slot = slot
             sb._cmd = cmd
-            local tex = _G.GetActionTexture and _G.GetActionTexture(slot) or nil
+            local okT, rawTex = pcall(_G.GetActionTexture or function() return nil end, slot)
+            local tex = (okT and not F.IsSecret(rawTex)) and rawTex or nil
             if tex then
                 sb._icon:SetTexture(tex)
                 sb._icon:Show()
@@ -547,7 +557,8 @@ RefreshAllKeys = function()
             else
                 sb._icon:Hide()
             end
-            local keyStr = _G.GetBindingKey and _G.GetBindingKey(cmd) or nil
+            local okK, rawKey = pcall(_G.GetBindingKey or function() return nil end, cmd)
+            local keyStr = okK and F.PlainString(rawKey, nil) or nil
             sb._keyFS:SetText(keyStr and keyStr:gsub("SHIFT%-", "S"):gsub("CTRL%-", "C"):gsub("ALT%-", "A") or "")
             local isSel = (pendingSlotCmd == cmd)
             ST.ApplyRoundedBorder(sb, 5, isSel and ar or 0.20, isSel and ag or 0.22, isSel and ab or 0.28, isSel and 1 or 0.85, 4)
@@ -784,6 +795,9 @@ function mod:OnEnable()
     self:RegisterEvent("ACTIONBAR_SLOT_CHANGED", RefreshAllKeys)
     self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
         inCombat = true
+        if boardFrame and boardFrame.StopMovingOrSizing then
+            pcall(boardFrame.StopMovingOrSizing, boardFrame)
+        end
         RefreshAllKeys()
     end)
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function()

@@ -110,11 +110,11 @@ local function GetUnitQuestProgress(unit)
     local questID = nil
     local found = nil
     for _, line in ipairs(info.lines) do
-        local kind = line.type
-        if kind == LT.QuestTitle then
+        local kind = type(line) == "table" and not F.IsSecret(line) and F.PlainNumber(line.type, nil) or nil
+        if kind and kind == LT.QuestTitle then
             local id = F.PlainNumber(line.id, nil)
             questID = id
-        elseif kind == LT.QuestObjective then
+        elseif kind and kind == LT.QuestObjective then
             local done = line.completed
             if not F.IsSecret(done) and done == false then
                 local onQ = true
@@ -277,8 +277,10 @@ local function InstallTeleportFlashGuard()
             if not (mod._active and mod:GetDB().suppressTeleportFlash ~= false) then return end
             local u = F.PlainString(addedUnit, nil)
             if not u or u == "preview" then return end
-            local okNP, np = _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit
-                and pcall(_G.C_NamePlate.GetNamePlateForUnit, u)
+            local okNP, np = false, nil
+            if _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit then
+                okNP, np = pcall(_G.C_NamePlate.GetNamePlateForUnit, u)
+            end
             if okNP and np then
                 SuppressBlizzFlashForPlate(np, u)
             end
@@ -586,6 +588,20 @@ local function SyncEUINPRoundProfile(enable)
     local npNS = GetEUINPNS()
     if type(prof) ~= "table" then return end
     local changed = false
+    -- 本模块只管理「血条与施法条圆角」，绝不强开 EUI 的光环图标圆角（cornerRadiusAuras）：
+    -- 姓名板裁剪图标开启时（如 15% 裁切为扁矩形），6px 图标圆角会削去大量四角导致图标残缺。
+    -- 旧版本若曾写入过 cornerRadiusAuras，这里自动无损还原为 EUI 原设置。
+    if db.savedEUICornerRadiusAuras ~= nil then
+        local origAuras = nil
+        if db.savedEUICornerRadiusAuras ~= "nil" then
+            origAuras = db.savedEUICornerRadiusAuras
+        end
+        if prof.cornerRadiusAuras ~= origAuras then
+            prof.cornerRadiusAuras = origAuras
+            changed = true
+        end
+        db.savedEUICornerRadiusAuras = nil
+    end
     if enable then
         local targetRad = math_max(4, math_min(8, ST.GetCornerRadius(6)))
         if db.savedEUICornerRadius == nil then
@@ -595,31 +611,37 @@ local function SyncEUINPRoundProfile(enable)
             prof.cornerRadius = targetRad
             changed = true
         end
-        if db.savedEUICornerRadiusAuras == nil then
-            db.savedEUICornerRadiusAuras = (prof.cornerRadiusAuras == nil) and "nil" or prof.cornerRadiusAuras
-        end
-        if prof.cornerRadiusAuras ~= true then
-            prof.cornerRadiusAuras = true
-            changed = true
-        end
         if (changed or lastReloadedRad ~= targetRad) and npNS and type(npNS.NPC_ReloadAll) == "function" then
             lastReloadedRad = targetRad
-            pcall(npNS.NPC_ReloadAll)
+            if _G.InCombatLockdown and _G.InCombatLockdown() and F.RunOutOfCombat then
+                F.RunOutOfCombat("kkowoUI_NP_ReloadAll", function()
+                    local ns2 = GetEUINPNS()
+                    if ns2 and type(ns2.NPC_ReloadAll) == "function" then pcall(ns2.NPC_ReloadAll) end
+                end)
+            else
+                pcall(npNS.NPC_ReloadAll)
+            end
         end
     else
         if db.savedEUICornerRadius ~= nil then
-            prof.cornerRadius = (db.savedEUICornerRadius == "nil") and nil or db.savedEUICornerRadius
+            local origRad = nil
+            if db.savedEUICornerRadius ~= "nil" then
+                origRad = db.savedEUICornerRadius
+            end
+            prof.cornerRadius = origRad
             db.savedEUICornerRadius = nil
-            changed = true
-        end
-        if db.savedEUICornerRadiusAuras ~= nil then
-            prof.cornerRadiusAuras = (db.savedEUICornerRadiusAuras == "nil") and nil or db.savedEUICornerRadiusAuras
-            db.savedEUICornerRadiusAuras = nil
             changed = true
         end
         lastReloadedRad = nil
         if changed and npNS and type(npNS.NPC_ReloadAll) == "function" then
-            pcall(npNS.NPC_ReloadAll)
+            if _G.InCombatLockdown and _G.InCombatLockdown() and F.RunOutOfCombat then
+                F.RunOutOfCombat("kkowoUI_NP_ReloadAll", function()
+                    local ns2 = GetEUINPNS()
+                    if ns2 and type(ns2.NPC_ReloadAll) == "function" then pcall(ns2.NPC_ReloadAll) end
+                end)
+            else
+                pcall(npNS.NPC_ReloadAll)
+            end
         end
     end
 end
@@ -973,7 +995,11 @@ local function PaintSinglePlate(plate, instantTrail)
     local unit = plate.unit
     local db = mod:GetDB()
     local active = mod._active == true and unit ~= nil and plate:IsShown()
-    local hasTarget = (_G.UnitExists and _G.UnitExists("target")) == true
+    local hasTarget = false
+    if _G.UnitExists then
+        local okT, exT = pcall(_G.UnitExists, "target")
+        hasTarget = okT and not F.IsSecret(exT) and exT == true
+    end
     local isTarget = active and IsUnitTarget(unit)
 
     -- 0) 血条与施法条圆角美化
@@ -981,21 +1007,21 @@ local function PaintSinglePlate(plate, instantTrail)
 
     -- 1) 呼吸箭头与任务击杀进度（若 EUI / Questie 本身已在姓名板左侧显示 1/8 进度，则自动让位，绝不重复显示两份）
     local function PlateAlreadyHasQuestText(p)
-        if p.questTextFrame and p.questTextFrame.IsShown and p.questTextFrame:IsShown() then
+        if IsSafe(p.questTextFrame) and p.questTextFrame.IsShown and p.questTextFrame:IsShown() then
             if p.questTextFrame.GetRegions then
                 for _, reg in ipairs({ p.questTextFrame:GetRegions() }) do
-                    if reg and reg.GetObjectType and reg:GetObjectType() == "FontString" and reg:IsShown() then
+                    if IsSafe(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" and reg:IsShown() then
                         local t = reg.GetText and F.PlainString(reg:GetText(), "") or ""
                         if t ~= "" then return true end
                     end
                 end
             end
-            if p.questText and p.questText.GetText then
+            if IsSafe(p.questText) and p.questText.GetText then
                 local t = F.PlainString(p.questText:GetText(), "") or ""
                 if t ~= "" then return true end
             end
         end
-        if p.questText and p.questText.IsShown and p.questText:IsShown() and p.questText.GetText then
+        if IsSafe(p.questText) and p.questText.IsShown and p.questText:IsShown() and p.questText.GetText then
             local t = F.PlainString(p.questText:GetText(), "") or ""
             if t ~= "" then return true end
         end

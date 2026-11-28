@@ -34,6 +34,21 @@ local registeredElements = {}
 local registeredApply = {}
 local pendingUnlock = {}
 local flushed = false
+local activeDragStop = nil
+local dragCombatGuard = nil
+
+local function EnsureDragCombatGuard()
+    if dragCombatGuard or not _G.CreateFrame then return end
+    dragCombatGuard = _G.CreateFrame("Frame")
+    dragCombatGuard:RegisterEvent("PLAYER_REGEN_DISABLED")
+    dragCombatGuard:SetScript("OnEvent", function()
+        if activeDragStop then
+            local fn = activeDragStop
+            activeDragStop = nil
+            pcall(fn)
+        end
+    end)
+end
 
 function Mover.ApplyPosition(frame, key, defaultPoint, defaultRelPoint, defaultX, defaultY)
     if not frame then
@@ -92,41 +107,45 @@ function Mover.Register(opts)
 
     -- 兜底 Shift + 左键拖动（未开 EUI 解锁模式时也能微调；仅在真正开始拖动时才执行 StopMoving，避免误吞点击）
     if opts.allowShiftDrag ~= false then
+        EnsureDragCombatGuard()
         local dragging = false
+        local function finishDrag(self, savePos)
+            if not dragging then return end
+            dragging = false
+            if activeDragStop then activeDragStop = nil end
+            if not (self.IsProtected and self:IsProtected() and InCombatLockdown and InCombatLockdown()) then
+                pcall(self.StopMovingOrSizing, self)
+            else
+                F.RunOutOfCombat("FUI_StopDrag_" .. tostring(key), function()
+                    if self.StopMovingOrSizing then pcall(self.StopMovingOrSizing, self) end
+                end)
+            end
+            if savePos then
+                local pt, _, rpt, x, y = self:GetPoint(1)
+                pt = F.PlainString(pt, nil)
+                rpt = F.PlainString(rpt, nil)
+                x = F.PlainNumber(x, nil)
+                y = F.PlainNumber(y, nil)
+                if pt and VALID_POINTS[pt] and x and y then
+                    F.DB.SavePosition(key, pt, (rpt and VALID_POINTS[rpt]) and rpt or pt, x, y)
+                end
+            end
+        end
         frame:SetMovable(true)
         frame:SetClampedToScreen(true)
         frame:RegisterForDrag("LeftButton")
         frame:HookScript("OnDragStart", function(self)
             if _G.IsShiftKeyDown() and not (InCombatLockdown and InCombatLockdown()) then
                 dragging = true
+                activeDragStop = function() finishDrag(self, true) end
                 self:StartMoving()
             end
         end)
         frame:HookScript("OnDragStop", function(self)
-            if not dragging then return end
-            dragging = false
-            if not (self.IsProtected and self:IsProtected() and InCombatLockdown and InCombatLockdown()) then
-                self:StopMovingOrSizing()
-            else
-                F.RunOutOfCombat("FUI_StopDrag_" .. tostring(key), function()
-                    if self.StopMovingOrSizing then pcall(self.StopMovingOrSizing, self) end
-                end)
-            end
-            local pt, _, rpt, x, y = self:GetPoint(1)
-            pt = F.PlainString(pt, nil)
-            rpt = F.PlainString(rpt, nil)
-            x = F.PlainNumber(x, nil)
-            y = F.PlainNumber(y, nil)
-            if pt and VALID_POINTS[pt] and x and y then
-                F.DB.SavePosition(key, pt, (rpt and VALID_POINTS[rpt]) and rpt or pt, x, y)
-            end
+            finishDrag(self, true)
         end)
         frame:HookScript("OnHide", function(self)
-            if not dragging then return end
-            dragging = false
-            if not (self.IsProtected and self:IsProtected() and InCombatLockdown and InCombatLockdown()) then
-                self:StopMovingOrSizing()
-            end
+            finishDrag(self, false)
         end)
     end
 

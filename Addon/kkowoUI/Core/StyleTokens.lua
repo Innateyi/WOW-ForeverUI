@@ -898,12 +898,16 @@ ReseatHostBodyMask = function(host, st, reqRadius, insetPx)
     local targetMask
     if useWhole then
         if not st.wholeMask then
-            st.wholeMask = host:CreateMaskTexture()
+            local okM, m = pcall(host.CreateMaskTexture, host)
+            if not (okM and m) then return end
+            st.wholeMask = m
         end
         targetMask = st.wholeMask
     else
         if not st.sliceMask then
-            st.sliceMask = host:CreateMaskTexture()
+            local okM, m = pcall(host.CreateMaskTexture, host)
+            if not (okM and m) then return end
+            st.sliceMask = m
         end
         targetMask = st.sliceMask
     end
@@ -1181,8 +1185,17 @@ function ST.SetHostIconMode(host, enabled)
     end
 end
 
+local function IsObjForbidden(obj)
+    if not obj then return true end
+    if obj.IsForbidden then
+        local ok, forb = pcall(obj.IsForbidden, obj)
+        if not ok or forb then return true end
+    end
+    return false
+end
+
 function ST.EnsureRoundedMask(host, radius)
-    if not (host and host.CreateMaskTexture) then return nil end
+    if IsObjForbidden(host) or not host.CreateMaskTexture then return nil end
     local r = math_floor((radius or 6) + 0.5)
     local st = roundState[host]
     if not st then
@@ -1223,7 +1236,7 @@ function ST.EnsureRoundedMask(host, radius)
 end
 
 function ST.MaskTexture(host, tex, radius, opts)
-    if not (host and tex and tex.AddMaskTexture) then return end
+    if IsObjForbidden(host) or IsObjForbidden(tex) or not tex.AddMaskTexture then return end
     local isIcon = (opts and opts.isIcon == true) or isIconTex[tex] == true
     local keepIfLoaded = (opts and opts.keepIfLoaded == true) or keepLoadedTex[tex] == true
     if opts and opts.isIcon ~= nil then isIconTex[tex] = opts.isIcon == true or nil end
@@ -1245,7 +1258,7 @@ end
 -- 专用于正方形/近正方形动态图标（动作条、冷却管理器、BUFF、Roll 条、拾取、装备一览、武器特效等）：
 -- 自动启用 64x64 整图圆角遮罩（无 9 宫格切片）+ 2 帧可见稳态保护。
 function ST.MaskIcon(host, tex, radius, opts)
-    if not (host and tex and tex.AddMaskTexture) then return end
+    if IsObjForbidden(host) or IsObjForbidden(tex) or not tex.AddMaskTexture then return end
     if not (opts and opts.keepHostMode) then
         ST.SetHostIconMode(host, true)
     end
@@ -1257,7 +1270,7 @@ end
 
 -- 供自带独立 MaskTexture 的模块（Theme / TooltipStyle / WeaponProcs / CoreHUD / XPBar）复用同一套安全等待与唤醒机制
 function ST.AttachCustomMask(host, tex, mask, opts)
-    if not (tex and mask and tex.AddMaskTexture) then return end
+    if (host and IsObjForbidden(host)) or IsObjForbidden(tex) or not (mask and tex.AddMaskTexture) then return end
     local isIcon = opts and opts.isIcon == true or false
     local keepIfLoaded = opts and opts.keepIfLoaded == true or false
     local fromSwap = opts and opts.fromSwap == true or false
@@ -1348,7 +1361,7 @@ ST.TextureLoadState = TextureLoadState
 
 -- 为任意框体建立 1:1 物理像素锐利圆角 1px 同心描边（不修改宿主边框或 NineSlice）
 function ST.ApplyRoundedBorder(host, radius, r, g, b, a, levelOffset)
-    if not (host and host.CreateTexture) then return nil end
+    if IsObjForbidden(host) or not host.CreateTexture then return nil end
     local rad = math_floor((radius or 6) + 0.5)
     local st = roundState[host]
     if not st then
@@ -1385,7 +1398,9 @@ function ST.ApplyRoundedBorder(host, radius, r, g, b, a, levelOffset)
         end)
         st.borderFrame = bf
     end
-    local hostLvl = F.PlainNumber(host.GetFrameLevel and host:GetFrameLevel(), 10) or 10
+    local okL, rawLvl = false, nil
+    if host.GetFrameLevel then okL, rawLvl = pcall(host.GetFrameLevel, host) end
+    local hostLvl = okL and F.PlainNumber(rawLvl, 10) or 10
     bf:SetFrameLevel(math_max(0, hostLvl + (levelOffset or 6)))
     st.borderReqRadius = rad
 

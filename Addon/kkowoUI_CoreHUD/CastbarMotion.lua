@@ -483,11 +483,13 @@ local function BuildCastbarOverlay()
         defaultRelPoint = "BOTTOM",
         defaultX = 0,
         defaultY = 215,
+        allowShiftDrag = false,
         -- 覆盖在 ERB / 单位框架施法条上时跟随宿主（拖宿主即可），只有暴雪宿主模式才由它自己占位
         isHidden = function() return not (mod._active and castHostKind == "blizz") end,
         isAnchored = function() return castHostKind ~= "blizz" end,
         onReanchor = function() end,
     })
+    f:EnableMouse(false)
     RefreshOverlayChrome()
 end
 
@@ -698,7 +700,18 @@ local function StartCast(isChannel)
 
     local sMS = F.PlainNumber(startMS, nil)
     local eMS = F.PlainNumber(endMS, nil)
-    if not (sMS and eMS and eMS > sMS) then return end
+    if not (sMS and eMS and eMS > sMS) then
+        -- 12.x 保密值导致无法读取起止时间时临时恢复原生/EUI 施法条显示，避免既无覆盖条又静音原生条
+        castState.active = false
+        castState.secretFallback = true
+        if overlay then
+            overlay:SetScript("OnUpdate", nil)
+            overlay:Hide()
+        end
+        ApplyHostMute(false)
+        return
+    end
+    castState.secretFallback = false
 
     local now = GetTime()
     castState.active = true
@@ -741,6 +754,10 @@ local function StartCast(isChannel)
 end
 
 local function StopCast(feedbackKind, eventCastGUID)
+    if castState.secretFallback then
+        castState.secretFallback = false
+        ApplyHostMute(true)
+    end
     if not castState.active then return end
     if not castState.isChannel and type(eventCastGUID) ~= "nil" and not F.IsSecret(eventCastGUID)
         and castState.castGUID and eventCastGUID ~= castState.castGUID then

@@ -129,7 +129,7 @@ local function UpdatePetHUD(instant)
     ST.ApplyBarGradient(CH.petFrame._ppBar._bar, pr1, pg1, pb1, pr2, pg2, pb2, 0.98, false)
 
     local petName = _G.UnitName and _G.UnitName("pet")
-    if petName ~= nil then
+    if type(petName) ~= "nil" then
         pcall(CH.petFrame._nameText.SetText, CH.petFrame._nameText, petName)
     else
         CH.petFrame._nameText:SetText("宠物")
@@ -256,6 +256,9 @@ local function UpdateTopTargetHUD(instant)
             end
             UpdateTargetOfTarget()
         end
+        if instant and CH.SyncTargetAuras then
+            CH.SyncTargetAuras()
+        end
     end
 
     if CH.euiTrailTarget then
@@ -358,6 +361,15 @@ local function EnsureEUIAlphaGuard(fr, key)
     end
 end
 
+local function IsPlayerInCombatSafe()
+    if _G.InCombatLockdown and _G.InCombatLockdown() then return true end
+    if _G.UnitAffectingCombat then
+        local ok, cbt = pcall(_G.UnitAffectingCombat, "player")
+        if ok and not F.IsSecret(cbt) and cbt == true then return true end
+    end
+    return false
+end
+
 SyncHiddenEUIFrames = function()
     local db = mod:GetDB()
     local active = mod._active == true
@@ -370,8 +382,8 @@ SyncHiddenEUIFrames = function()
         targettarget = autoHide and (db.enableTopTarget ~= false),
     }
 
-    -- SetAlpha 战斗内也 100% 安全，立刻同步生效并挂防复原锁（同步拦截 SetAlpha / SetAlphaFromBoolean / Show）
-    -- 还原只发生在「由隐藏转为显示」的那一刻：平时绝不把 EUI 自己的淡隐 / 距离透明度反复拉回 1
+    local combatNow = (_G.InCombatLockdown and _G.InCombatLockdown()) == true
+    -- SetAlpha 战斗内也 100% 安全，但若战斗中首次隐藏尚未关鼠的 EUI 框体，跳过 Alpha=0 等脱战原子 Hide+关鼠，防隐形吃点击
     for key, hide in pairs(wantHide) do
         local fr = GetEUIUnitFrame(key)
         local wasHidden = hiddenEUI[key] == true
@@ -379,12 +391,19 @@ SyncHiddenEUIFrames = function()
         if fr then
             local targetObj = fr._visWrap or fr
             if hide then
-                EnsureEUIAlphaGuard(fr, key)
-                if targetObj ~= fr then EnsureEUIAlphaGuard(targetObj, key) end
-                CH.alphaGuardBusy = true
-                pcall(fr.SetAlpha, fr, 0)
-                if targetObj ~= fr then pcall(targetObj.SetAlpha, targetObj, 0) end
-                CH.alphaGuardBusy = false
+                local mouseStillOn = false
+                if combatNow and not euiHiddenByUs[key] and fr.IsMouseEnabled then
+                    local okM, en = pcall(fr.IsMouseEnabled, fr)
+                    if okM and en == true then mouseStillOn = true end
+                end
+                if not mouseStillOn then
+                    EnsureEUIAlphaGuard(fr, key)
+                    if targetObj ~= fr then EnsureEUIAlphaGuard(targetObj, key) end
+                    CH.alphaGuardBusy = true
+                    pcall(fr.SetAlpha, fr, 0)
+                    if targetObj ~= fr then pcall(targetObj.SetAlpha, targetObj, 0) end
+                    CH.alphaGuardBusy = false
+                end
             elseif wasHidden or euiHiddenByUs[key] then
                 CH.alphaGuardBusy = true
                 pcall(fr.SetAlpha, fr, 1)
@@ -718,9 +737,8 @@ local function ApplyLayoutAndTheme()
             if CH.coreFrame._orb._cd and CH.coreFrame._orb._cd.SetSwipeColor then
                 pcall(CH.coreFrame._orb._cd.SetSwipeColor, CH.coreFrame._orb._cd, r2, g2, b2, 0.92)
             end
-            local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-                or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
-            SetCombatBadge(inCombat == true, false)
+            local inCombat = IsPlayerInCombatSafe()
+            SetCombatBadge(inCombat, false)
 
             UpdatePlayerHealth(true)
             UpdatePlayerPower(true)
@@ -859,8 +877,7 @@ local function OnCastEnd(_, event, _, castGUID, spellID)
     orbState.lastSpellIcon = nil
     orbState.lastSpellUntil = 0
     orbState.lastCastEndTime = GetTime()
-    local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-        or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
+    local inCombat = IsPlayerInCombatSafe()
     if inCombat then
         local s, d = GetSpellCooldownSafe(61304)
         if s > 0 and d > 0.1 then
@@ -1179,6 +1196,7 @@ function mod:OnDisable()
         CH.coreFrame:Hide()
     end
     HidePetFeedMenu()
+    if CH.ReleaseTargetAuras then CH.ReleaseTargetAuras() end
     if CH.petFrame then CH.petFrame:Hide() end
     if CH.topTargetFrame then CH.topTargetFrame:Hide() end
     if CH.euiTrailPlayer then CH.euiTrailPlayer:SetEnabled(false) end
@@ -1320,6 +1338,29 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
         order = { "hide_with_toggle", "hide_all", "dedupe", "keep" },
         getValue = GetTopRightMode,
         setValue = SetTopRightMode,
+    })
+    y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "toggle",
+        text = "目标显示减益",
+        tooltip = "在顶部目标条下方优先显示自身与队友的减益图标。",
+        disabled = function() return db.enableTopTarget == false end,
+        getValue = function() return db.showTargetDebuffs ~= false end,
+        setValue = function(v)
+            db.showTargetDebuffs = v == true
+            if CH.SyncTargetAuras then CH.SyncTargetAuras() end
+        end,
+    }, {
+        type = "toggle",
+        text = "目标显示增益",
+        tooltip = "在顶部目标条下方显示目标增益，怪物与队友均支持。",
+        disabled = function() return db.enableTopTarget == false end,
+        getValue = function() return db.showTargetBuffs ~= false end,
+        setValue = function(v)
+            db.showTargetBuffs = v == true
+            if CH.SyncTargetAuras then CH.SyncTargetAuras() end
+        end,
     })
     y = y - h
 

@@ -287,20 +287,34 @@ local function ApplyTrainerFilterForOpen(gen, reason)
     end)
 end
 
+local function SafeDebugStr(v)
+    if F.IsSecret(v) then return "<secret>" end
+    return tostring(v)
+end
+
 F.DumpTrainerDebug = function()
     local ctf = _G.ClassTrainerFrame
     local gf = _G.GetTrainerServiceTypeFilter
-    local tt = _G.C_Trainer and _G.C_Trainer.GetTrainerType and _G.C_Trainer.GetTrainerType()
+    local okTT, tt = false, nil
+    if _G.C_Trainer and _G.C_Trainer.GetTrainerType then
+        okTT, tt = pcall(_G.C_Trainer.GetTrainerType)
+    end
     local n, hu, hun = ScanTrainerServices(true, true)
+    local okA, fA = pcall(gf or function() return nil end, "available")
+    local okU, fU = pcall(gf or function() return nil end, "used")
+    local okN, fN = pcall(gf or function() return nil end, "unavailable")
     F.Print(string_format("TrainerDebug: shown=%s active=%s gen=%d/%d att=%d type=%s n=%d usedRow=%s unavailRow=%s | fAvail=%s fUsed=%s fUnavail=%s",
-        tostring(ctf and ctf:IsShown() or false), tostring(trainerSessionActive),
+        tostring(ctf and ctf.IsShown and ctf:IsShown() or false), tostring(trainerSessionActive),
         trainerOpenGen, trainerDoneGen, trainerAttemptsForGen,
-        tostring(tt), n, tostring(hu), tostring(hun),
-        tostring(gf and gf("available")), tostring(gf and gf("used")), tostring(gf and gf("unavailable"))))
+        okTT and SafeDebugStr(tt) or "nil", n, tostring(hu), tostring(hun),
+        okA and SafeDebugStr(fA) or "err", okU and SafeDebugStr(fU) or "err", okN and SafeDebugStr(fN) or "err"))
     if _G.GetTrainerServiceInfo and n > 0 then
         for i = 1, math_min(n, 6) do
-            local r1, r2, r3, r4 = _G.GetTrainerServiceInfo(i)
-            F.Print(string_format("  [%d] r1=%s r2=%s r3=%s r4=%s", i, tostring(r1), tostring(r2), tostring(r3), tostring(r4)))
+            local okI, r1, r2, r3, r4 = pcall(_G.GetTrainerServiceInfo, i)
+            if okI then
+                F.Print(string_format("  [%d] r1=%s r2=%s r3=%s r4=%s", i,
+                    SafeDebugStr(r1), SafeDebugStr(r2), SafeDebugStr(r3), SafeDebugStr(r4)))
+            end
         end
     end
 end
@@ -568,7 +582,7 @@ end
 --      • 左侧原生红框黄箭头按钮美化为内嵌现代琥珀刷新钮（完整保留原生点击功能）
 --      • 正文严格水平/垂直居中，Shift+左键拖动自动记忆位置，全弱表零污染
 ----------------------------------------------------------------------
-local RefreshWorldRefreshBanner, StopWorldRefreshTicker, EnsureWorldRefreshTicker
+local RefreshWorldRefreshBanner, StopWorldRefreshTicker, EnsureWorldRefreshTicker, StopWorldRefreshDrag
 do
     local wrSkin = setmetatable({}, { __mode = "k" })
     local wrHooked = setmetatable({}, { __mode = "k" })
@@ -579,10 +593,11 @@ do
     local wrPosQueued = setmetatable({}, { __mode = "k" })
     local wrKnown = setmetatable({}, { __mode = "k" })
     local wrSuppressed = setmetatable({}, { __mode = "k" })
-    local wrList = {}
-    local wrPrimary = nil
+    local wrList = setmetatable({}, { __mode = "v" })
+    local wrPrimaryBox = setmetatable({}, { __mode = "v" })
     local wrMoving = false
     local wrDragging = false
+    local wrDragBox = setmetatable({}, { __mode = "v" })
     local wrTicker = nil
 
     local SKIP_PREFIXES = {
@@ -1153,8 +1168,9 @@ do
                 if box.HookScript then
                     box:HookScript("OnDragStart", function(self)
                         if not (mod._active and mod:GetDB().skinWorldRefresh ~= false) then return end
-                        if _G.IsShiftKeyDown() and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+                        if _G.IsShiftKeyDown and _G.IsShiftKeyDown() and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
                             wrDragging = true
+                            wrDragBox[1] = self
                             pcall(self.StartMoving, self)
                         end
                     end)
@@ -1162,11 +1178,21 @@ do
                         -- 未按 Shift 的普通拖动也会触发 OnDragStop：只处理本模块发起的拖动，否则会误存坐标
                         if not wrDragging then return end
                         wrDragging = false
+                        wrDragBox[1] = nil
+                        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
                         pcall(self.StopMovingOrSizing, self)
                         local pt, _, rpt, x, y = self:GetPoint(1)
                         -- SavePosition 内部过滤 12.x 机密值与非法锚点
                         if F.DB and F.DB.SavePosition then
                             F.DB.SavePosition("WorldRefresh", pt, rpt, x, y)
+                        end
+                    end)
+                    box:HookScript("OnHide", function(self)
+                        if not wrDragging or wrDragBox[1] ~= self then return end
+                        wrDragging = false
+                        wrDragBox[1] = nil
+                        if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+                            pcall(self.StopMovingOrSizing, self)
                         end
                     end)
                 end
@@ -1183,38 +1209,38 @@ do
     local function ReconcileBanners()
         local want = mod._active and (mod:GetDB().skinWorldRefresh ~= false)
         if not want then
-            for _, b in ipairs(wrList) do
+            for _, b in pairs(wrList) do
                 ApplySkinToBanner(b, false)
             end
-            wrPrimary = nil
+            wrPrimaryBox[1] = nil
             return
         end
         -- 旧版本登记过的系统对话框：还原成原样并从横幅列表剔除
-        for i = #wrList, 1, -1 do
-            local b = wrList[i]
+        for k, b in pairs(wrList) do
             if IsDialogFrame(b) then
                 SilenceDuplicateBanner(b, false)
                 local ov = wrSkin[b]
                 if ov then ov:Hide() end
                 MuteNativeBannerArt(b, 1, 0)
                 StyleBannerFontsAndButtons(b, false)
-                if wrPrimary == b then wrPrimary = nil end
-                table.remove(wrList, i)
+                if wrPrimaryBox[1] == b then wrPrimaryBox[1] = nil end
+                wrList[k] = nil
             end
         end
         local shownList = {}
-        for _, b in ipairs(wrList) do
+        for _, b in pairs(wrList) do
             if IsFrameShownSafe(b) then
                 shownList[#shownList + 1] = b
             end
         end
         if #shownList == 0 then
-            wrPrimary = nil
+            wrPrimaryBox[1] = nil
             return
         end
         -- 多个刷新框同时出现时（例如顶部主条 + 聊框上方暴雪原版横幅），只保留一个主卡片，静音重复原版框
-        local chosen = (wrPrimary and IsFrameShownSafe(wrPrimary)) and wrPrimary or shownList[1]
-        wrPrimary = chosen
+        local curPrim = wrPrimaryBox[1]
+        local chosen = (curPrim and IsFrameShownSafe(curPrim)) and curPrim or shownList[1]
+        wrPrimaryBox[1] = chosen
         for _, b in ipairs(shownList) do
             if b == chosen then
                 if wrSuppressed[b] then SilenceDuplicateBanner(b, false) end
@@ -1285,6 +1311,20 @@ do
             wrTicker = nil
         end
     end
+
+    StopWorldRefreshDrag = function()
+        if not wrDragging then return end
+        local b = wrDragBox[1]
+        wrDragging = false
+        wrDragBox[1] = nil
+        if b and IsSafeReadableFrame(b) and not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+            pcall(b.StopMovingOrSizing, b)
+            local pt, _, rpt, x, y = b:GetPoint(1)
+            if F.DB and F.DB.SavePosition then
+                F.DB.SavePosition("WorldRefresh", pt, rpt, x, y)
+            end
+        end
+    end
 end
 
 
@@ -1315,3 +1355,4 @@ MC.HookCombatTextSizing = HookCombatTextSizing
 MC.RefreshWorldRefreshBanner = RefreshWorldRefreshBanner
 MC.StopWorldRefreshTicker = StopWorldRefreshTicker
 MC.EnsureWorldRefreshTicker = EnsureWorldRefreshTicker
+MC.StopWorldRefreshDrag = StopWorldRefreshDrag

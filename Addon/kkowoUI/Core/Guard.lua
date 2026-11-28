@@ -152,8 +152,14 @@ end
 local function RestoreOverlayLayer(frame)
     local saved = frame and overlaySavedLayer[frame]
     if not saved then return end
+    if InCombatLockdown and InCombatLockdown() then
+        -- 战斗中关闭叠放窗：保留原层级快照并排队至脱战后无损还原，避免永久锁死在 DIALOG+60
+        F.RunOutOfCombat("FUI_RestoreOverlay_" .. tostring(frame), function()
+            RestoreOverlayLayer(frame)
+        end)
+        return
+    end
     overlaySavedLayer[frame] = nil
-    if InCombatLockdown and InCombatLockdown() then return end
     if IsSafeFrame(frame) then
         if saved.strata and frame.SetFrameStrata then pcall(frame.SetFrameStrata, frame, saved.strata) end
         if saved.level and frame.SetFrameLevel then pcall(frame.SetFrameLevel, frame, saved.level) end
@@ -474,10 +480,10 @@ function F.CheckPatches()
     if F.IsAddOnLoaded("EllesmereUIChat") then
         local EUI = _G.EllesmereUI
         local chatNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIChat
-        local ok = type(chatNS) == "table" and chatNS._kkowoFastTab == true and (chatNS._kkowoFastTabVer or 0) >= 5
+        local ok = type(chatNS) == "table" and chatNS._kkowoFastTab == true and (chatNS._kkowoFastTabVer or 0) >= 6
         results[#results + 1] = {
             id = "eui_chat_tab_fast",
-            name = "EUI 聊天标签瞬切 v5",
+            name = "EUI 聊天标签瞬切 v6",
             ok = ok,
         }
     end
@@ -489,6 +495,14 @@ function F.CheckPatches()
             id = "polestar_nav_optimize",
             name = "北极星寻路与怪区优化",
             ok = okNav,
+        }
+    end
+
+    if F.IsAddOnLoaded("Scales") and F.IsAddOnLoaded("Scales_kkowo") then
+        results[#results + 1] = {
+            id = "scales_duplicate",
+            name = "Scales 双开冲突（原版与 Scales_kkowo 同时启用）",
+            ok = false,
         }
     end
 
@@ -524,12 +538,18 @@ function F.SetAddOnEnabledSafely(name, enabled)
     end
     local matched = false
     if getState then
-        local ok, st = pcall(getState, name)
+        local ok, st
+        if guid then
+            ok, st = pcall(getState, name, guid)
+        end
+        if not ok then
+            ok, st = pcall(getState, name)
+        end
         if ok and type(st) == "number" then
             matched = enabled and (st > 0) or (st == 0)
         end
     end
-    if not matched then
+    if not matched and not guid then
         pcall(fn, name)
     end
 end
@@ -606,6 +626,19 @@ function F.DisableDeadAddons(verbose)
         end
     end
     if #off > 0 or cdmOn then
+        if #off > 0 and F.charDB then
+            if type(F.charDB.deadGuardDisabled) ~= "table" then
+                F.charDB.deadGuardDisabled = {}
+            end
+            local seenOff = {}
+            for _, n in ipairs(F.charDB.deadGuardDisabled) do seenOff[n] = true end
+            for _, n in ipairs(off) do
+                if not seenOff[n] then
+                    F.charDB.deadGuardDisabled[#F.charDB.deadGuardDisabled + 1] = n
+                    seenOff[n] = true
+                end
+            end
+        end
         if ca.SaveAddOns then pcall(ca.SaveAddOns) end
         local parts = {}
         if #off > 0 then parts[#parts + 1] = "已停用：" .. table_concat(off, "、") end

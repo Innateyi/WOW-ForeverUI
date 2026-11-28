@@ -129,7 +129,7 @@ local function PlayEntry(e, forcedKind)
     if _G.PlaySoundFile and file then
         local ok, willPlay, handle = pcall(_G.PlaySoundFile, MEDIA .. file, chan)
         if ok and willPlay then
-            playing[e.key] = { handle = handle, endsAt = GetTime() + dur, longBGM = e.longBGM }
+            playing[e.key] = { handle = handle, endsAt = GetTime() + dur, longBGM = e.longBGM, channel = e.channel }
         end
     end
 end
@@ -183,8 +183,18 @@ end
 local function IsCraftingOpen()
     for _, n in ipairs({ "TradeSkillFrame", "ProfessionsFrame" }) do
         local f = _G[n]
-        if f and f.IsShown and f:IsShown() then
-            return true
+        if f then
+            local forb = false
+            if f.IsForbidden then
+                local okF, isF = pcall(f.IsForbidden, f)
+                if not okF or isF then forb = true end
+            end
+            if not forb and f.IsShown then
+                local okS, shown = pcall(f.IsShown, f)
+                if okS and shown then
+                    return true
+                end
+            end
         end
     end
     return false
@@ -216,14 +226,26 @@ function mod:OnSpellEvent(event, _, _, spellID)
     if not ShouldRunForClass() then
         return
     end
+    if event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+        -- 12.x 引导结束事件中 spellID 可能为 nil 或保密值：直接停止所有进行中的引导音效（P2-32）
+        local e = EntryForSpell(spellID)
+        if e and e.channel then
+            StopEntry(e.key, 300)
+        else
+            for k, p in pairs(playing) do
+                if p.channel then
+                    StopEntry(k, 300)
+                end
+            end
+        end
+        return
+    end
     local e = EntryForSpell(spellID)
     if not e or self:GetDB().off[e.key] == true then
         return
     end
     if event == "UNIT_SPELLCAST_CHANNEL_START" then
         if e.channel then PlayEntry(e) end
-    elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
-        if e.channel then StopEntry(e.key, 300) end
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         if e.channel then return end
         if e.noCraft and IsCraftingOpen() then return end

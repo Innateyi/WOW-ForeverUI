@@ -14,6 +14,7 @@ kkowoUI — MIT 合规 PrettyTooltip 同步器（生成 Addon\kkowoUI_Tooltip）
   4. Bridge\Compat.lua 负责检测独立版 PrettyTooltip 防双钩冲突，SavedVariables 沿用 PrettyTooltipDB 零迁移损耗。
 """
 import argparse
+import datetime
 import os
 import re
 import shutil
@@ -26,6 +27,7 @@ ROOT = os.path.dirname(HERE)
 WOW_ROOT = os.environ.get('WOW_FOREVER_DIR', r'E:\Program Files\World of Warcraft\_forever_')
 DEFAULT_SRC = os.path.join(WOW_ROOT, 'Interface', 'AddOns', 'PrettyTooltip')
 DST_ROOT = os.path.join(ROOT, 'Addon', 'kkowoUI_Tooltip')
+BACKUP_ROOT = os.environ.get('WOW_BACKUP_ROOT', os.path.normpath(os.path.join(ROOT, '..', 'backups')))
 
 SKIP_DIRS = {'Retail', '.git', '.github', '__pycache__'}
 SKIP_FILES = {'addon_strategy.txt', 'dd_author.toc'}
@@ -42,16 +44,34 @@ local _G = _G
 ns._addonName = addonName
 ns._artPath = "Interface\\\\AddOns\\\\" .. addonName .. "\\\\Vendor\\\\art\\\\"
 
-local function IsStandaloneLoaded()
-    local fn = (_G.C_AddOns and _G.C_AddOns.IsAddOnLoaded) or _G.IsAddOnLoaded
-    if type(fn) ~= "function" then
-        return false
+local function IsStandaloneActive()
+    local ca = _G.C_AddOns
+    local isLoaded = (ca and ca.IsAddOnLoaded) or _G.IsAddOnLoaded
+    if type(isLoaded) == "function" then
+        local ok, loaded = pcall(isLoaded, "PrettyTooltip")
+        if ok and loaded == true then
+            return true
+        end
     end
-    local ok, loaded = pcall(fn, "PrettyTooltip")
-    return ok and loaded == true
+    local getState = (ca and ca.GetAddOnEnableState) or _G.GetAddOnEnableState
+    if type(getState) == "function" then
+        local guid = _G.UnitGUID and _G.UnitGUID("player") or nil
+        local ok, state
+        if guid then
+            ok, state = pcall(getState, "PrettyTooltip", guid)
+            if ok and type(state) == "number" and state > 0 then
+                return true
+            end
+        end
+        ok, state = pcall(getState, "PrettyTooltip")
+        if ok and type(state) == "number" and state > 0 then
+            return true
+        end
+    end
+    return false
 end
 
-if IsStandaloneLoaded() then
+if IsStandaloneActive() then
     ns._yielded = true
 end
 '''
@@ -253,9 +273,9 @@ def build_toc(version, vendor_files):
         f'## Version: {version}-kkowo',
         '## X-License: MIT',
         '## X-Upstream: https://github.com/FallenShard/PrettyTooltip',
-        r'## IconTexture: Interface\AddOns\kkowoUI_Tooltip\Vendor\art\logo',
+        r'## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI',
         '## SavedVariables: PrettyTooltipDB, PrettyTooltipCaptures',
-        '## OptionalDeps: kkowoUI, Questie, Auctionator, DialogueUI, EllesmereUI, LibSharedMedia-3.0',
+        '## OptionalDeps: kkowoUI, PrettyTooltip, Questie, Auctionator, DialogueUI, EllesmereUI, LibSharedMedia-3.0',
         '',
         r'Bridge\Compat.lua',
         '',
@@ -263,6 +283,7 @@ def build_toc(version, vendor_files):
     for entry in vendor_files:
         lines.append('Vendor\\' + entry)
     lines.append('')
+    lines.append(r'Bridge\TooltipLocaleZh.lua')
     lines.append(r'Bridge\TooltipStyle.lua')
     return '\r\n'.join(lines) + '\r\n'
 
@@ -277,10 +298,11 @@ def build_attribution(version):
 - **License**: MIT License (full text preserved verbatim in [LICENSE](LICENSE) and [Vendor/LICENSE](Vendor/LICENSE))
 
 ## Minimal Integration Adaptations
-To avoid addon folder conflicts with NetEase DD while keeping upstream updates easy to merge, only 5 lines in `Vendor/` are adapted by `Tools/sync_vendored_tooltip.py`:
+To avoid addon folder conflicts with NetEase DD while keeping upstream updates easy to merge, 7 automated adaptations in `Vendor/` are applied by `Tools/sync_vendored_tooltip.py`:
 1. `Vendor/Data/Stats.lua`, `Vendor/Panel/Layout.lua`, `Vendor/Tooltips/Item.lua`, `Vendor/Tooltips/Unit.lua`: resolve `art\\` via `ns._artPath` instead of a hardcoded `Interface\\AddOns\\PrettyTooltip\\art\\` path.
-2. `Vendor/PrettyTooltip.lua`: respect `ns._yielded` set by `Bridge/Compat.lua` if a standalone `PrettyTooltip` addon is also loaded.
-3. Retail-only files under upstream `Retail/` are omitted (not loaded on WoW Forever `16001/camelot`).
+2. `Vendor/PrettyTooltip.lua`: respect `ns._yielded` set by `Bridge/Compat.lua` if a standalone `PrettyTooltip` addon is loaded or enabled.
+3. `Vendor/Panel/Layout.lua` (2 layout adjustments): CJK multi-line height floor (`GetNumLines`) and 4px column slack for inline `|T|` icons to prevent last-character wrapping.
+4. Retail-only files under upstream `Retail/` are omitted (not loaded on WoW Forever `16001/camelot`).
 """
 
 
@@ -292,6 +314,9 @@ def main():
     args = ap.parse_args()
 
     src_dir, tmp_dir = extract_src(args.src)
+    parent_dir = os.path.dirname(os.path.abspath(DST_ROOT))
+    os.makedirs(parent_dir, exist_ok=True)
+    stage_dir = tempfile.mkdtemp(prefix='_kkowo_tooltip_stage_', dir=parent_dir)
     try:
         toc_path = os.path.join(src_dir, 'PrettyTooltip_Camelot.toc')
         if not os.path.isfile(toc_path):
@@ -302,21 +327,20 @@ def main():
 
         version, vendor_files = parse_camelot_toc(toc_path)
 
-        # 保留既有的 Bridge/TooltipStyle.lua（如有），清理并重建 Vendor/
-        saved_tooltip_style = None
-        ts_path = os.path.join(DST_ROOT, 'Bridge', 'TooltipStyle.lua')
-        if os.path.isfile(ts_path):
-            saved_tooltip_style = open(ts_path, 'rb').read()
-        if os.path.isdir(DST_ROOT):
-            shutil.rmtree(DST_ROOT)
-        vendor_dst = os.path.join(DST_ROOT, 'Vendor')
-        bridge_dst = os.path.join(DST_ROOT, 'Bridge')
+        vendor_dst = os.path.join(stage_dir, 'Vendor')
+        bridge_dst = os.path.join(stage_dir, 'Bridge')
         os.makedirs(vendor_dst, exist_ok=True)
         os.makedirs(bridge_dst, exist_ok=True)
-        if saved_tooltip_style is not None:
-            open(os.path.join(bridge_dst, 'TooltipStyle.lua'), 'wb').write(saved_tooltip_style)
 
-        # 复制除 Retail / *.toc / DD 元数据外的全部原版文件
+        # 保留现有 Bridge/ 下的全部自研文件（TooltipStyle.lua、TooltipLocaleZh.lua 等），绝不丢失（P45-09）
+        old_bridge = os.path.join(DST_ROOT, 'Bridge')
+        if os.path.isdir(old_bridge):
+            for fn in sorted(os.listdir(old_bridge)):
+                src_b = os.path.join(old_bridge, fn)
+                if os.path.isfile(src_b) and fn != 'Compat.lua':
+                    shutil.copy2(src_b, os.path.join(bridge_dst, fn))
+
+        # 复制除 Retail / *.toc / DD 元数据外的全部原版文件到暂存目录
         copied = 0
         for root_dp, dirs, files in os.walk(src_dir):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -330,15 +354,17 @@ def main():
                 copied += 1
 
         # 根目录保留原版 MIT LICENSE 与 ATTRIBUTION.md
-        shutil.copy2(lic_path, os.path.join(DST_ROOT, 'LICENSE'))
-        open(os.path.join(DST_ROOT, 'ATTRIBUTION.md'), 'w', encoding='utf-8', newline='\n').write(build_attribution(version))
+        shutil.copy2(lic_path, os.path.join(stage_dir, 'LICENSE'))
+        open(os.path.join(stage_dir, 'ATTRIBUTION.md'), 'w', encoding='utf-8', newline='\n').write(build_attribution(version))
         open(os.path.join(bridge_dst, 'Compat.lua'), 'w', encoding='utf-8', newline='\n').write(COMPAT_LUA)
-        open(os.path.join(DST_ROOT, 'kkowoUI_Tooltip.toc'), 'w', encoding='utf-8', newline='').write(build_toc(version, vendor_files))
+        open(os.path.join(stage_dir, 'kkowoUI_Tooltip.toc'), 'w', encoding='utf-8', newline='').write(build_toc(version, vendor_files))
 
-        # 应用 5 处极小适配
+        # 在暂存目录内应用全部 7 处极小适配：任一锚点失败时 DST_ROOT 纹丝不动（原子化）
         for rel, old, new in ART_PATCHES:
             p = os.path.join(vendor_dst, *rel.split('/'))
-            raw = open(p, 'rb').read().decode('utf-8')
+            raw_b = open(p, 'rb').read()
+            has_bom = raw_b.startswith(b'\xef\xbb\xbf')
+            raw = raw_b.decode('utf-8-sig')
             crlf = '\r\n' in raw
             norm = raw.replace('\r\n', '\n')
             cnt = norm.count(old)
@@ -346,11 +372,24 @@ def main():
                 raise SystemExit(f'适配锚点异常：{rel} 匹配数={cnt}')
             norm = norm.replace(old, new, 1)
             out = norm.replace('\n', '\r\n') if crlf else norm
-            open(p, 'wb').write(out.encode('utf-8'))
+            data = (b'\xef\xbb\xbf' if has_bom else b'') + out.encode('utf-8')
+            open(p, 'wb').write(data)
 
-        print(f'[OK] 已生成 MIT 合规 Addon/kkowoUI_Tooltip（上游 PrettyTooltip v{version}，{copied} 个原版文件 + Bridge/Compat.lua + LICENSE + ATTRIBUTION.md）')
+        # 全部校验通过后：将旧 DST_ROOT 整夹移入 backups（绝不 rmtree 删除），再移入暂存目录
+        if os.path.isdir(DST_ROOT):
+            ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            os.makedirs(BACKUP_ROOT, exist_ok=True)
+            bk_dst = os.path.join(BACKUP_ROOT, f'kkowoUI_Tooltip_before_sync_{ts}')
+            shutil.move(DST_ROOT, bk_dst)
+            print(f'[BACKUP] 已将旧目录移入备份：{bk_dst}')
+        shutil.move(stage_dir, DST_ROOT)
+        stage_dir = None
+
+        print(f'[OK] 已生成 MIT 合规 Addon/kkowoUI_Tooltip（上游 PrettyTooltip v{version}，{copied} 个原版文件 + Bridge + LICENSE + ATTRIBUTION.md）')
         return 0
     finally:
+        if stage_dir and os.path.isdir(stage_dir):
+            shutil.rmtree(stage_dir, ignore_errors=True)
         if tmp_dir:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

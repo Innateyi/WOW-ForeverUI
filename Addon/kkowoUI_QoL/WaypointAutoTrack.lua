@@ -556,7 +556,10 @@ local function OnWorldMapCanvasClick(canvas, button)
     local wpMap, wpX, wpY = GetCurrentUserWaypointCoords()
     if wpMap == mapID and math_abs(nx - wpX) <= SHIFT_SHARE_DIST and math_abs(ny - wpY) <= SHIFT_SHARE_DIST then
         local CM = _G.C_Map
-        local okL, link = CM and type(CM.GetUserWaypointHyperlink) == "function" and pcall(CM.GetUserWaypointHyperlink)
+        local okL, link = false, nil
+        if CM and type(CM.GetUserWaypointHyperlink) == "function" then
+            okL, link = pcall(CM.GetUserWaypointHyperlink)
+        end
         if okL and F.PlainString(link, nil) then
             C_Timer.After(0, function()
                 if mod._active then
@@ -987,12 +990,29 @@ local function PlayBeamSpawnAnim()
     SyncRimBreathe()
 end
 
+local function SafeCall1(fn, ...)
+    if type(fn) ~= "function" then return nil end
+    local ok, v = pcall(fn, ...)
+    if not ok then return nil end
+    return v
+end
+
+local function IsObjForbidden(obj)
+    if not obj then return true end
+    if obj.IsForbidden then
+        local ok, forb = pcall(obj.IsForbidden, obj)
+        if not ok or forb then return true end
+    end
+    return false
+end
+
 local function IsBeamAllowedForCurrentTarget()
     if wpPreviewActive then return true end
     if mod:GetDB().onlyManualOrQuestBeam == false then return true end
     local CST = _G.C_SuperTrack
     local E = _G.Enum and _G.Enum.SuperTrackingType
-    local kind = CST and CST.GetHighestPrioritySuperTrackingType and CST.GetHighestPrioritySuperTrackingType() or nil
+    local kind = SafeCall1(CST and CST.GetHighestPrioritySuperTrackingType)
+    if F.IsSecret(kind) then kind = nil end
     if E and (kind == E.Quest or kind == E.Corpse) then
         return true
     end
@@ -1078,7 +1098,7 @@ local function UpdateBeamDistance()
     if not wpMarker or wpPreviewActive then return end
     local CN = _G.C_Navigation
     if not (CN and CN.GetDistance) then return end
-    local rawDist = CN.GetDistance()
+    local rawDist = SafeCall1(CN.GetDistance)
     local dist = F.PlainNumber(rawDist, nil)
     if not dist then return end
     local yards = math_floor(dist + 0.5)
@@ -1348,26 +1368,26 @@ end
 
 RefreshBeam = function(forceAnim)
     if wpPreviewActive then return end
-    if not (IsKkowoBeamDesired() and wpNavFrame) then return end
+    if not (IsKkowoBeamDesired() and wpNavFrame) or IsObjForbidden(wpNavFrame) then return end
     local CN = _G.C_Navigation
     if not CN then return end
 
-    local dist = CN.GetDistance and F.PlainNumber(CN.GetDistance(), nil) or nil
+    local dist = F.PlainNumber(SafeCall1(CN.GetDistance), nil)
     if wpArrivedAt and dist and dist > wpArrivedAt + WP_ARRIVE_MARGIN then
         wpArrivedAt = nil
     end
 
     local NS = _G.Enum and _G.Enum.NavigationState
-    local validPos = CN.HasValidScreenPosition and CN.HasValidScreenPosition()
+    local validPos = SafeCall1(CN.HasValidScreenPosition)
     if F.IsSecret(validPos) then validPos = false end
-    local tState = CN.GetTargetState and CN.GetTargetState()
+    local tState = SafeCall1(CN.GetTargetState)
     if F.IsSecret(tState) then tState = nil end
     local stateOK = (not NS) or (not NS.Invalid) or (tState == nil) or (tState == NS.Invalid)
     local show = (not wpArrivedAt) and (validPos == true) and stateOK and IsBeamAllowedForCurrentTarget()
 
     local edge, nx, ny, nScale = false, nil, nil, nil
     if show then
-        local clamped = CN.WasClampedToScreen and CN.WasClampedToScreen()
+        local clamped = SafeCall1(CN.WasClampedToScreen)
         edge = (not F.IsSecret(clamped)) and clamped == true
         if edge then
             local okC, cx, cy = pcall(wpNavFrame.GetCenter, wpNavFrame)
@@ -1439,6 +1459,7 @@ RefreshBeam = function(forceAnim)
 end
 
 local function AttachBeamNav(nav)
+    if nav and IsObjForbidden(nav) then nav = nil end
     wpNavFrame = nav
     wpShown, wpAtEdge, wpLastYards, wpLastEta, wpLastDX, wpLastDY, wpArrivedAt = nil, nil, nil, nil, nil, nil, nil
     if not nav then
@@ -1571,6 +1592,7 @@ function mod:StopBeamPreview()
 end
 
 function mod:ShowBeamPreview()
+    if not self._active then return end
     BuildBeamFrame()
     wpPreviewActive = true
     wpPreviewToken = wpPreviewToken + 1
@@ -1690,6 +1712,7 @@ end
 function mod:OnDisable()
     userWpQueued = false
     polestarSyncQueued = false
+    if worldMapShareWaiter then worldMapShareWaiter:UnregisterAllEvents() end
     self:StopBeamPreview()
     SyncKkowoBeamState(false)
     DetachPolestarFollower()

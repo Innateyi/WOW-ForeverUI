@@ -29,6 +29,7 @@ local SkinVehicleLeaveButton = MC.SkinVehicleLeaveButton
 local ApplyBlizzDurabilityVisibility = MC.ApplyBlizzDurabilityVisibility
 local ApplyFlightTimerDedup = MC.ApplyFlightTimerDedup
 local ApplyQuestieTownsfolkDedup = MC.ApplyQuestieTownsfolkDedup
+local RestoreQuestieTownsfolkDedup = MC.RestoreQuestieTownsfolkDedup
 local RefreshHDPetHappiness = MC.RefreshHDPetHappiness
 local HookTrainerFrameIfReady = MC.HookTrainerFrameIfReady
 local BeginTrainerOpenSession = MC.BeginTrainerOpenSession
@@ -39,7 +40,9 @@ local HookCombatTextSizing = MC.HookCombatTextSizing
 local RefreshWorldRefreshBanner = MC.RefreshWorldRefreshBanner
 local StopWorldRefreshTicker = MC.StopWorldRefreshTicker
 local EnsureWorldRefreshTicker = MC.EnsureWorldRefreshTicker
+local StopWorldRefreshDrag = MC.StopWorldRefreshDrag
 local windowPolish = MC.windowPolish
+local RestoreEUICastNames = MC.RestoreEUICastNames
 local QueueCharacterBarsRefresh = MC.QueueCharacterBarsRefresh
 local RefreshAllModernHUD = MC.RefreshAllModernHUD
 local ScheduleBootRefresh = MC.ScheduleBootRefresh
@@ -49,12 +52,16 @@ function mod:OnDisable()
     swingGuard.Remove()
     cdmPosGuard.Remove()
     StopWorldRefreshTicker()
+    if StopWorldRefreshDrag then StopWorldRefreshDrag() end
     RestoreWorldTextScale()
     ExpandFriendsIfEnabled()
     if F.ApplyDamageFont then
         F.ApplyDamageFont("default", true)
     end
     RestoreFittedAuraTimers()
+    if RestoreEUICastNames then pcall(RestoreEUICastNames) end
+    if RestoreQuestieTownsfolkDedup then pcall(RestoreQuestieTownsfolkDedup) end
+    if RestoreResourceBarsStyle then pcall(RestoreResourceBarsStyle, false) end
     pcall(windowPolish.ApplyCombatSoundMute)
     RefreshAllModernHUD()
     RefreshAllCharacterBars()
@@ -176,6 +183,9 @@ function mod:OnEnable()
     -- 只关心玩家自己上下载具（原先未过滤单位，团队/战场里每个队友上下载具都会触发）
     self:RegisterUnitEvent("UNIT_ENTERED_VEHICLE", "player", SkinVehicleLeaveButton)
     self:RegisterUnitEvent("UNIT_EXITED_VEHICLE", "player", SkinVehicleLeaveButton)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        if StopWorldRefreshDrag then StopWorldRefreshDrag() end
+    end)
     self:RegisterEvent("UI_SCALE_CHANGED", QueueAuraFit)
     -- 声望变化（刷怪时战斗中频繁触发）只在声望面板可见时才重绘角色面板进度条
     self:RegisterEvent("UPDATE_FACTION", function()
@@ -520,7 +530,11 @@ function mod:BuildOptionsSection(slice, W, parent, y, enableSlot, blank)
             getValue = function() return db.dedupMinimapNPC ~= false end,
             setValue = function(v)
                 db.dedupMinimapNPC = v == true
-                if v then ApplyQuestieTownsfolkDedup(true) end
+                if v then
+                    ApplyQuestieTownsfolkDedup(true)
+                elseif RestoreQuestieTownsfolkDedup then
+                    RestoreQuestieTownsfolkDedup()
+                end
             end,
         }, {
             type = "toggle",

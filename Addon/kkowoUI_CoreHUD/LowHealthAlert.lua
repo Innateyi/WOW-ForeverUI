@@ -209,6 +209,11 @@ local function EvaluateHealth()
 
     if F.IsSecret(hp) or F.IsSecret(mx) then
         -- 12.x 保密值安全通路：C 端 ColorCurve 直接驱动 ADD 纹理颜色，零 Lua 比较
+        if isLowNow then
+            isLowNow = false
+            local core = F.Modules.Get("coreHUD")
+            if core and core.SetLowHealthPulse then core:SetLowHealthPulse(false) end
+        end
         local curve = EnsureSecretCurve(thr / 100)
         if curve and _G.UnitHealthPercent then
             local ok, col = pcall(_G.UnitHealthPercent, "player", false, curve)
@@ -244,6 +249,7 @@ local function EvaluateHealth()
 end
 
 function mod:PreviewVignette()
+    if not self._active then return end
     BuildVignette()
     ApplyVignetteGeom()
     previewGen = previewGen + 1

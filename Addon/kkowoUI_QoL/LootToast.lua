@@ -149,6 +149,7 @@ local function EnsureContainer()
     container:SetSize(w, maxVis * (TOAST_H + 4))
     container:SetFrameStrata("MEDIUM")
     container:SetFrameLevel(10)
+    container:EnableMouse(false)
 
     F.Mover.Register({
         key = "LootToast",
@@ -159,8 +160,11 @@ local function EnsureContainer()
         defaultRelPoint = "RIGHT",
         defaultX = -24,
         defaultY = -170,
+        allowShiftDrag = false,
         isHidden = function() return not mod._active end,
     })
+    container:EnableMouse(false)
+    container:Hide()
 end
 
 local LayoutToasts
@@ -295,6 +299,9 @@ local function AcquireToast()
         t:SetAlpha(1)
         ArmToastFade(t)
     end)
+    animIn:SetScript("OnStop", function()
+        if t:IsShown() then t:SetAlpha(1) end
+    end)
     t._animIn = animIn
 
     local animOut = t:CreateAnimationGroup()
@@ -393,6 +400,12 @@ LayoutToasts = function()
     local growUp = db.growUp == true
     local maxVis = db.maxVisible or 5
     container:SetSize(w, maxVis * (h + gap))
+    container:EnableMouse(false)
+    if #activeToasts == 0 then
+        container:Hide()
+        return
+    end
+    if not container:IsShown() then container:Show() end
 
     local hasPreview = false
     for _, t in ipairs(activeToasts) do
@@ -671,26 +684,39 @@ function mod:OnChatLoot(_, text)
     if not link then return end
 
     local itemID = tonumber(link:match("item:(%d+)"))
-    local count = tonumber(msg:match("|h|r%s*x(%d+)")) or tonumber(msg:match("|h%s*x(%d+)")) or 1
+    local count = tonumber(msg:match("|h|r%s*[xX]%s*(%d+)"))
+        or tonumber(msg:match("|h%s*[xX]%s*(%d+)"))
+        or tonumber(msg:match("|h|r%s*×%s*(%d+)"))
+        or tonumber(msg:match("|h%s*×%s*(%d+)"))
+        or 1
     local getInfo = (_G.C_Item and _G.C_Item.GetItemInfo) or _G.GetItemInfo
     local name, _, quality, _, _, itemType, _, _, _, icon
     if getInfo then
-        name, _, quality, _, _, itemType, _, _, _, icon = getInfo(link)
+        local okI, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 = pcall(getInfo, link)
+        if okI then
+            name, _, quality, _, _, itemType, _, _, _, icon = r1, r2, r3, r4, r5, r6, r7, r8, r9, r10
+        end
     end
     local classID
     if itemID and _G.C_Item and _G.C_Item.GetItemInfoInstant then
-        local _, _, _, _, instIcon, instClassID = _G.C_Item.GetItemInfoInstant(itemID)
-        if not icon then icon = instIcon end
-        classID = F.PlainNumber(instClassID, nil)
+        local okInst, _, _, _, _, instIcon, instClassID = pcall(_G.C_Item.GetItemInfoInstant, itemID)
+        if okInst then
+            if not icon then icon = instIcon end
+            classID = F.PlainNumber(instClassID, nil)
+        end
     end
     if not icon and itemID then
         local getIcon = (_G.C_Item and _G.C_Item.GetItemIconByID) or _G.GetItemIcon
-        if getIcon then icon = getIcon(itemID) end
+        if getIcon then
+            local okIc, ic = pcall(getIcon, itemID)
+            if okIc then icon = ic end
+        end
     end
     name = F.PlainString(name, nil) or link:match("%[([^%]]+)%]") or "物品"
     quality = F.PlainNumber(quality, nil)
     if quality == nil and itemID and _G.C_Item and _G.C_Item.GetItemQualityByID then
-        quality = F.PlainNumber(_G.C_Item.GetItemQualityByID(itemID), nil)
+        local okQ, qVal = pcall(_G.C_Item.GetItemQualityByID, itemID)
+        if okQ then quality = F.PlainNumber(qVal, nil) end
     end
     if quality == nil then
         local hex = link:match("^|c%x%x(%x%x%x%x%x%x)")
@@ -709,8 +735,8 @@ function mod:OnChatLoot(_, text)
     if isQuest then
         r, g, b = 0.98, 0.84, 0.34
     elseif getQualColor then
-        local qr, qg, qb = getQualColor(quality)
-        if qr and qg and qb then r, g, b = qr, qg, qb end
+        local okQC, qr, qg, qb = pcall(getQualColor, quality)
+        if okQC and qr and qg and qb then r, g, b = qr, qg, qb end
     end
 
     PushToast({
@@ -789,6 +815,7 @@ function mod:OnChatRep(_, text)
 end
 
 function mod:ShowPreview()
+    if not self._active then return end
     EnsureContainer()
     local db = self:GetDB()
     container:SetSize(db.width or 204, (db.maxVisible or 5) * (TOAST_H + 4))
@@ -870,7 +897,7 @@ function mod:OnEnable()
         db.growUp = false
     end
     EnsureContainer()
-    if container then container:Show() end
+    LayoutToasts()
     SyncEUILootFeedPolicy()
     self:RegisterEvent("CHAT_MSG_LOOT", self.OnChatLoot)
     self:RegisterEvent("CHAT_MSG_MONEY", self.OnChatMoney)

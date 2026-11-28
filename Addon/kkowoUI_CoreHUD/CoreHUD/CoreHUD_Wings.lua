@@ -112,13 +112,27 @@ local SetCombatBadge -- 战斗徽章显隐（定义在技能球段）
 local hasActiveDebuffs = false
 CH.lastIdleAlpha = nil
 
+local function IsPlayerInCombatSafe()
+    if _G.InCombatLockdown and _G.InCombatLockdown() then return true end
+    if _G.UnitAffectingCombat then
+        local ok, cbt = pcall(_G.UnitAffectingCombat, "player")
+        if ok and not F.IsSecret(cbt) and cbt == true then return true end
+    end
+    return false
+end
+
+local function UnitExistsSafeLocal(unit)
+    if not _G.UnitExists then return false end
+    local ok, ex = pcall(_G.UnitExists, unit)
+    return ok and not F.IsSecret(ex) and ex == true
+end
+
 local function UpdateOrbAmbientGlow()
     if not (CH.coreFrame and CH.coreFrame._orb) then return end
     local orb = CH.coreFrame._orb
     local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
-    local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-        or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
-    local energized = (inCombat == true) or orbState.castActive or (GetTime() < (orbState.lastSpellUntil or 0))
+    local inCombat = IsPlayerInCombatSafe()
+    local energized = inCombat or orbState.castActive or (GetTime() < (orbState.lastSpellUntil or 0))
 
     if orb._halo then
         orb._halo:SetVertexColor(r2, g2, b2, 1)
@@ -262,9 +276,8 @@ local function UpdateIdleFade(instant)
             return
         end
     elseif db.idleFade ~= false and not unlockOn then
-        local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-            or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
-        local hasTarget = (_G.UnitExists and _G.UnitExists("target")) == true
+        local inCombat = IsPlayerInCombatSafe()
+        local hasTarget = UnitExistsSafeLocal("target")
         local activeCast = orbState.castActive or (GetTime() < (orbState.lastSpellUntil or 0))
         local lowRes = false
         local hp = F.PlainNumber(_G.UnitHealth and _G.UnitHealth("player"), nil)
@@ -339,7 +352,7 @@ end
 function CH.permState.RebuildIcons()
     for k in pairs(CH.permState.cachedIcons) do CH.permState.cachedIcons[k] = nil end
     for _, e in ipairs(CH.permState.cached) do
-        if e.icon ~= nil and not F.IsSecret(e.icon) then
+        if not F.IsSecret(e.icon) and type(e.icon) ~= "nil" then
             CH.permState.cachedIcons[e.icon] = true
         end
     end
@@ -349,9 +362,9 @@ function CH.permState.SaveCleanSnapshot(permList)
     CH.permState.hasCleanScan = true
     local snap = {}
     for _, it in ipairs(permList) do
-        local ic = (it.icon ~= nil and not F.IsSecret(it.icon)) and it.icon or nil
+        local ic = (not F.IsSecret(it.icon) and type(it.icon) ~= "nil") and it.icon or nil
         if ic then
-            local iid = (it.auraInstanceID ~= nil and not F.IsSecret(it.auraInstanceID)) and it.auraInstanceID or nil
+            local iid = (not F.IsSecret(it.auraInstanceID) and type(it.auraInstanceID) ~= "nil") and it.auraInstanceID or nil
             snap[#snap + 1] = {
                 index = it.index,
                 spellID = it.spellID,
@@ -376,8 +389,7 @@ function CH.permState.RecordSpellCast(sid, sName)
     local ic = GetSpellIconSafe(sid)
     if not ic then return end
     local fam = CH.permState.GetFamily(sid, sName)
-    local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-        or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
+    local inCombat = IsPlayerInCombatSafe()
     local entry = {
         spellID = sid,
         name = sName,
@@ -476,8 +488,8 @@ function CH.permState.BuildFallback()
             end
             if not isSec then
                 local okA, a = pcall(_G.C_UnitAuras.GetPlayerAuraBySpellID, sid)
-                if okA and type(a) == "table" and not F.IsSecret(a) then
-                    local ic = (a.icon ~= nil and not F.IsSecret(a.icon)) and a.icon or GetSpellIconSafe(sid)
+                if okA and not F.IsSecret(a) and type(a) == "table" then
+                    local ic = (not F.IsSecret(a.icon) and type(a.icon) ~= "nil") and a.icon or GetSpellIconSafe(sid)
                     if ic then
                         out[#out + 1] = {
                             spellID = sid,
@@ -535,16 +547,16 @@ local function CollectSplitBuffs(buffMode)
                 scanBlocked = true
                 break
             end
-            if not aura then break end
+            if type(aura) == "nil" then break end
             if F.IsSecret(aura) or type(aura) ~= "table" then
                 sawSecretAura = true
-            elseif aura.icon ~= nil then
+            elseif type(aura.icon) ~= "nil" then
                 local sid = F.PlainNumber(aura.spellId, nil)
                 local nm = F.PlainString(aura.name, nil)
                 local dur = F.PlainNumber(aura.duration, nil)
                 local durSecret = F.IsSecret(aura.duration)
                 local iid = aura.auraInstanceID
-                local iidKey = (iid ~= nil and not F.IsSecret(iid)) and iid or nil
+                local iidKey = (not F.IsSecret(iid) and type(iid) ~= "nil") and iid or nil
                 local iconKey = (not F.IsSecret(aura.icon)) and aura.icon or nil
                 if durSecret or F.IsSecret(aura.spellId) or F.IsSecret(aura.name)
                     or F.IsSecret(iid) or F.IsSecret(aura.icon) then
@@ -587,8 +599,8 @@ local function CollectSplitBuffs(buffMode)
                 scanBlocked = true
                 break
             end
-            if not nm then break end
-            if ic ~= nil then
+            if not F.IsSecret(nm) and not nm then break end
+            if type(ic) ~= "nil" then
                 local pSid = F.PlainNumber(sid, nil)
                 local pNm = F.PlainString(nm, nil)
                 local pDur = F.PlainNumber(dur, nil)
@@ -639,7 +651,7 @@ local function CollectSplitBuffs(buffMode)
             if ce.castInCombat and ce.icon then
                 local found = false
                 for _, pe in ipairs(permOut) do
-                    local pIc = (pe.icon ~= nil and not F.IsSecret(pe.icon)) and pe.icon or nil
+                    local pIc = (not F.IsSecret(pe.icon) and type(pe.icon) ~= "nil") and pe.icon or nil
                     if (ce.spellID and pe.spellID == ce.spellID) or (pIc and pIc == ce.icon) then
                         found = true
                         break
@@ -668,8 +680,8 @@ local function CollectUnitDebuffs()
     if getByIdx then
         for i = 1, 40 do
             local ok, aura = pcall(getByIdx, "player", i, "HARMFUL")
-            if not ok or not aura then break end
-            if type(aura) == "table" and not F.IsSecret(aura) and aura.icon ~= nil then
+            if not ok or type(aura) == "nil" then break end
+            if not F.IsSecret(aura) and type(aura) == "table" and type(aura.icon) ~= "nil" then
                 out[#out + 1] = {
                     index = i,
                     name = F.PlainString(aura.name, nil),
@@ -685,8 +697,8 @@ local function CollectUnitDebuffs()
     elseif _G.UnitDebuff then
         for i = 1, 40 do
             local ok, nm, ic, count, dispelType, dur, expTime = pcall(_G.UnitDebuff, "player", i)
-            if not ok or not nm then break end
-            if ic ~= nil then
+            if not ok or (not F.IsSecret(nm) and not nm) then break end
+            if type(ic) ~= "nil" then
                 out[#out + 1] = {
                     index = i,
                     name = F.PlainString(nm, nil),
@@ -730,9 +742,9 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
     local cd = slot._cd
     local appliedCD = false
     if not isPerm then
-        if data.auraInstanceID ~= nil and _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDuration and cd.SetCooldownFromDurationObject then
+        if type(data.auraInstanceID) ~= "nil" and _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDuration and cd.SetCooldownFromDurationObject then
             local okD, durObj = pcall(_G.C_UnitAuras.GetAuraDuration, "player", data.auraInstanceID)
-            if okD and durObj ~= nil then
+            if okD and type(durObj) ~= "nil" then
                 appliedCD = pcall(cd.SetCooldownFromDurationObject, cd, durObj) == true
             end
         end
@@ -1022,7 +1034,7 @@ local function ForEachBlizzAuraButton(root, fn)
         end
     end
     local c = root.AuraContainer
-    if c and c.GetChildren then
+    if IsSafeBlizzFrame(c) and c.GetChildren then
         for _, btn in ipairs({ c:GetChildren() }) do
             if IsSafeBlizzFrame(btn) and (btn.Icon or btn.icon) then fn(btn) end
         end
@@ -1173,7 +1185,7 @@ SyncTopRightAuraDedupe = function(repositionMicro)
                             SetAuraBtnMuted(btn, IsBuffBtnShownOnWing(btn))
                         end
                     end
-                elseif bf.AuraContainer and bf.AuraContainer.GetChildren then
+                elseif IsSafeBlizzFrame(bf.AuraContainer) and bf.AuraContainer.GetChildren then
                     for _, btn in ipairs({ bf.AuraContainer:GetChildren() }) do
                         if IsSafeBlizzFrame(btn) and (btn.Icon or btn.icon) then
                             SetAuraBtnMuted(btn, IsBuffBtnShownOnWing(btn))
@@ -1985,8 +1997,10 @@ local function BuildCoreHUD()
         defaultRelPoint = "CENTER",
         defaultX = 0,
         defaultY = -238,
+        allowShiftDrag = false,
         isHidden = function() return not (mod._active and mod:GetDB().showCoreHUD ~= false) end,
     })
+    f:EnableMouse(false)
 
     CH.coreFrame = f
 end

@@ -42,6 +42,26 @@ local mod = F.RegisterModule("extraFrameMover", {
 local hookedFrames = setmetatable({}, { __mode = "k" })
 local draggingFrame = setmetatable({}, { __mode = "k" })
 
+local function IsSafeFrame(f)
+    return type(f) == "table" and not (f.IsForbidden and f:IsForbidden())
+end
+
+local SaveFramePosition -- forward
+
+local function StopAllDrags(savePos)
+    local inCombat = InCombatLockdown and InCombatLockdown()
+    for _, spec in ipairs(TARGET_FRAMES) do
+        local fr = _G[spec.name]
+        if fr and draggingFrame[fr] then
+            draggingFrame[fr] = nil
+            if IsSafeFrame(fr) and not inCombat then
+                if fr.StopMovingOrSizing then pcall(fr.StopMovingOrSizing, fr) end
+                if savePos and SaveFramePosition then SaveFramePosition(fr, spec.name) end
+            end
+        end
+    end
+end
+
 local function ClampScale(s)
     s = F.PlainNumber(s, 1.0) or 1.0
     s = math_floor(s * 20 + 0.5) / 20
@@ -49,7 +69,7 @@ local function ClampScale(s)
 end
 
 local function ApplySavedState(frame, key)
-    if not (mod._active and frame) then
+    if not (mod._active and IsSafeFrame(frame)) then
         return
     end
     if InCombatLockdown and InCombatLockdown() then
@@ -69,7 +89,7 @@ local function ApplySavedState(frame, key)
     end
 end
 
-local function SaveFramePosition(frame, key)
+SaveFramePosition = function(frame, key)
     if not (frame and frame.GetPoint) then
         return
     end
@@ -92,13 +112,13 @@ end
 local function HookOneFrame(spec)
     local key = spec.name
     local frame = _G[key]
-    if not (frame and type(frame) == "table" and not hookedFrames[frame]) then
+    if not (IsSafeFrame(frame) and not hookedFrames[frame]) then
         return
     end
     hookedFrames[frame] = true
 
     F.RunOutOfCombat("kkowoUI_EFM_" .. key, function()
-        if frame.IsForbidden and frame:IsForbidden() then return end
+        if not IsSafeFrame(frame) then return end
         pcall(frame.SetMovable, frame, true)
         pcall(frame.SetClampedToScreen, frame, true)
         pcall(frame.EnableMouse, frame, true)
@@ -107,7 +127,7 @@ local function HookOneFrame(spec)
     end)
 
     frame:HookScript("OnDragStart", function(self)
-        if not mod._active then return end
+        if not (mod._active and IsSafeFrame(self)) then return end
         if InCombatLockdown and InCombatLockdown() then return end
         local euiDB = _G.EllesmereUIDB
         local noShift = type(euiDB) == "table" and euiDB.shifterNoShift == true
@@ -119,12 +139,21 @@ local function HookOneFrame(spec)
     frame:HookScript("OnDragStop", function(self)
         if not draggingFrame[self] then return end
         draggingFrame[self] = nil
+        if not IsSafeFrame(self) or (InCombatLockdown and InCombatLockdown()) then return end
         pcall(self.StopMovingOrSizing, self)
         SaveFramePosition(self, key)
     end)
 
+    frame:HookScript("OnHide", function(self)
+        if not draggingFrame[self] then return end
+        draggingFrame[self] = nil
+        if IsSafeFrame(self) and not (InCombatLockdown and InCombatLockdown()) then
+            pcall(self.StopMovingOrSizing, self)
+        end
+    end)
+
     frame:HookScript("OnMouseWheel", function(self, delta)
-        if not mod._active then return end
+        if not (mod._active and IsSafeFrame(self)) then return end
         if InCombatLockdown and InCombatLockdown() then return end
         if not (IsControlKeyDown and IsControlKeyDown()) then return end
         local db = mod:GetDB()
@@ -142,13 +171,13 @@ local function HookOneFrame(spec)
     frame:HookScript("OnShow", function(self)
         ApplySavedState(self, key)
         C_Timer.After(0, function()
-            if self:IsShown() then
+            if IsSafeFrame(self) and self.IsShown and self:IsShown() then
                 ApplySavedState(self, key)
             end
         end)
     end)
 
-    if frame:IsShown() then
+    if frame.IsShown and frame:IsShown() then
         ApplySavedState(frame, key)
     end
 end
@@ -163,14 +192,14 @@ local function ResetAll()
     local db = mod:GetDB()
     db.positions = {}
     db.scales = { GameMenuFrame = 0.80 }
-    if not (InCombatLockdown and InCombatLockdown()) then
+    F.RunOutOfCombat("kkowoUI_EFM_Reset", function()
         for _, spec in ipairs(TARGET_FRAMES) do
             local frame = _G[spec.name]
-            if frame then
+            if IsSafeFrame(frame) and frame.SetScale then
                 pcall(frame.SetScale, frame, spec.defaultScale or 1.0)
             end
         end
-    end
+    end)
     F.Print("已重置补充窗口位置与缩放，重载后生效。")
 end
 
@@ -187,17 +216,22 @@ function mod:OnEnable()
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
         C_Timer.After(0.5, HookAll)
     end)
+    self:RegisterEvent("PLAYER_REGEN_DISABLED", function()
+        StopAllDrags(true)
+    end)
 end
 
 function mod:OnDisable()
-    if not (InCombatLockdown and InCombatLockdown()) then
+    StopAllDrags(false)
+    F.RunOutOfCombat("kkowoUI_EFM_Disable", function()
+        if mod._active then return end
         for _, spec in ipairs(TARGET_FRAMES) do
             local frame = _G[spec.name]
-            if frame and frame.SetScale then
+            if IsSafeFrame(frame) and frame.SetScale then
                 pcall(frame.SetScale, frame, 1.0)
             end
         end
-    end
+    end)
 end
 
 function mod:BuildOptions(W, parent, y, enableSlot)

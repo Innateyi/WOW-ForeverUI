@@ -28,11 +28,15 @@ local mod = F.RegisterModule("euiRuntimeFixes", {
 })
 
 ----------------------------------------------------------------------
---  1) 顶层尽早包装 EllesmereUI.SetCVar（在 PLAYER_LOGIN 前拦截）
+--  1) 顶层尽早包装 EllesmereUI.SetCVar（在 PLAYER_LOGIN 前拦截），停用时无损还原
 ----------------------------------------------------------------------
 local origEUISetCVar = nil
+local wrappedEUISetCVar = nil
 
 local function ShouldGuardFriendlyCVar()
+    if mod._active == false then
+        return false
+    end
     local sv = _G.kkowoUIDB or _G.KkowoUIDB
     local cfg = type(sv) == "table" and type(sv.modules) == "table" and sv.modules.euiRuntimeFixes
     if type(cfg) == "table" then
@@ -43,22 +47,40 @@ local function ShouldGuardFriendlyCVar()
     return true
 end
 
-do
+local function InstallEUISetCVarHook()
     local EUI = _G.EllesmereUI
-    if type(EUI) == "table" and type(EUI.SetCVar) == "function" then
-        origEUISetCVar = EUI.SetCVar
-        EUI.SetCVar = function(name, value, owner)
-            if name == "UnitNameFriendlyPlayerName"
-                and owner == "EllesmereUINameplates"
-                and (value == 1 or value == "1" or value == true)
-                and not EUI._firstInstallPending
-                and ShouldGuardFriendlyCVar() then
-                return false
-            end
-            return origEUISetCVar(name, value, owner)
+    if type(EUI) ~= "table" or type(EUI.SetCVar) ~= "function" then return end
+    if origEUISetCVar then return end
+    origEUISetCVar = EUI.SetCVar
+    wrappedEUISetCVar = function(name, value, owner)
+        local orig = origEUISetCVar
+        if name == "UnitNameFriendlyPlayerName"
+            and owner == "EllesmereUINameplates"
+            and (value == 1 or value == "1" or value == true)
+            and not EUI._firstInstallPending
+            and ShouldGuardFriendlyCVar() then
+            return false
         end
+        if type(orig) == "function" then
+            return orig(name, value, owner)
+        end
+        return false
     end
+    EUI.SetCVar = wrappedEUISetCVar
 end
+
+local function RestoreEUISetCVarHook()
+    local EUI = _G.EllesmereUI
+    if not origEUISetCVar then return end
+    if type(EUI) == "table" and EUI.SetCVar == wrappedEUISetCVar then
+        EUI.SetCVar = origEUISetCVar
+        origEUISetCVar = nil
+        wrappedEUISetCVar = nil
+    end
+    -- 若已有第三方插件在 wrappedEUISetCVar 外层再次包装，保留 origEUISetCVar 让停用态安全直通不报错
+end
+
+InstallEUISetCVarHook()
 
 ----------------------------------------------------------------------
 --  2) 姓名板任务计数与名字防重叠 + 上方任务计数字号同步
@@ -84,8 +106,17 @@ local function GetEUIActiveNameplateProfile()
     return nil
 end
 
+local function IsSafeFrame(f)
+    if not f then return false end
+    if f.IsForbidden then
+        local ok, forb = pcall(f.IsForbidden, f)
+        if not ok or forb then return false end
+    end
+    return true
+end
+
 local function IsTopRowFrame(frame, health)
-    if not (frame and health and frame.IsShown and frame:IsShown()) then
+    if not (IsSafeFrame(frame) and IsSafeFrame(health) and frame.IsShown and frame:IsShown()) then
         return false, nil
     end
     local ok, p, rel, rp = pcall(frame.GetPoint, frame, 1)
@@ -103,7 +134,7 @@ local function IsTopRowFrame(frame, health)
 end
 
 local function FrameWidthSafe(frame)
-    if not (frame and frame.GetWidth) then
+    if not (IsSafeFrame(frame) and frame.GetWidth) then
         return 0
     end
     local w = F.PlainNumber(frame._npW, nil)
@@ -121,10 +152,11 @@ local function SyncQuestTextFontSize(plate)
     if not (mod._active and mod:GetDB().fixNameplateQuestOverlap ~= false) then
         return
     end
+    if not IsSafeFrame(plate) then return end
     local qf = plate.questTextFrame
     local nameFS = plate.name
     local health = plate.health
-    if not (qf and nameFS and health and qf.IsShown and qf:IsShown()) then
+    if not (IsSafeFrame(qf) and IsSafeFrame(nameFS) and IsSafeFrame(health) and qf.IsShown and qf:IsShown()) then
         return
     end
     local onTop = IsTopRowFrame(qf, health)
@@ -143,16 +175,18 @@ local function SyncQuestTextFontSize(plate)
     -- EUI questTextFrame 内部 FontString 可能是 qf.text / qf.fs 或唯一子 FontString
     local qfs = qf.text or qf.fs
     if not qfs and qf.GetRegions then
-        local regs = { qf:GetRegions() }
-        for i = 1, #regs do
-            local r = regs[i]
-            if r and r.GetObjectType and r:GetObjectType() == "FontString" then
-                qfs = r
-                break
+        local okR, regs = pcall(function() return { qf:GetRegions() } end)
+        if okR and type(regs) == "table" then
+            for i = 1, #regs do
+                local r = regs[i]
+                if IsSafeFrame(r) and r.GetObjectType and r:GetObjectType() == "FontString" then
+                    qfs = r
+                    break
+                end
             end
         end
     end
-    if not (qfs and qfs.GetFont and qfs.SetFont) then
+    if not (IsSafeFrame(qfs) and qfs.GetFont and qfs.SetFont) then
         return
     end
     local okQ, qFont, qSize, qFlags = pcall(qfs.GetFont, qfs)
@@ -174,9 +208,10 @@ local function AdjustTopNameShift(plate)
     if not (mod._active and mod:GetDB().fixNameplateQuestOverlap ~= false) then
         return
     end
+    if not IsSafeFrame(plate) then return end
     local nameFS = plate.name
     local health = plate.health
-    if not (nameFS and health and nameFS.GetPoint) then
+    if not (IsSafeFrame(nameFS) and IsSafeFrame(health) and nameFS.GetPoint) then
         return
     end
     local okP, pt, rel, rpt, xOff, yOff = pcall(nameFS.GetPoint, nameFS, 1)
@@ -242,15 +277,6 @@ local function AdjustTopNameShift(plate)
             end
         end
     end
-end
-
-local function IsSafeFrame(f)
-    if not f then return false end
-    if f.IsForbidden then
-        local ok, forb = pcall(f.IsForbidden, f)
-        if not ok or forb then return false end
-    end
-    return true
 end
 
 local function FindEUIPlateFromBlizzPlate(blizzPlate)
@@ -464,6 +490,7 @@ local function EnsureMenuOverlapHooks()
 end
 
 function mod:OnEnable()
+    InstallEUISetCVarHook()
     EnsureMenuOverlapHooks()
     self:RegisterEvent("NAME_PLATE_UNIT_ADDED", function(_, _, unit)
         local NP = _G.C_NamePlate
@@ -487,7 +514,9 @@ function mod:OnEnable()
 end
 
 function mod:OnDisable()
-    -- 停止后续修正；保留已安装的安全空转钩子
+    RestoreEUISetCVarHook()
+    for i = #openMenus, 1, -1 do openMenus[i] = nil end
+    for i = #menuPending, 1, -1 do menuPending[i] = nil end
 end
 
 function mod:BuildOptions(W, parent, y, enableSlot)

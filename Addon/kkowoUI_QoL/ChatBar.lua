@@ -303,11 +303,13 @@ local function SyncEUIChatSidebar()
             ecfg.showFriends = false
             changed = true
         end
-        if d1 and d1.friendsBtn and d1.friendsBtn:IsShown() then
-            d1.friendsBtn:Hide()
-        end
-        if d1 and d1.friendsCount and d1.friendsCount:IsShown() then
-            d1.friendsCount:Hide()
+        if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+            if d1 and d1.friendsBtn and not (d1.friendsBtn.IsForbidden and d1.friendsBtn:IsForbidden()) and d1.friendsBtn:IsShown() then
+                pcall(d1.friendsBtn.Hide, d1.friendsBtn)
+            end
+            if d1 and d1.friendsCount and not (d1.friendsCount.IsForbidden and d1.friendsCount:IsForbidden()) and d1.friendsCount:IsShown() then
+                pcall(d1.friendsCount.Hide, d1.friendsCount)
+            end
         end
     elseif db.savedEUIShowFriends ~= nil then
         if db.savedEUIShowFriends == "nil" then
@@ -1090,8 +1092,11 @@ local function TargetAlpha()
         return 0
     end
     if db.combatFade == true and not isHovered then
-        local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown())
-            or (_G.UnitAffectingCombat and _G.UnitAffectingCombat("player"))
+        local inCombat = (_G.InCombatLockdown and _G.InCombatLockdown()) == true
+        if not inCombat and _G.UnitAffectingCombat then
+            local okC, c = pcall(_G.UnitAffectingCombat, "player")
+            inCombat = okC and not F.IsSecret(c) and c == true
+        end
         if inCombat then
             return (F.db and F.db.theme and F.db.theme.combatFadeAlpha) or 0.22
         end
@@ -1116,6 +1121,28 @@ local function IsEUIFadeLockstep()
     return (chatNS and chatNS._chatTabStrip ~= nil) or (bg1 ~= nil)
 end
 
+local function SetBarClickThrough(clickEnabled)
+    if not barFrame then return end
+    if barFrame.SetMouseClickEnabled then
+        pcall(barFrame.SetMouseClickEnabled, barFrame, clickEnabled)
+    end
+    if barFrame.SetMouseMotionEnabled then
+        pcall(barFrame.SetMouseMotionEnabled, barFrame, true)
+    end
+    if barFrame.GetChildren then
+        for _, ch in ipairs({ barFrame:GetChildren() }) do
+            if ch and not (ch.IsForbidden and ch:IsForbidden()) then
+                if ch.SetMouseClickEnabled then
+                    pcall(ch.SetMouseClickEnabled, ch, clickEnabled)
+                end
+                if ch.SetMouseMotionEnabled then
+                    pcall(ch.SetMouseMotionEnabled, ch, true)
+                end
+            end
+        end
+    end
+end
+
 local function SyncAlpha(instant)
     if not barFrame then return end
     if not mod._active or (editBoxActive and activeDockMode == "bottom") then
@@ -1125,14 +1152,18 @@ local function SyncAlpha(instant)
     end
     barFrame:Show()
     local euiA = math_max(0, math_min(1, F.PlainNumber(euiChatLiveAlpha, 1) or 1))
+    local goal
     if IsEUIFadeLockstep() then
         -- 停靠且未启用独立悬停/战斗淡出时，与 EUI 聊天框保持 1:1 逐帧锁步透明度（杜绝独立渐变抢跑或亮度错层）
+        goal = euiA
         F.Theme.FadeTo(barFrame, euiA, 0)
     else
-        local goal = TargetAlpha() * euiA
+        goal = TargetAlpha() * euiA
         local cur = F.PlainNumber(barFrame:GetAlpha(), 1)
         F.Theme.FadeTo(barFrame, goal, instant and 0 or (goal > cur and 0.14 or 0.22))
     end
+    -- 淡隐至不可见（< 0.05）时关闭点击接收（保留悬停唤醒），防止透明聊天条拦截下方点击（P3-15）
+    SetBarClickThrough(goal >= 0.05)
     if unifiedPanel and unifiedPanel:IsShown() then
         unifiedPanel:SetAlpha(math_max(0, math_min(1.0, euiA)))
     end
@@ -2142,13 +2173,15 @@ local function StyleOverflowList(list, ob)
     if list.IsForbidden and list:IsForbidden() then return end
     local ar, ag, ab = F.Theme.GetAccent()
 
-    pcall(list.SetFrameStrata, list, "DIALOG")
-    pcall(list.SetFrameLevel, list, 120)
+    if not (_G.InCombatLockdown and _G.InCombatLockdown()) then
+        pcall(list.SetFrameStrata, list, "DIALOG")
+        pcall(list.SetFrameLevel, list, 120)
 
-    if ob and list.ClearAllPoints then
-        local yOff = (mod:GetDB().dockMode == "top") and 26 or 6
-        pcall(list.ClearAllPoints, list)
-        pcall(list.SetPoint, list, "BOTTOMRIGHT", ob, "TOPRIGHT", 0, yOff)
+        if ob and list.ClearAllPoints then
+            local yOff = (mod:GetDB().dockMode == "top") and 26 or 6
+            pcall(list.ClearAllPoints, list)
+            pcall(list.SetPoint, list, "BOTTOMRIGHT", ob, "TOPRIGHT", 0, yOff)
+        end
     end
 
     if list.NineSlice and list.NineSlice.SetAlpha then
@@ -2587,8 +2620,22 @@ local function CreateBar()
         onReanchor = ApplyAnchor,
     })
 
+    barFrame:SetMovable(true)
+    barFrame:RegisterForDrag("LeftButton")
+    barFrame:HookScript("OnDragStart", StartFreeBarDrag)
+    barFrame:HookScript("OnDragStop", function() StopFreeBarDrag(false) end)
+    barFrame:HookScript("OnHide", function() StopFreeBarDrag(true) end)
+
+    HookChatFrameInteractions()
+end
+
+local unlockListenerRegistered = false
+
+local function RegisterChatBarUnlockListener()
+    if unlockListenerRegistered then return end
     local EUI = _G.EllesmereUI
     if EUI and EUI.RegisterUnlockModeListener then
+        unlockListenerRegistered = true
         pcall(EUI.RegisterUnlockModeListener, EUI, "kkowoUI_ChatBar", function(active)
             if not active and mod._active then
                 C_Timer.After(0, function()
@@ -2601,14 +2648,15 @@ local function CreateBar()
             end
         end)
     end
+end
 
-    barFrame:SetMovable(true)
-    barFrame:RegisterForDrag("LeftButton")
-    barFrame:HookScript("OnDragStart", StartFreeBarDrag)
-    barFrame:HookScript("OnDragStop", function() StopFreeBarDrag(false) end)
-    barFrame:HookScript("OnHide", function() StopFreeBarDrag(true) end)
-
-    HookChatFrameInteractions()
+local function UnregisterChatBarUnlockListener()
+    if not unlockListenerRegistered then return end
+    unlockListenerRegistered = false
+    local EUI = _G.EllesmereUI
+    if EUI and EUI.UnregisterUnlockModeListener then
+        pcall(EUI.UnregisterUnlockModeListener, EUI, "kkowoUI_ChatBar")
+    end
 end
 
 function mod:OnWhisper()
@@ -2812,12 +2860,14 @@ function mod:OnEnable()
     end)
     self:RegisterEvent("CHAT_MSG_WHISPER", self.OnWhisper)
     self:RegisterEvent("CHAT_MSG_BN_WHISPER", self.OnWhisper)
+    RegisterChatBarUnlockListener()
     keywordWatching = false
     self:RefreshKeywordWatch()
 end
 
 function mod:OnDisable()
     -- 基类已 UnregisterAllEvents，这里只需同步本地标志
+    UnregisterChatBarUnlockListener()
     keywordWatching = false
     lastUnifiedSig = nil
     lastAnchorSig = nil

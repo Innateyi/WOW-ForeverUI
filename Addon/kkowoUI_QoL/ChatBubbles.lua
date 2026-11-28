@@ -108,15 +108,16 @@ local function ReadColor(fs)
     return r, g, b
 end
 
--- 两边都可能是保密字符串，比较本身会抛错，所以放进 pcall；比较失败按「没变」处理
+-- 两边都可能是保密字符串，比较本身会抛错，所以放进 pcall；比较失败按「已变化」处理（K5），避免复用气泡停留在旧句子
 local _eqA, _eqB, _eqOut
 local function RawEq() _eqOut = (_eqA == _eqB) end
 local function SafeEq(a, b)
+    if F.IsSecret(a) or F.IsSecret(b) then return false end
     if type(a) ~= "string" or type(b) ~= "string" then return a == b end
-    _eqA, _eqB, _eqOut = a, b, true
-    pcall(RawEq)
+    _eqA, _eqB, _eqOut = a, b, false
+    local ok = pcall(RawEq)
     _eqA, _eqB = nil, nil
-    return _eqOut == true
+    return ok and _eqOut == true
 end
 
 ----------------------------------------------------------------------
@@ -343,7 +344,7 @@ local function Detach(outer, instant)
     f:SetScript("OnUpdate", nil)
     local x, y = f:GetCenter()
     local dur = instant and 0 or Clamp(mod:GetDB().fadeOut, 0, 3, 0.8)
-    if dur <= 0.01 or not (x and y) or F.IsSecret(x) or F.IsSecret(y) then
+    if dur <= 0.01 or F.IsSecret(x) or F.IsSecret(y) or not (x and y) then
         Release(f)
         return
     end
@@ -552,6 +553,7 @@ local function ProxyFor(t)
 end
 
 local function WrappedEUIDB(create)
+    if not euiOrigDB then return nil end
     local t = euiOrigDB(create)
     if create or not mod._active or type(t) ~= "table" then return t end
     return ProxyFor(t)
@@ -560,12 +562,17 @@ end
 local function SetEUIBubblesSuppressed(on)
     local CB = EUIBubbleAPI()
     if not CB then return end
-    if on and not euiOrigDB then
-        euiOrigDB = CB.DB
-        CB.DB = WrappedEUIDB
-    elseif not on and euiOrigDB then
-        if CB.DB == WrappedEUIDB then CB.DB = euiOrigDB end
-        euiOrigDB = nil
+    if on then
+        if not euiOrigDB and CB.DB ~= WrappedEUIDB then
+            euiOrigDB = CB.DB
+            CB.DB = WrappedEUIDB
+        end
+    elseif euiOrigDB then
+        if CB.DB == WrappedEUIDB then
+            CB.DB = euiOrigDB
+            euiOrigDB = nil
+        end
+        -- 若外层已被其他插件二次包装，保留 euiOrigDB 供 WrappedEUIDB 在 mod._active==false 时无损直通，不置 nil 防断链
     end
     if type(CB.Refresh) == "function" then pcall(CB.Refresh) end
 end

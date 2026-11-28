@@ -1031,11 +1031,21 @@ function mod:OnDisable()
     -- 停用后把姓名板标记尺寸（含敌方/友方/仅名字板）与已换掉的全部团队标记还原成原状
     SyncOverheadMarkerSize(true)
     SyncAllRaidIcons()
-    if pendingCombatTargetScale then
+    local needDeferredBlizzRestore = pendingCombatTargetScale
+        or (_G.InCombatLockdown and _G.InCombatLockdown())
+        or next(origBlizzRaidSize) ~= nil
+        or next(scaledTargetMarkers) ~= nil
+    if needDeferredBlizzRestore then
         F.RunOutOfCombat("FUI_MarkBarRestoreBlizz", function()
             if not mod._active then
                 pendingCombatTargetScale = false
                 RestoreScaledTargetMarkers(nil)
+                for rtf, orig in pairs(origBlizzRaidSize) do
+                    if IsSafeObj(rtf) and rtf.SetSize and type(orig) == "table" then
+                        pcall(rtf.SetSize, rtf, orig[1], orig[2])
+                    end
+                    origBlizzRaidSize[rtf] = nil
+                end
                 SyncNameplateChildMarkers(false, GetConfiguredOverheadSize(), true)
             end
         end)

@@ -29,19 +29,23 @@ PROTECTED_ALWAYS = {"kkowoUI", "EllesmereUI", "YaMedia"}
 
 def is_wow_running():
     try:
-        out = subprocess.check_output(
+        res = subprocess.run(
             ["tasklist", "/FO", "CSV", "/NH"],
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             text=True,
-            errors="ignore",
+            encoding="mbcs",
+            errors="replace",
+            timeout=10,
         )
-        for line in out.splitlines():
+        if res.returncode != 0:
+            return "UNKNOWN"
+        for line in res.stdout.splitlines():
             low = line.lower()
             if '"wow' in low and '.exe"' in low:
                 return line.split(",")[0].strip('"')
+        return None
     except Exception:
-        pass
-    return None
+        return "UNKNOWN"
 
 
 def dir_size_bytes(path):
@@ -81,6 +85,8 @@ def main():
         except Exception:
             pass
 
+    if any(ph in ADDONS_TXT for ph in ("<YourAccountID>", "<Realm>", "<CharName>")):
+        sys.exit(f"ERROR: WOW_ADDONS_TXT is still a placeholder path: {ADDONS_TXT}")
     if not os.path.exists(ADDONS_TXT):
         sys.exit(f"ERROR: AddOns.txt not found: {ADDONS_TXT}")
     if not os.path.isdir(ADDONS_DIR):

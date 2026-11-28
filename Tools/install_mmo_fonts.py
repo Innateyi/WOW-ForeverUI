@@ -20,6 +20,7 @@ import datetime
 import glob
 import os
 import shutil
+import subprocess
 
 WOW_FONTS = os.path.join(os.environ.get("WOW_FOREVER_DIR", r"E:\Program Files\World of Warcraft\_forever_"), "Fonts")
 BACKUP_ROOT = os.environ.get(
@@ -27,6 +28,19 @@ BACKUP_ROOT = os.environ.get(
     os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "backups")),
 )
 SLOTS = ("ARKai_T.ttf", "ARHei.ttf", "ARIALN.ttf", "FRIZQT__.ttf", "ARKai_C.ttf")
+
+
+def wow_running():
+    try:
+        r = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Wow.exe"],
+            capture_output=True, text=True, encoding="mbcs", errors="replace", timeout=10,
+        )
+        if r.returncode != 0:
+            return True
+        return "Wow.exe" in r.stdout
+    except Exception:
+        return True
 
 
 def find_weight_file(src_dir: str, candidates):
@@ -68,18 +82,23 @@ def backup_existing():
 
 
 def clear_slug_caches():
-    removed = 0
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    dst_dir = os.path.join(BACKUP_ROOT, f"Fonts_SlugCache_{ts}")
+    moved = 0
     for pat in ("*.slug", "*.slugo"):
         for f in glob.glob(os.path.join(WOW_FONTS, pat)):
             try:
-                os.remove(f)
-                removed += 1
+                os.makedirs(dst_dir, exist_ok=True)
+                shutil.move(f, os.path.join(dst_dir, os.path.basename(f)))
+                moved += 1
             except OSError:
                 pass
-    print(f"[CACHE] 已清理 {removed} 个旧 .slug/.slugo 字体缓存（重启游戏自动重建）")
+    print(f"[CACHE] 已将 {moved} 个旧 .slug/.slugo 字体缓存移入备份（重启游戏自动重建）")
 
 
 def install_from_dir(src_dir: str):
+    if wow_running():
+        raise SystemExit("检测到魔兽世界正在运行：请完全退出游戏后再安装字体。")
     if not os.path.isdir(src_dir):
         raise SystemExit(f"找不到字体目录：{src_dir}")
 
@@ -113,10 +132,14 @@ def install_from_dir(src_dir: str):
 
 
 def rollback_latest():
+    if wow_running():
+        raise SystemExit("检测到魔兽世界正在运行：请完全退出游戏后再回滚字体。")
     baks = sorted(glob.glob(os.path.join(BACKUP_ROOT, "Fonts_Backup_*")), reverse=True)
     if not baks:
         raise SystemExit(f"在 {BACKUP_ROOT} 中未找到 Fonts_Backup_* 备份目录。")
     latest = baks[0]
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    removed_dir = os.path.join(BACKUP_ROOT, f"Fonts_RollbackRemoved_{ts}")
     for slot in SLOTS:
         src = os.path.join(latest, slot)
         dst = os.path.join(WOW_FONTS, slot)
@@ -124,9 +147,10 @@ def rollback_latest():
             shutil.copy2(src, dst)
             print(f"  Restored {slot}")
         elif os.path.isfile(dst):
-            # 备份里没有该槽位 = 安装前客户端本来就没有这个覆盖字体：删除我们装上的，回到游戏内置字体
-            os.remove(dst)
-            print(f"  Removed {slot}（安装前不存在）")
+            # 备份里没有该槽位 = 安装前客户端本来就没有这个覆盖字体：移入备份，回到游戏内置字体（绝不硬删）
+            os.makedirs(removed_dir, exist_ok=True)
+            shutil.move(dst, os.path.join(removed_dir, slot))
+            print(f"  Moved to backup: {slot}（安装前不存在）")
     clear_slug_caches()
     print(f"[ROLLBACK] 已从 {latest} 还原原有字体，请重启客户端。")
 

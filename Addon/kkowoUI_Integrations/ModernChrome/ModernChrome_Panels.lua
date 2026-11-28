@@ -328,6 +328,7 @@ do
 
     local function PolishAuctionHouseNow()
         if not mod._active then return end
+        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
         local ah = _G.AuctionHouseFrame
         if not (type(ah) == "table" and ah:IsShown()) then return end
         for _, key in ipairs({ "CommoditiesSellFrame", "ItemSellFrame" }) do
@@ -418,6 +419,7 @@ do
 
     local function PolishSendMailNow()
         if not mod._active then return end
+        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
         local mf = _G.MailFrame
         local sf = _G.SendMailFrame
         local nameBox = _G.SendMailNameEditBox
@@ -885,8 +887,10 @@ do
     end
 
     local gossipReflowBusy = false
+    local gossipRowOrigH = setmetatable({}, { __mode = "k" })
     local function ReflowGossipScrollBox()
         if gossipReflowBusy then return end
+        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
         local gf = _G.GossipFrame
         local gp = gf and gf.GreetingPanel
         local sb = gp and gp.ScrollBox
@@ -929,8 +933,13 @@ do
         for i, row in ipairs(rows) do
             local isGreeting = (row.GreetingText ~= nil)
             local curH = F.PlainNumber(row.GetHeight and row:GetHeight(), 0) or 0
-            local needH = MeasureRowContentHeight(row, isGreeting) or curH
-            if needH < curH then needH = curH end
+            if not gossipRowOrigH[row] and curH > 0 then
+                gossipRowOrigH[row] = curH
+            end
+            local baseH = isGreeting and 20 or (gossipRowOrigH[row] or 20)
+            if baseH > 36 then baseH = 24 end
+            local needH = MeasureRowContentHeight(row, isGreeting) or baseH
+            if needH < baseH then needH = baseH end
 
             -- 读取行当前相对 target 顶部的 y 偏移（负数表示向下）
             local okP, pt, rel, rpt, px, py = pcall(row.GetPoint, row, 1)
@@ -950,7 +959,7 @@ do
                 end
             end
 
-            if needH > curH + 1 then
+            if math_abs(needH - curH) > 1 then
                 needShift = true
             end
             plan[i] = {
@@ -958,7 +967,7 @@ do
                 x = (okP and F.PlainNumber(px, 0)) or 0,
                 y = cursorY,
                 h = needH,
-                grew = needH > curH + 1,
+                resized = math_abs(needH - curH) > 1,
             }
             cursorY = cursorY - needH - (isGreeting and 10 or 4)
         end
@@ -967,7 +976,7 @@ do
         gossipReflowBusy = true
         for _, item in ipairs(plan) do
             local row = item.row
-            if item.grew and row.SetHeight then
+            if item.resized and row.SetHeight then
                 pcall(row.SetHeight, row, item.h)
             end
             if row.ClearAllPoints and row.SetPoint then
@@ -1499,6 +1508,35 @@ do
         return cx >= leftBound and cx <= rightBound and cy >= bottomBound and cy <= topBound
     end
 
+    local function SetTreeMouse(frame, enabled, depth)
+        if not IsSafe(frame) or (depth or 0) > 2 then return end
+        if frame.EnableMouse then pcall(frame.EnableMouse, frame, enabled) end
+        if frame.GetChildren then
+            local okC, kids = pcall(function() return { frame:GetChildren() } end)
+            if okC and type(kids) == "table" then
+                for _, ch in ipairs(kids) do
+                    SetTreeMouse(ch, enabled, (depth or 0) + 1)
+                end
+            end
+        end
+    end
+
+    local function SetModelCtrlVisible(ctrl, visible)
+        if not IsSafe(ctrl) then return end
+        local inCombat = _G.InCombatLockdown and _G.InCombatLockdown()
+        if visible then
+            if not inCombat and ctrl.Show then pcall(ctrl.Show, ctrl) end
+            pcall(ctrl.SetAlpha, ctrl, 1)
+            if not inCombat then SetTreeMouse(ctrl, true, 0) end
+        else
+            pcall(ctrl.SetAlpha, ctrl, 0)
+            if not inCombat then
+                SetTreeMouse(ctrl, false, 0)
+                if ctrl.Hide then pcall(ctrl.Hide, ctrl) end
+            end
+        end
+    end
+
     local function SetupModelControlGuard()
         local scene = _G.CharacterModelScene
         local doll = _G.PaperDollFrame
@@ -1512,8 +1550,7 @@ do
                 ctrl:HookScript("OnShow", function(self)
                     if not (mod._active and mod:GetDB().centerModelControls ~= false) then return end
                     if not IsCursorInModelCenter(scene, self, false) then
-                        pcall(self.SetAlpha, self, 0)
-                        pcall(self.EnableMouse, self, false)
+                        SetModelCtrlVisible(self, false)
                     end
                 end)
             end
@@ -1533,8 +1570,7 @@ do
                 if not active then
                     if not self._restored then
                         self._restored = true
-                        pcall(ctrl.SetAlpha, ctrl, 1)
-                        pcall(ctrl.EnableMouse, ctrl, true)
+                        SetModelCtrlVisible(ctrl, true)
                     end
                     return
                 end
@@ -1544,24 +1580,19 @@ do
                     self._leaveGrace = 0.14
                     if not self._shown then
                         self._shown = true
-                        pcall(ctrl.Show, ctrl)
-                        pcall(ctrl.SetAlpha, ctrl, 1)
-                        pcall(ctrl.EnableMouse, ctrl, true)
+                        SetModelCtrlVisible(ctrl, true)
                     elseif F.PlainNumber(ctrl:GetAlpha(), 1) < 0.9 then
-                        pcall(ctrl.SetAlpha, ctrl, 1)
-                        pcall(ctrl.EnableMouse, ctrl, true)
+                        SetModelCtrlVisible(ctrl, true)
                     end
                 else
                     if self._shown then
                         self._leaveGrace = self._leaveGrace - dt
                         if self._leaveGrace <= 0 then
                             self._shown = false
-                            pcall(ctrl.SetAlpha, ctrl, 0)
-                            pcall(ctrl.EnableMouse, ctrl, false)
+                            SetModelCtrlVisible(ctrl, false)
                         end
                     elseif F.PlainNumber(ctrl:GetAlpha(), 0) > 0.01 then
-                        pcall(ctrl.SetAlpha, ctrl, 0)
-                        pcall(ctrl.EnableMouse, ctrl, false)
+                        SetModelCtrlVisible(ctrl, false)
                     end
                 end
             end)
@@ -1569,8 +1600,7 @@ do
                 self._shown = false
                 self._leaveGrace = 0
                 if mod._active and mod:GetDB().centerModelControls ~= false then
-                    pcall(ctrl.SetAlpha, ctrl, 0)
-                    pcall(ctrl.EnableMouse, ctrl, false)
+                    SetModelCtrlVisible(ctrl, false)
                 end
             end)
             modelCtrlDriver = drv
@@ -1579,14 +1609,13 @@ do
         if want then
             modelCtrlDriver._shown = false
             modelCtrlDriver:Show()
-            pcall(ctrl.SetAlpha, ctrl, 0)
-            pcall(ctrl.EnableMouse, ctrl, false)
+            SetModelCtrlVisible(ctrl, false)
         else
             modelCtrlDriver._shown = false
             modelCtrlDriver:Hide()
-            pcall(ctrl.SetAlpha, ctrl, 1)
-            pcall(ctrl.EnableMouse, ctrl, true)
-            if ctrl.IsShown and ctrl:IsShown() and not (ctrl.IsMouseOver and ctrl:IsMouseOver()) then
+            SetModelCtrlVisible(ctrl, true)
+            if not (_G.InCombatLockdown and _G.InCombatLockdown())
+                and ctrl.IsShown and ctrl:IsShown() and not (ctrl.IsMouseOver and ctrl:IsMouseOver()) then
                 pcall(ctrl.Hide, ctrl)
             end
         end
@@ -1649,12 +1678,15 @@ do
 
     local function HideEUIFloatingAverage(box, hide)
         if not (IsSafe(box) and box.GetChildren) then return end
+        local inCombat = _G.InCombatLockdown and _G.InCombatLockdown()
         for _, ch in ipairs({ box:GetChildren() }) do
             if IsSafe(ch) and ch ~= heroCard and ch ~= box.ScrollBox and ch ~= box.ScrollBar then
                 local h = F.PlainNumber(ch.GetHeight and ch:GetHeight(), 0)
                 if h >= 20 and h <= 28 and not (ch.GetName and ch:GetName()) then
                     if ch.SetAlpha then pcall(ch.SetAlpha, ch, hide and 0 or 1) end
-                    if ch.EnableMouse then pcall(ch.EnableMouse, ch, not hide) end
+                    if not inCombat then
+                        SetTreeMouse(ch, not hide, 0)
+                    end
                 end
             end
         end
@@ -1687,6 +1719,7 @@ do
     end
 
     local function EnsureHeroCardAndSidebar()
+        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
         local cf = _G.CharacterFrame
         local box = _G.CharacterStatsPaneScrollBox
         local want = mod._active and mod:GetDB().cleanCharSheet ~= false
@@ -2131,7 +2164,7 @@ end
 --      EUI 的施法条都先经 EllesmereUI.CleanCastName 清理名字，在它后面接一层整串对照；
 --      保密值（12.x 战斗中他人的施法名）原样放行，不做任何读取。
 ----------------------------------------------------------------------
-local HookEUICastNames
+local HookEUICastNames, RestoreEUICastNames
 do
 local CAST_NAME_ZH = {
     ["Opening"] = "开启",
@@ -2145,20 +2178,39 @@ local CAST_NAME_ZH = {
     ["Hearthstone"] = "炉石",
     ["Summoning"] = "召唤",
 }
-local castNameHooked = false
+local origCleanCastName = nil
+local wrappedCleanCastName = nil
 
 HookEUICastNames = function()
     local EUI = _G.EllesmereUI
-    if castNameHooked or not (EUI and type(EUI.CleanCastName) == "function") then return end
-    castNameHooked = true
-    local orig = EUI.CleanCastName
-    EUI.CleanCastName = function(name)
+    if not (mod._active and EUI and type(EUI.CleanCastName) == "function") then return end
+    if origCleanCastName and EUI.CleanCastName == wrappedCleanCastName then return end
+    if origCleanCastName then
+        -- 外层若已有第三方包装指向 wrappedCleanCastName，只需保持激活态即可自动恢复翻译，不再重复包裹
+        return
+    end
+    origCleanCastName = EUI.CleanCastName
+    wrappedCleanCastName = function(name)
+        local orig = origCleanCastName
+        if type(orig) ~= "function" then return name end
         local clean = orig(name)
         if F.IsSecret(clean) or type(clean) ~= "string" or not mod._active then
             return clean
         end
         return CAST_NAME_ZH[clean] or clean
     end
+    EUI.CleanCastName = wrappedCleanCastName
+end
+
+RestoreEUICastNames = function()
+    local EUI = _G.EllesmereUI
+    if not origCleanCastName then return end
+    if EUI and EUI.CleanCastName == wrappedCleanCastName then
+        EUI.CleanCastName = origCleanCastName
+        origCleanCastName = nil
+        wrappedCleanCastName = nil
+    end
+    -- 若其他插件在 wrappedCleanCastName 之上又包裹了一层，保留 origCleanCastName 供 mod._active==false 时透明直通
 end
 end
 
@@ -2215,6 +2267,7 @@ end
 
 
 MC.windowPolish = windowPolish
+MC.RestoreEUICastNames = RestoreEUICastNames
 MC.QueueCharacterBarsRefresh = QueueCharacterBarsRefresh
 MC.RefreshAllModernHUD = RefreshAllModernHUD
 MC.ScheduleBootRefresh = ScheduleBootRefresh

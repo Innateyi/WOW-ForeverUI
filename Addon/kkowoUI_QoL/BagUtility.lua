@@ -515,6 +515,13 @@ local function EnsureLVILFrame()
     title:SetPoint("TOPLEFT", 10, -8)
     title:SetText("低价值物品清理（含拍卖价）")
 
+    local emptyFS = lvilFrame:CreateFontString(nil, "OVERLAY")
+    F.Theme.ApplyFont(emptyFS, 11, "", 0.72, 0.76, 0.82, 0.95)
+    emptyFS:SetPoint("CENTER", lvilFrame, "CENTER", 0, -10)
+    emptyFS:SetText("当前背包暂无符合条件的低价值物品")
+    emptyFS:Hide()
+    lvilFrame._emptyFS = emptyFS
+
     local hdrLine = lvilFrame:CreateTexture(nil, "BORDER")
     hdrLine:SetHeight(1)
     hdrLine:SetPoint("TOPLEFT", lvilFrame, "TOPLEFT", 8, -26)
@@ -724,7 +731,10 @@ RefreshLVIL = function(forceShow, fromOptions)
         lvilFrame:Hide()
         return
     end
-    lvilFrame:SetHeight(math.max(60, shown * 24 + 34))
+    if lvilFrame._emptyFS then
+        lvilFrame._emptyFS:SetShown(shown == 0)
+    end
+    lvilFrame:SetHeight(math.max(66, shown * 24 + 34))
     -- 仅手动预览时提升到 DIALOG（不高于 StaticPopup 确认弹窗，避免绿装销毁确认框被盖住）；自动弹框保持 MEDIUM
     if manualPreview then
         lvilFrame:SetFrameStrata("DIALOG")
@@ -753,20 +763,24 @@ local function HandleMerchantShow()
             local getInfo = (_G.C_Item and _G.C_Item.GetItemInfo) or _G.GetItemInfo
             local soldCount, totalGain = 0, 0
             for bag = 0, 4 do
-                local slots = C.GetContainerNumSlots(bag) or 0
+                local okS, rawSlots = pcall(C.GetContainerNumSlots, bag)
+                local slots = okS and F.PlainNumber(rawSlots, 0) or 0
                 for slot = 1, slots do
-                    local info = C.GetContainerItemInfo(bag, slot)
-                    if info and info.hyperlink and not info.hasNoValue and not info.isLocked and info.quality == 0 then
+                    local okI, info = pcall(C.GetContainerItemInfo, bag, slot)
+                    if okI and type(info) == "table" and not F.IsSecret(info)
+                        and info.hyperlink and not info.hasNoValue and not info.isLocked
+                        and F.PlainNumber(info.quality, -1) == 0 then
                         local sellPrice = 0
                         if getInfo then
-                            local _, _, _, _, _, _, _, _, _, _, price = getInfo(info.hyperlink)
-                            sellPrice = F.PlainNumber(price, 0)
+                            local okG, _, _, _, _, _, _, _, _, _, _, price = pcall(getInfo, info.hyperlink)
+                            if okG then sellPrice = F.PlainNumber(price, 0) or 0 end
                         end
                         if sellPrice > 0 then
                             local ok = pcall(C.UseContainerItem, bag, slot)
                             if ok then
-                                soldCount = soldCount + (info.stackCount or 1)
-                                totalGain = totalGain + sellPrice * (info.stackCount or 1)
+                                local st = F.PlainNumber(info.stackCount, 1) or 1
+                                soldCount = soldCount + st
+                                totalGain = totalGain + sellPrice * st
                             end
                         end
                     end
@@ -833,6 +847,12 @@ local function SetLootFrameSilent(silent)
         end
     end
     if silent then
+        if not canMove and not lootParked then
+            -- 战斗中 LootFrame 受保护无法移出屏外或关鼠：绝不能只设 Alpha=0 留下原地隐形吃点击框体（P2-28）
+            isSilentLooting = false
+            lootPreArmed = false
+            return
+        end
         if canMove and lf.GetPoint then
             local okP, pt, rel, rpt, x, y = pcall(lf.GetPoint, lf, 1)
             local nx = okP and F.PlainNumber(x, nil) or nil
@@ -1013,6 +1033,8 @@ local function HookLootFrameOnce()
             _G.hooksecurefunc(lf, "SetAlpha", function(self, alpha)
                 if inSilentAlphaSet then return end
                 if (isSilentLooting or lootPreArmed) and not IsEditModeActiveSafe() then
+                    local canMove = not (self.IsProtected and self:IsProtected() and _G.InCombatLockdown and _G.InCombatLockdown())
+                    if not (canMove or lootParked) then return end
                     local a = F.PlainNumber(alpha, 0)
                     if a and a > 0.01 then
                         inSilentAlphaSet = true
@@ -1145,7 +1167,7 @@ local function IsLootSlotActive(slot)
     end
     if _G.LootSlotHasItem then
         local ok, has = pcall(_G.LootSlotHasItem, slot)
-        if ok then return has == true end
+        if ok and not F.IsSecret(has) then return has == true end
     end
     return true
 end
@@ -1409,14 +1431,27 @@ local function ReadFeedOpt(getOpt, key, fallback)
     return fallback
 end
 
+local function IsObjForbidden(obj)
+    if not obj then return true end
+    if obj.IsForbidden then
+        local ok, forb = pcall(obj.IsForbidden, obj)
+        if not ok or forb then return true end
+    end
+    return false
+end
+
 local function CountVisibleEUIFeedRows(feedAnchor, getOpt)
-    if not (feedAnchor and feedAnchor.GetChildren) then return 0 end
+    if IsObjForbidden(feedAnchor) or not feedAnchor.GetChildren then return 0 end
     local count = 0
-    local children = { feedAnchor:GetChildren() }
+    local okC, children = pcall(function() return { feedAnchor:GetChildren() } end)
+    if not okC or type(children) ~= "table" then return 0 end
     for i = 1, #children do
         local ch = children[i]
-        if ch and ch.IsShown and ch:IsShown() and not ch.pinned then
-            count = count + 1
+        if ch and not IsObjForbidden(ch) and ch.IsShown then
+            local okS, shown = pcall(ch.IsShown, ch)
+            if okS and not F.IsSecret(shown) and shown and not ch.pinned then
+                count = count + 1
+            end
         end
     end
     local maxRows = F.PlainNumber(ReadFeedOpt(getOpt, "maxRows", 6), 6)
@@ -1559,6 +1594,7 @@ local function EnsureEmptyLootToast()
     f.name:SetPoint("RIGHT", f, "RIGHT", -8, 0)
 
     local showAG = f:CreateAnimationGroup()
+    showAG:SetToFinalAlpha(true)
     local jump = showAG:CreateAnimation("Translation")
     jump:SetOrder(1)
     jump:SetDuration(0)
@@ -1578,9 +1614,13 @@ local function EnsureEmptyLootToast()
         f:SetAlpha(1)
         f.fade:Play()
     end)
+    showAG:SetScript("OnStop", function()
+        if f:IsShown() then f:SetAlpha(1) end
+    end)
     f.show = showAG
 
     local fadeAG = f:CreateAnimationGroup()
+    fadeAG:SetToFinalAlpha(true)
     local fadeAlpha = fadeAG:CreateAnimation("Alpha")
     fadeAlpha:SetOrder(1)
     fadeAlpha:SetDuration(0.8)

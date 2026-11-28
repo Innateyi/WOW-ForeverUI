@@ -65,7 +65,24 @@ local function GetPolestar()
 end
 
 local function SafeBool(v)
-    return type(v) == "boolean" and not F.IsSecret(v) and v
+    if F.IsSecret(v) then return false end
+    return type(v) == "boolean" and v
+end
+
+local function IsObjForbidden(obj)
+    if not obj then return true end
+    if obj.IsForbidden then
+        local ok, forb = pcall(obj.IsForbidden, obj)
+        if not ok or forb then return true end
+    end
+    return false
+end
+
+local function SafeCall1(fn, ...)
+    if type(fn) ~= "function" then return nil end
+    local ok, res = pcall(fn, ...)
+    if not ok then return nil end
+    return res
 end
 
 local function GetQuestieTooltips()
@@ -262,9 +279,10 @@ local function DetectNearbyQuestMob(goal)
         if okL and type(plates) == "table" then
             for i = 1, #plates do
                 local plate = plates[i]
-                if type(plate) == "table" and not (plate.IsForbidden and plate:IsForbidden()) then
-                    local u = plate.namePlateUnitToken or (plate.UnitFrame and plate.UnitFrame.unit)
-                    if u then
+                if type(plate) == "table" and not IsObjForbidden(plate) then
+                    local uf = plate.UnitFrame
+                    local u = plate.namePlateUnitToken or (uf and not IsObjForbidden(uf) and uf.unit)
+                    if u and not F.IsSecret(u) then
                         hit, name = UnitMatchesGoal(u, info)
                         if hit then return true, name end
                     end
@@ -374,13 +392,16 @@ local function TrySnapCloserSpot(P, wp, goal, pc, px, py)
     local now = GetTime()
     if (now - (lastSnapAt[goal] or 0)) < SNAP_COOLDOWN then return false end
 
-    local curIdx = type(E.SpotIndexOf) == "function" and E.SpotIndexOf(goal) or nil
+    local curIdx = SafeCall1(E.SpotIndexOf, goal)
     local bestIdx, bestDist = nil, SNAP_NEAR_YD
     for i, s in ipairs(goal.spots) do
         if type(s) == "table" and s.x and s.y then
             local okM, sc, wx, wy = pcall(C.MapToWorld, goal.map, s.x, s.y, goal.f)
-            if okM and sc == pc and wx and wy then
-                local d = math_sqrt((wx - px) * (wx - px) + (wy - py) * (wy - py)) - (s.r or 0)
+            sc = okM and F.PlainNumber(sc, nil) or nil
+            wx = okM and F.PlainNumber(wx, nil) or nil
+            wy = okM and F.PlainNumber(wy, nil) or nil
+            if sc and sc == pc and wx and wy then
+                local d = math_sqrt((wx - px) * (wx - px) + (wy - py) * (wy - py)) - (F.PlainNumber(s.r, 0) or 0)
                 if d < 0 then d = 0 end
                 if d < bestDist then
                     bestDist = d
@@ -442,7 +463,13 @@ local function ScanNearbyQuestMobs()
     end
     local okP, pc, px, py = pcall(C.GetPlayerWorldPosition)
     local okT, tc, tx, ty = pcall(C.MapToWorld, wp.map, wp.x, wp.y, wp.f)
-    if not (okP and okT and pc and tc and pc == tc and px and py and tx and ty) then
+    pc = okP and F.PlainNumber(pc, nil) or nil
+    px = okP and F.PlainNumber(px, nil) or nil
+    py = okP and F.PlainNumber(py, nil) or nil
+    tc = okT and F.PlainNumber(tc, nil) or nil
+    tx = okT and F.PlainNumber(tx, nil) or nil
+    ty = okT and F.PlainNumber(ty, nil) or nil
+    if not (pc and tc and pc == tc and px and py and tx and ty) then
         HideNearbyBanner(false)
         return
     end
@@ -515,20 +542,22 @@ local function DungeonMatchesZone(d, mapID)
     return false
 end
 
-local function BuildZoneDungeonCardModel(P, c)
+local function BuildZoneDungeonCardModel(P, c, isPreview)
     local Dg = P.Dungeons
     local DT = P.UI and P.UI.DungeonToast
     local CT = P.UI and P.UI.ClassToast
     local Theme = P.Theme
     local L = type(P.L) == "table" and P.L or {}
-    local pInfo = P.Compat and P.Compat.GetPlayerInfo and P.Compat.GetPlayerInfo() or {}
+    local pInfo = SafeCall1(P.Compat and P.Compat.GetPlayerInfo)
+    if type(pInfo) ~= "table" then pInfo = {} end
     local side = SIDE_MAP[pInfo.faction or ""]
 
     local isRaid = c.kind == "raid"
     local m = {
         kkowoZoneDungeon = c.key,
-        art = Dg and Dg.Art and Dg.Art(c.key) or nil,
-        icon = Theme and Theme.Media and Theme.Media("icon-dungeon") or nil,
+        kkowoPreview = isPreview == true,
+        art = SafeCall1(Dg and Dg.Art, c.key),
+        icon = SafeCall1(Theme and Theme.Media, "icon-dungeon"),
         iconColor = "dungeon",
         titleColor = "text",
         head = isRaid and "当前地图 · 团队副本" or "当前地图 · 地下城",
@@ -546,7 +575,7 @@ local function BuildZoneDungeonCardModel(P, c)
     else
         where[#where + 1] = "已到达副本所在地图"
     end
-    local range = P.UI and P.UI.LevelRange and P.UI.LevelRange(c.minLevel, c.maxLevel) or nil
+    local range = SafeCall1(P.UI and P.UI.LevelRange, c.minLevel, c.maxLevel)
     if range then
         where[#where + 1] = string_format(L["Levels %s"] or "等级 %s", range)
     end
@@ -557,15 +586,16 @@ local function BuildZoneDungeonCardModel(P, c)
     if c.extraNames and c.extraNames ~= "" then
         m.giver = m.giver .. "\n同图另有：" .. c.extraNames
     end
-    local enemy = Dg and Dg.EnemyEntrance and side and Dg.EnemyEntrance(c.key, side) or nil
-    if enemy and Theme and Theme.Hex then
-        m.giver = m.giver .. "\n|c" .. Theme.Hex("warning") .. enemy .. "|r"
+    local enemy = side and SafeCall1(Dg and Dg.EnemyEntrance, c.key, side) or nil
+    local warnHex = enemy and SafeCall1(Theme and Theme.Hex, "warning") or nil
+    if enemy and warnHex then
+        m.giver = m.giver .. "\n|c" .. warnHex .. enemy .. "|r"
     end
     local LT = P.UI and P.UI.LevelTip
-    local xs = (c.take or 0) > 0 and Dg and Dg.QuestXP and Dg.QuestXP(c.key) or nil
-    if xs and not xs.maxed and (xs.levels or 0) > 0 and LT and LT.Text then
-        local txt = LT.Text(xs.levels)
-        m.badge = (P.Upper and P.Upper(txt)) or txt
+    local xs = (c.take or 0) > 0 and SafeCall1(Dg and Dg.QuestXP, c.key) or nil
+    if type(xs) == "table" and not xs.maxed and (xs.levels or 0) > 0 and LT and LT.Text then
+        local txt = SafeCall1(LT.Text, xs.levels)
+        if txt then m.badge = SafeCall1(P.Upper, txt) or txt end
     end
 
     local pickBtn = {
@@ -631,11 +661,11 @@ local function CheckZoneDungeonAlert(force)
     if not (P and Dg and type(Dg.List) == "function" and CT and type(CT.ShowCard) == "function") then
         return false
     end
-    local codexLoaded = P.Codex and type(P.Codex.IsLoaded) == "function" and P.Codex.IsLoaded()
+    local codexLoaded = SafeBool(SafeCall1(P.Codex and P.Codex.IsLoaded))
     if not force and not codexLoaded and not ZONE_DUNGEON_MAPS[mapID] then
         return false
     end
-    local inCombat = C and type(C.InCombat) == "function" and C.InCombat()
+    local inCombat = SafeBool(SafeCall1(C and C.InCombat))
     if inCombat or (not force and CT.current) then
         pendingZoneMap = mapID
         return false
@@ -645,7 +675,8 @@ local function CheckZoneDungeonAlert(force)
         if not (okL and loaded) then return false end
     end
 
-    local pInfo = C and type(C.GetPlayerInfo) == "function" and C.GetPlayerInfo() or nil
+    local pInfo = SafeCall1(C and C.GetPlayerInfo)
+    if type(pInfo) ~= "table" then pInfo = nil end
     local level = pInfo and F.PlainNumber(pInfo.level, nil) or nil
     local side = pInfo and SIDE_MAP[pInfo.faction or ""] or nil
     if not (level and side) then return false end
@@ -659,7 +690,7 @@ local function CheckZoneDungeonAlert(force)
         if type(d) == "table" and DungeonMatchesZone(d, mapID) then
             local isRaid = d.kind == "raid"
             local kindOk = (not isRaid) or (db.zoneDungeonIncludeRaids == true) or force
-            local enemyCap = Dg.EnemyCapital and Dg.EnemyCapital(d.key, side)
+            local enemyCap = SafeCall1(Dg.EnemyCapital, d.key, side)
             local lo = d.minLevel or 1
             local hi = d.maxLevel or lo or 60
             local levelOk = force
@@ -669,9 +700,9 @@ local function CheckZoneDungeonAlert(force)
             local cooled = force
                 or ((now - (zoneShownAt[d.key] or -1e9)) >= ZONE_ALERT_COOLDOWN and not zoneDismissed[d.key])
             if kindOk and not enemyCap and levelOk and cooled then
-                local plan = Dg.PickupPlan and Dg.PickupPlan(d.key) or nil
-                local take = plan and type(plan.take) == "table" and #plan.take or 0
-                local best = Dg.BestAt and Dg.BestAt(d.key) or lo
+                local plan = SafeCall1(Dg.PickupPlan, d.key)
+                local take = type(plan) == "table" and type(plan.take) == "table" and #plan.take or 0
+                local best = F.PlainNumber(SafeCall1(Dg.BestAt, d.key), nil) or lo
                 found[#found + 1] = {
                     key = d.key,
                     name = d.name,
@@ -682,7 +713,7 @@ local function CheckZoneDungeonAlert(force)
                     best = best,
                     take = take,
                     hasEntrance = d.entrance ~= nil,
-                    pickLabel = plan and Dg.PickupLabel and Dg.PickupLabel(plan) or nil,
+                    pickLabel = plan and SafeCall1(Dg.PickupLabel, plan) or nil,
                     gap = math_abs((best or lo) - level),
                 }
             end
@@ -703,12 +734,15 @@ local function CheckZoneDungeonAlert(force)
         for i = 2, #found do extras[#extras + 1] = found[i].name end
         pick.extraNames = table_concat(extras, "、")
     end
-    local model = BuildZoneDungeonCardModel(P, pick)
+    local model = BuildZoneDungeonCardModel(P, pick, force == true)
     local okShow, shown = pcall(CT.ShowCard, model)
     if okShow and shown then
-        zoneShownAt[pick.key] = now
-        for i = 2, #found do
-            zoneShownAt[found[i].key] = now
+        -- 预览模式（force=true）绝不写入 30 分钟冷却，避免阻断后续真实进图提醒（P2-27）
+        if not force then
+            zoneShownAt[pick.key] = now
+            for i = 2, #found do
+                zoneShownAt[found[i].key] = now
+            end
         end
         return true
     end
@@ -768,7 +802,8 @@ local function InstallBridges()
         if P and type(P.On) == "function" then
             psHeadsUpHooked = true
             P.On("HEADS_UP_HIDDEN", function(m)
-                if type(m) == "table" and m.kkowoZoneDungeon then
+                if not mod._active then return end
+                if type(m) == "table" and m.kkowoZoneDungeon and not m.kkowoPreview then
                     zoneDismissed[m.kkowoZoneDungeon] = GetTime()
                 end
                 RetryPendingZoneAlert()
@@ -782,6 +817,7 @@ local function RemoveBridges()
 end
 
 function mod:PreviewZoneDungeon()
+    if not self._active then return end
     if not CheckZoneDungeonAlert(true) then
         F.Print("当前所在地图未检测到地下城/副本。")
     end
