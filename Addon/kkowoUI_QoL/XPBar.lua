@@ -132,11 +132,13 @@ local mod = F.RegisterModule("xpBar", {
     },
 })
 
-local xpFrame, xpHitBox, xpBar, restedBar, questBar
+local xpFrame, xpHitBox, xpBar, restedBar, questBar, gainBar, gainFadeAG
 local xpPulse, xpPulseAG
 local emblemFrame, emblemIconTex, emblemLevelFS, emblemIlvlFS
 local xpTexts = {}
 local repFrame, repBar, repLeft, repRight
+local lastWatchedFaction = nil
+local levelUpGlideGen = 0
 local activeQuestHex = "fcc87c"
 local activeQuestCol = { 0.99, 0.78, 0.48 }
 local activeFillCol = { 0.80, 0.66, 1.00 }
@@ -912,31 +914,124 @@ local function UpdateXP()
         etaRate, etaIsRef = refPerHour, true
     end
 
-    if lastRenderedXP ~= nil and lastRenderedLevel ~= nil then
-        if level > lastRenderedLevel or (level == lastRenderedLevel and cur > lastRenderedXP) then
-            PlayGainPulse()
-        end
+    local prevXP = lastRenderedXP
+    local prevLevel = lastRenderedLevel
+    local leveledUp = (prevLevel ~= nil and level > prevLevel)
+    local xpIncreased = (prevXP ~= nil and prevLevel ~= nil) and (leveledUp or (level == prevLevel and cur > prevXP))
+    if xpIncreased then
+        PlayGainPulse()
     end
     lastRenderedXP = cur
     lastRenderedLevel = level
 
-    xpBar:SetMinMaxValues(0, max)
-    xpBar:SetValue(cur)
+    local ST = F.StyleTokens
+    local M = F.Motion
+    local smoothXP = (ST and M and ST.IsFXEnabled and ST.IsFXEnabled("fx_xpSmooth")) == true
+    local wasHidden = not xpFrame:IsShown()
 
-    if db.showRested ~= false and rested > 0 then
-        restedBar:SetMinMaxValues(0, max)
-        restedBar:SetValue(math_min(max, cur + rested))
-        restedBar:Show()
-    else
-        restedBar:Hide()
-    end
+    if not smoothXP then
+        -- 关闭开关时严格走旧路径（1 参 SetValue，隐藏增益段）
+        if gainBar then
+            if gainFadeAG then gainFadeAG:Stop() end
+            gainBar:Hide()
+        end
+        xpBar:SetMinMaxValues(0, max)
+        xpBar:SetValue(cur)
 
-    if db.showQuestXP ~= false and questXP > 0 then
-        questBar:SetMinMaxValues(0, max)
-        questBar:SetValue(math_min(max, cur + questXP))
-        questBar:Show()
+        if db.showRested ~= false and rested > 0 then
+            restedBar:SetMinMaxValues(0, max)
+            restedBar:SetValue(math_min(max, cur + rested))
+            restedBar:Show()
+        else
+            restedBar:Hide()
+        end
+
+        if db.showQuestXP ~= false and questXP > 0 then
+            questBar:SetMinMaxValues(0, max)
+            questBar:SetValue(math_min(max, cur + questXP))
+            questBar:Show()
+        else
+            questBar:Hide()
+        end
     else
-        questBar:Hide()
+        local isWrap = leveledUp or (prevXP ~= nil and cur < prevXP)
+        local maxChanged = M.SetBarMinMax(xpBar, 0, max)
+        if isWrap then
+            -- 升级或回绕：先 Immediate 归零再平滑滑向新经验，绝不倒着滑过整根条
+            levelUpGlideGen = levelUpGlideGen + 1
+            local myGen = levelUpGlideGen
+            M.SetBarValue(xpBar, 0, { fxKey = "fx_xpSmooth", instant = true })
+            if cur > 0 then
+                if gainBar then
+                    local sc = ST.GetFXScale()
+                    gainBar:SetMinMaxValues(0, max)
+                    gainBar:SetValue(cur)
+                    gainBar:SetStatusBarColor(
+                        Clamp01(activeFillCol[1] * 0.55 + 0.45),
+                        Clamp01(activeFillCol[2] * 0.55 + 0.45),
+                        Clamp01(activeFillCol[3] * 0.55 + 0.45),
+                        0.68 * sc
+                    )
+                    gainBar:SetAlpha(1)
+                    gainBar:Show()
+                    if gainFadeAG then gainFadeAG:Stop(); gainFadeAG:Play() end
+                end
+                C_Timer.After(0, function()
+                    if mod._active and xpBar and levelUpGlideGen == myGen and ST.IsFXEnabled("fx_xpSmooth") then
+                        M.SetBarValue(xpBar, cur, { fxKey = "fx_xpSmooth", instant = false })
+                    end
+                end)
+            elseif gainBar then
+                gainBar:Hide()
+            end
+        else
+            if xpIncreased and gainBar and not wasHidden then
+                -- 获得经验时先在目标位置亮起浅色增益段，主条再平滑追上
+                local sc = ST.GetFXScale()
+                gainBar:SetMinMaxValues(0, max)
+                gainBar:SetValue(cur)
+                gainBar:SetStatusBarColor(
+                    Clamp01(activeFillCol[1] * 0.55 + 0.45),
+                    Clamp01(activeFillCol[2] * 0.55 + 0.45),
+                    Clamp01(activeFillCol[3] * 0.55 + 0.45),
+                    0.68 * sc
+                )
+                gainBar:SetAlpha(1)
+                gainBar:Show()
+                if gainFadeAG then gainFadeAG:Stop(); gainFadeAG:Play() end
+            end
+            M.SetBarValue(xpBar, cur, {
+                fxKey = "fx_xpSmooth",
+                instant = wasHidden or (prevXP == nil),
+                maxChanged = maxChanged,
+            })
+        end
+
+        if db.showRested ~= false and rested > 0 then
+            local rWasHidden = not restedBar:IsShown()
+            local rMaxChg = M.SetBarMinMax(restedBar, 0, max)
+            restedBar:Show()
+            M.SetBarValue(restedBar, math_min(max, cur + rested), {
+                fxKey = "fx_xpSmooth",
+                instant = rWasHidden or isWrap,
+                maxChanged = rMaxChg,
+            })
+        else
+            restedBar:Hide()
+        end
+
+        if db.showQuestXP ~= false and questXP > 0 then
+            local qWasHidden = not questBar:IsShown()
+            local qMaxChg = M.SetBarMinMax(questBar, 0, max)
+            questBar:Show()
+            M.SetBarValue(questBar, math_min(max, cur + questXP), {
+                fxKey = "fx_xpSmooth",
+                instant = qWasHidden or isWrap,
+                maxChanged = qMaxChg,
+            })
+        else
+            questBar:Hide()
+        end
     end
 
     local showEmblem = db.showEmblem ~= false
@@ -1065,8 +1160,23 @@ local function UpdateRep()
     local isMaxed = (maxV <= minV) or (reaction >= 8 and val >= maxV)
     local span = isMaxed and 1 or math_max(1, maxV - minV)
     local cur = isMaxed and 1 or math_max(0, math_min(span, val - minV))
-    repBar:SetMinMaxValues(0, span)
-    repBar:SetValue(cur)
+    local ST = F.StyleTokens
+    local M = F.Motion
+    local smoothRep = (ST and M and ST.IsFXEnabled and ST.IsFXEnabled("fx_xpSmooth")) == true
+    local factionChanged = (lastWatchedFaction ~= nil and lastWatchedFaction ~= name)
+    local repWasHidden = not repFrame:IsShown()
+    lastWatchedFaction = name
+    if not smoothRep then
+        repBar:SetMinMaxValues(0, span)
+        repBar:SetValue(cur)
+    else
+        local spanChanged = M.SetBarMinMax(repBar, 0, span)
+        M.SetBarValue(repBar, cur, {
+            fxKey = "fx_xpSmooth",
+            instant = factionChanged or repWasHidden,
+            maxChanged = spanChanged,
+        })
+    end
 
     local fr, fg, fb
     local fc = _G.FACTION_BAR_COLORS and _G.FACTION_BAR_COLORS[reaction]
@@ -1120,12 +1230,46 @@ local function CreateFrames()
     questBar._texBound = true
     AttachMask(questBar.GetStatusBarTexture and questBar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
 
+    -- 获得经验时先亮起浅色增益段，位于主条下方、任务预览上方（不改条体尺寸）
+    gainBar = CreateFrame("StatusBar", nil, xpFrame)
+    gainBar:SetAllPoints(xpFrame)
+    gainBar:SetFrameLevel(questBar:GetFrameLevel() + 1)
+    gainBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    gainBar._texBound = true
+    gainBar:SetMinMaxValues(0, 1)
+    gainBar:SetValue(0)
+    gainBar:Hide()
+    AttachMask(gainBar.GetStatusBarTexture and gainBar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
+    gainFadeAG = gainBar:CreateAnimationGroup()
+    local gf = gainFadeAG:CreateAnimation("Alpha")
+    gf:SetOrder(1)
+    gf:SetStartDelay(0.32)
+    gf:SetFromAlpha(1)
+    gf:SetToAlpha(0)
+    gf:SetDuration(0.35)
+    gf:SetSmoothing("OUT")
+    gainFadeAG:SetScript("OnFinished", function()
+        gainBar:Hide()
+        gainBar:SetAlpha(1)
+    end)
+    gainFadeAG:SetScript("OnStop", function()
+        gainBar:SetAlpha(1)
+    end)
+
     xpBar = CreateFrame("StatusBar", nil, xpFrame)
     xpBar:SetAllPoints(xpFrame)
-    xpBar:SetFrameLevel(questBar:GetFrameLevel() + 1)
+    xpBar:SetFrameLevel(gainBar:GetFrameLevel() + 1)
     xpBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     xpBar._texBound = true
     AttachMask(xpBar.GetStatusBarTexture and xpBar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
+
+    -- 慢速经验条关闭像素网格吸附（怪癖 10），消除逐像素顿挫
+    if F.Motion and F.Motion.DisablePixelSnap then
+        for _, sb in ipairs({ restedBar, questBar, gainBar, xpBar }) do
+            F.Motion.DisablePixelSnap(sb)
+            if sb.GetStatusBarTexture then F.Motion.DisablePixelSnap(sb:GetStatusBarTexture()) end
+        end
+    end
 
     local ov = CreateFrame("Frame", nil, xpFrame)
     ov:SetAllPoints()
@@ -1324,6 +1468,10 @@ local function CreateFrames()
     repBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     repBar._texBound = true
     AttachMask(repBar.GetStatusBarTexture and repBar:GetStatusBarTexture(), repFrame._pillMask, repFrame)
+    if F.Motion and F.Motion.DisablePixelSnap then
+        F.Motion.DisablePixelSnap(repBar)
+        if repBar.GetStatusBarTexture then F.Motion.DisablePixelSnap(repBar:GetStatusBarTexture()) end
+    end
 
     local repTextLayer = CreateFrame("Frame", nil, repFrame)
     repTextLayer:SetAllPoints()
