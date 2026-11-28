@@ -22,6 +22,15 @@ local ST = F.StyleTokens
 local EASE_OUT_ENUM = _G.Enum and _G.Enum.StatusBarInterpolation and _G.Enum.StatusBarInterpolation.ExponentialEaseOut or nil
 local IMMEDIATE_ENUM = _G.Enum and _G.Enum.StatusBarInterpolation and _G.Enum.StatusBarInterpolation.Immediate or nil
 
+local function GetInterpEnum()
+    local interp = _G.Enum and _G.Enum.StatusBarInterpolation
+    if interp then
+        EASE_OUT_ENUM = interp.ExponentialEaseOut or EASE_OUT_ENUM
+        IMMEDIATE_ENUM = interp.Immediate or IMMEDIATE_ENUM
+    end
+    return interp
+end
+
 ----------------------------------------------------------------------
 --  1) 单例零 GC 共享驱动器：仅当存在活跃平滑插值任务时 Show，空闲立刻 Hide（0 CPU）
 ----------------------------------------------------------------------
@@ -58,6 +67,207 @@ local function SleepTask(task)
     activeTasks[task] = nil
     if next(activeTasks) == nil and driver:IsShown() then
         driver:Hide()
+    end
+end
+
+function M.RegisterTask(task)
+    if task and type(task._tick) == "function" then
+        WakeTask(task)
+    end
+end
+
+function M.UnregisterTask(task)
+    if task then
+        SleepTask(task)
+    end
+end
+
+----------------------------------------------------------------------
+--  1b) 共享低频文字计时器（最多 20 Hz，空闲自动取消，零 OnUpdate 占用）
+----------------------------------------------------------------------
+local textTickTasks = {}
+local textTicker = nil
+local TEXT_TICK_STEP = 0.05
+
+local function StopTextTickerIfIdle()
+    if next(textTickTasks) == nil and textTicker then
+        pcall(textTicker.Cancel, textTicker)
+        textTicker = nil
+    end
+end
+
+local function RunTextTicks()
+    local now = GetTime()
+    for key, task in pairs(textTickTasks) do
+        local iv = task.interval or 0.10
+        if now - task.lastRun + 0.002 >= iv then
+            task.lastRun = now
+            local ok, keep = pcall(task.fn, now)
+            if not ok or keep == false then
+                textTickTasks[key] = nil
+            end
+        end
+    end
+    StopTextTickerIfIdle()
+end
+
+function M.RegisterTextTick(key, interval, fn)
+    if key == nil or type(fn) ~= "function" then return end
+    local iv = math_max(TEXT_TICK_STEP, interval or 0.10)
+    local cur = textTickTasks[key]
+    if cur then
+        cur.interval = iv
+        cur.fn = fn
+    else
+        textTickTasks[key] = {
+            interval = iv,
+            lastRun  = GetTime(),
+            fn       = fn,
+        }
+    end
+    if not textTicker and C_Timer and C_Timer.NewTicker then
+        textTicker = C_Timer.NewTicker(TEXT_TICK_STEP, RunTextTicks)
+    end
+end
+
+function M.SetTextTickInterval(key, interval)
+    local cur = key ~= nil and textTickTasks[key] or nil
+    if cur then
+        cur.interval = math_max(TEXT_TICK_STEP, interval or 0.10)
+    end
+end
+
+function M.UnregisterTextTick(key)
+    if key == nil then return end
+    textTickTasks[key] = nil
+    StopTextTickerIfIdle()
+end
+
+function M.GetActiveTextTickCount()
+    local n = 0
+    for _ in pairs(textTickTasks) do n = n + 1 end
+    return n
+end
+
+----------------------------------------------------------------------
+--  1c) 过图后循环动画恢复注册表（怪癖 5：读条画面后防动画停摆）
+----------------------------------------------------------------------
+local loopAnimRegistry = setmetatable({}, { __mode = "k" })
+local loadWatchFrame = CreateFrame("Frame")
+loadWatchFrame:RegisterEvent("LOADING_SCREEN_DISABLED")
+loadWatchFrame:SetScript("OnEvent", function()
+    for ag, checkFn in pairs(loopAnimRegistry) do
+        if ag and ag.Play then
+            local want = true
+            if type(checkFn) == "function" then
+                local ok, res = pcall(checkFn, ag)
+                want = ok and res == true
+            end
+            if want then
+                if ag.Stop then pcall(ag.Stop, ag) end
+                pcall(ag.Play, ag)
+            end
+        end
+    end
+end)
+
+function M.RegisterLoopAnim(ag, isActiveFn)
+    if not ag then return end
+    loopAnimRegistry[ag] = isActiveFn or true
+end
+
+function M.UnregisterLoopAnim(ag)
+    if not ag then return end
+    loopAnimRegistry[ag] = nil
+end
+
+function M.DisablePixelSnap(obj)
+    if not obj then return end
+    if obj.SetSnapToPixelGrid then pcall(obj.SetSnapToPixelGrid, obj, false) end
+    if obj.SetTexelSnappingBias then pcall(obj.SetTexelSnappingBias, obj, 0) end
+end
+
+----------------------------------------------------------------------
+--  1d) 统一 StatusBar 原生平滑入口（12.x ExponentialEaseOut + 怪癖 1/2 防护）
+----------------------------------------------------------------------
+local barRangeCache = setmetatable({}, { __mode = "k" })
+local barSnapPending = setmetatable({}, { __mode = "k" })
+local barShowHooked = setmetatable({}, { __mode = "k" })
+
+local function EnsureBarShowHook(bar)
+    if barShowHooked[bar] or not (bar and bar.HookScript) then return end
+    barShowHooked[bar] = true
+    pcall(bar.HookScript, bar, "OnShow", function(self)
+        barSnapPending[self] = true
+    end)
+end
+
+local function IsUnitDeadPlain(unit)
+    if not (unit and _G.UnitIsDeadOrGhost) then return false end
+    local ok, dead = pcall(_G.UnitIsDeadOrGhost, unit)
+    return ok and not F.IsSecret(dead) and dead == true
+end
+
+function M.ResetBarCache(bar)
+    if not bar then return end
+    barRangeCache[bar] = nil
+    barSnapPending[bar] = true
+end
+
+-- 仅在范围变化、机密值或 force=true 时重设 SetMinMaxValues（怪癖 2：避免每次事件打断原生平滑）
+function M.SetBarMinMax(bar, lo, hi, opts)
+    if not (bar and bar.SetMinMaxValues) then return false end
+    local force = opts and opts.force == true
+    local isSec = F.IsSecret(lo) or F.IsSecret(hi)
+    local prev = barRangeCache[bar]
+    if force or isSec or not prev or prev.secret or prev.lo ~= lo or prev.hi ~= hi then
+        pcall(bar.SetMinMaxValues, bar, lo, hi)
+        if isSec then
+            barRangeCache[bar] = { secret = true }
+        else
+            barRangeCache[bar] = { lo = lo, hi = hi, secret = false }
+        end
+        return true
+    end
+    return false
+end
+
+-- 统一平滑设值入口：
+--   • 开关关闭时严格走旧路径 1 参 SetValue(v)，与旧行为基线完全一致
+--   • 开关开启且原生插值枚举存在时，常态传 ExponentialEaseOut（明文与机密统一），
+--     换单位/最大值变/能量类型变/死亡或归零/刚显示传 Immediate（怪癖 1）
+function M.SetBarValue(bar, value, opts)
+    if not (bar and bar.SetValue) then return end
+    local fxKey = (opts and opts.fxKey) or "fx_smoothMain"
+    local smoothOn = ST and ST.IsFXEnabled and ST.IsFXEnabled(fxKey, opts and opts.override) or false
+    if not smoothOn then
+        pcall(bar.SetValue, bar, value)
+        return
+    end
+    EnsureBarShowHook(bar)
+    local interp = GetInterpEnum()
+    if not interp then
+        pcall(bar.SetValue, bar, value)
+        return
+    end
+    local isSec = F.IsSecret(value)
+    local snap = (barSnapPending[bar] ~= false)
+        or (opts and (opts.instant == true or opts.maxChanged == true or opts.powerTypeChanged == true or opts.isDead == true))
+        or (opts and opts.unit and IsUnitDeadPlain(opts.unit))
+        or ((not isSec) and type(value) == "number" and value <= 0)
+    barSnapPending[bar] = false
+    if snap then
+        if interp.Immediate ~= nil then
+            pcall(bar.SetValue, bar, value, interp.Immediate)
+        else
+            pcall(bar.SetValue, bar, value)
+        end
+    else
+        if interp.ExponentialEaseOut ~= nil then
+            pcall(bar.SetValue, bar, value, interp.ExponentialEaseOut)
+        else
+            pcall(bar.SetValue, bar, value)
+        end
     end
 end
 
@@ -297,67 +507,27 @@ function M.AttachHealthTrail(healthBar, opts)
 end
 
 ----------------------------------------------------------------------
---  3) SmoothBar：帧率无关平滑插值控制器（自动休眠零开销）
+--  3) SmoothBar：兼容包装，统一委托给客户端原生平滑入口 M.SetBarMinMax / M.SetBarValue
 ----------------------------------------------------------------------
-local function TickSmooth(ctrl, dt)
-    if not ctrl._bar or not ctrl._bar:IsVisible() then
-        return false
-    end
-    local diff = ctrl._target - ctrl._current
-    if math_abs(diff) <= ctrl._epsilon then
-        ctrl._current = ctrl._target
-        ctrl._bar:SetValue(ctrl._current)
-        return false
-    end
-    local k = 1 - math_exp(-ctrl._speed * dt)
-    ctrl._current = ctrl._current + diff * k
-    ctrl._bar:SetValue(ctrl._current)
-    return true
-end
-
-function M.CreateSmoothBar(statusBar, speed)
+function M.CreateSmoothBar(statusBar, _speed)
     local ctrl = {
-        _bar     = statusBar,
-        _speed   = speed or 14,
-        _current = 0,
-        _target  = 0,
-        _epsilon = 0.001,
-        _tick    = TickSmooth,
+        _bar = statusBar,
     }
 
-    function ctrl:SetMinMax(lo, hi)
-        local isSec = F.IsSecret(lo) or F.IsSecret(hi)
-        pcall(self._bar.SetMinMaxValues, self._bar, lo, hi)
-        if not isSec and type(hi) == "number" and type(lo) == "number" then
-            self._epsilon = math_max(0.001, (hi - lo) * 0.0008)
-        end
+    function ctrl:SetMinMax(lo, hi, force)
+        return M.SetBarMinMax(self._bar, lo, hi, force and { force = true } or nil)
     end
 
-    function ctrl:SetValue(v, instant)
-        if F.IsSecret(v) then
-            SleepTask(self)
-            if not instant and EASE_OUT_ENUM then
-                pcall(self._bar.SetValue, self._bar, v, EASE_OUT_ENUM)
-            elseif IMMEDIATE_ENUM then
-                pcall(self._bar.SetValue, self._bar, v, IMMEDIATE_ENUM)
-            else
-                pcall(self._bar.SetValue, self._bar, v)
-            end
-            return
-        end
-        local num = F.PlainNumber(v, 0) or 0
-        self._target = num
-        if instant then
-            self._current = num
-            self._bar:SetValue(num)
-            SleepTask(self)
+    function ctrl:SetValue(v, instant, opts)
+        if type(opts) == "table" then
+            M.SetBarValue(self._bar, v, opts)
         else
-            WakeTask(self)
+            M.SetBarValue(self._bar, v, { instant = instant == true })
         end
     end
 
     function ctrl:Stop()
-        SleepTask(self)
+        M.ResetBarCache(self._bar)
     end
 
     return ctrl
