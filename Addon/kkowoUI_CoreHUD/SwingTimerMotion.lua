@@ -221,6 +221,19 @@ local function ComputeEUIRowRadius(row)
     return math_min(gRad, math_max(2, math_floor(h * 0.48)))
 end
 
+local function IsShownSafe(obj)
+    if not (obj and obj.IsShown) then return false end
+    local ok, vis = pcall(obj.IsShown, obj)
+    return ok and (not F.IsSecret(vis)) and vis == true
+end
+
+local function GetTextureSafe(tex)
+    if not (tex and tex.GetTexture) then return nil end
+    local ok, raw = pcall(tex.GetTexture, tex)
+    if not ok or F.IsSecret(raw) then return nil end
+    return raw
+end
+
 local function SyncEUISwingRowZonesAndPhase(row)
     if not (IsSafeObj(row) and row._bar and row._bg) then return end
     local want = mod._active and mod:GetDB().mode == "enhance_eui" and row._merged ~= true
@@ -232,7 +245,7 @@ local function SyncEUISwingRowZonesAndPhase(row)
     local texOn = ST.IsFXEnabled("fx_barTexture")
     local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
 
-    -- 补挂延迟/瞄准分区贴图圆角遮罩与立体明暗材质（根治挥砍末端进入瞄准/延迟阶段变成方角矩形的顽疾）
+    -- 补挂延迟/瞄准分区贴图圆角遮罩与立体明暗材质（按 appliedZoneTex 幂等门控，严禁每刀重复 SetTexture 导致 2 帧脱罩闪方角）
     local zones = row._zones
     if type(zones) == "table" then
         for _, key in ipairs({ "lat", "aim" }) do
@@ -241,16 +254,16 @@ local function SyncEUISwingRowZonesAndPhase(row)
                 for _, part in ipairs({ "back", "front" }) do
                     local tex = z[part]
                     if IsSafeObj(tex) then
-                        if texOn and tex.SetTexture then
-                            if st and st.origZoneTex then
-                                if st.origZoneTex[tex] == nil and tex.GetTexture then
-                                    local okT, curT = pcall(tex.GetTexture, tex)
-                                    if okT and not F.IsSecret(curT) and curT and curT ~= wantFill then
-                                        st.origZoneTex[tex] = curT
-                                    end
-                                end
+                        if texOn and tex.SetTexture and st and st.appliedZoneTex and st.appliedZoneTex[tex] ~= wantFill then
+                            local curPlain = GetTextureSafe(tex)
+                            local alreadyWant = curPlain and ST.SameTexturePath and ST.SameTexturePath(curPlain, wantFill)
+                            if st.origZoneTex and st.origZoneTex[tex] == nil and curPlain and not alreadyWant then
+                                st.origZoneTex[tex] = curPlain
                             end
-                            pcall(tex.SetTexture, tex, wantFill)
+                            if not alreadyWant then
+                                pcall(tex.SetTexture, tex, wantFill)
+                            end
+                            st.appliedZoneTex[tex] = wantFill
                         end
                         if M.DisablePixelSnap then M.DisablePixelSnap(tex) end
                         if rad > 0 then
@@ -271,8 +284,8 @@ local function SyncEUISwingRowZonesAndPhase(row)
 
     -- 同步施法条同款柔和光刃与连续液态流：仅在挥砍活跃期点亮，空闲/停泊时克制收起
     if st then
-        local isLive = row._live == true and row._waiting ~= true and row:IsShown()
-        local isShownRow = row:IsShown() == true
+        local isShownRow = IsShownSafe(row)
+        local isLive = row._live == true and row._waiting ~= true and isShownRow
         if st.edgeSpark then
             local showSpark = isLive and texOn
             st.edgeSpark:SyncAnchor()
@@ -287,9 +300,9 @@ end
 
 local function PlayEUIRowSwingFlash()
     local erb = _G.ERB_SwingTimerFrame
-    if not (IsSafeObj(erb) and erb:IsShown() and erb.GetChildren) then return end
+    if not (IsSafeObj(erb) and IsShownSafe(erb) and erb.GetChildren) then return end
     for _, row in ipairs({ erb:GetChildren() }) do
-        if IsSafeObj(row) and row:IsShown() and row._merged ~= true then
+        if IsSafeObj(row) and IsShownSafe(row) and row._merged ~= true then
             local st = euiRowState[row]
             if st and st.flashAG and st.flashTex then
                 st.flashAG:Stop()
@@ -349,11 +362,17 @@ StyleEUISwingRow = function(row, forceDisable)
             if st.sheen then st.sheen:Hide() end
             if st.flashAG then st.flashAG:Stop() end
             if st.flashTex then st.flashTex:Hide() end
-            if st.origFillTex and bar.SetStatusBarTexture then
-                swingBarTexBusy = true
-                pcall(bar.SetStatusBarTexture, bar, st.origFillTex)
-                swingBarTexBusy = false
+            if st.origFillTex then
+                local curFt = bar.GetStatusBarTexture and bar:GetStatusBarTexture() or nil
+                if curFt and curFt.SetTexture then
+                    pcall(curFt.SetTexture, curFt, st.origFillTex)
+                elseif bar.SetStatusBarTexture then
+                    swingBarTexBusy = true
+                    pcall(bar.SetStatusBarTexture, bar, st.origFillTex)
+                    swingBarTexBusy = false
+                end
                 st.origFillTex = nil
+                st.appliedFillTex = nil
             end
             if st.origZoneTex then
                 for tex, origPath in pairs(st.origZoneTex) do
@@ -361,6 +380,7 @@ StyleEUISwingRow = function(row, forceDisable)
                         pcall(tex.SetTexture, tex, origPath)
                     end
                     st.origZoneTex[tex] = nil
+                    if st.appliedZoneTex then st.appliedZoneTex[tex] = nil end
                 end
             end
             if st.mutedRawSpark and row._spark and row._spark.SetAlpha then
@@ -383,7 +403,10 @@ StyleEUISwingRow = function(row, forceDisable)
     end
 
     if not st then
-        st = { origZoneTex = setmetatable({}, { __mode = "k" }) }
+        st = {
+            origZoneTex = setmetatable({}, { __mode = "k" }),
+            appliedZoneTex = setmetatable({}, { __mode = "k" }),
+        }
         euiRowState[row] = st
     end
 
@@ -408,6 +431,13 @@ StyleEUISwingRow = function(row, forceDisable)
         if bar.SetStatusBarTexture then
             _G.hooksecurefunc(bar, "SetStatusBarTexture", function()
                 if swingBarTexBusy then return end
+                local rSt = euiRowState[row]
+                if rSt then
+                    rSt.appliedFillTex = nil
+                    if rSt.appliedZoneTex then
+                        for k in pairs(rSt.appliedZoneTex) do rSt.appliedZoneTex[k] = nil end
+                    end
+                end
                 if mod._active and mod:GetDB().mode == "enhance_eui" and row._merged ~= true then
                     C_Timer.After(0, function()
                         if mod._active and mod:GetDB().mode == "enhance_eui" then
@@ -435,25 +465,38 @@ StyleEUISwingRow = function(row, forceDisable)
     local rad = euiOwnRound and 0 or ComputeEUIRowRadius(row)
     local texOn = ST.IsFXEnabled("fx_barTexture")
 
-    -- 1) 统一为施法条同款液态玻璃明暗填充 + 柔和横向渐变（保留停用还原）
+    -- 1) 统一为施法条同款液态玻璃明暗填充 + 柔和横向渐变（直接写 fillTex 保留计时器与对象引用，严格幂等避免反复 SetTexture 脱罩）
     if texOn then
         local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
-        local curPath = ft and ft.GetTexture and F.PlainString(ft:GetTexture(), nil) or nil
-        if curPath ~= wantFill then
-            if st.origFillTex == nil and curPath then
+        if st.appliedFillTex ~= wantFill then
+            local curPath = GetTextureSafe(ft)
+            local alreadyWant = curPath and ST.SameTexturePath and ST.SameTexturePath(curPath, wantFill)
+            if st.origFillTex == nil and curPath and not alreadyWant then
                 st.origFillTex = curPath
             end
+            if not alreadyWant then
+                if ft and ft.SetTexture then
+                    pcall(ft.SetTexture, ft, wantFill)
+                elseif bar.SetStatusBarTexture then
+                    swingBarTexBusy = true
+                    pcall(bar.SetStatusBarTexture, bar, wantFill)
+                    swingBarTexBusy = false
+                    ft = bar.GetStatusBarTexture and bar:GetStatusBarTexture() or nil
+                end
+            end
+            st.appliedFillTex = wantFill
+        end
+    elseif st.origFillTex then
+        if ft and ft.SetTexture then
+            pcall(ft.SetTexture, ft, st.origFillTex)
+        elseif bar.SetStatusBarTexture then
             swingBarTexBusy = true
-            pcall(bar.SetStatusBarTexture, bar, wantFill)
+            pcall(bar.SetStatusBarTexture, bar, st.origFillTex)
             swingBarTexBusy = false
             ft = bar.GetStatusBarTexture and bar:GetStatusBarTexture() or nil
         end
-    elseif st.origFillTex and bar.SetStatusBarTexture then
-        swingBarTexBusy = true
-        pcall(bar.SetStatusBarTexture, bar, st.origFillTex)
-        swingBarTexBusy = false
         st.origFillTex = nil
-        ft = bar.GetStatusBarTexture and bar:GetStatusBarTexture() or nil
+        st.appliedFillTex = nil
     end
 
     if M.DisablePixelSnap then
@@ -609,6 +652,15 @@ local function EnhanceEUISwingFrame(forceDisable)
     if rbNS and not hookedSTApply and type(rbNS.ST_Apply) == "function" then
         hookedSTApply = true
         _G.hooksecurefunc(rbNS, "ST_Apply", function()
+            for _, row in ipairs(euiTrackedRows) do
+                local rSt = euiRowState[row]
+                if rSt then
+                    rSt.appliedFillTex = nil
+                    if rSt.appliedZoneTex then
+                        for k in pairs(rSt.appliedZoneTex) do rSt.appliedZoneTex[k] = nil end
+                    end
+                end
+            end
             if mod._active and mod:GetDB().mode == "enhance_eui" then
                 EnhanceEUISwingFrame(false)
             end

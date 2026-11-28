@@ -838,6 +838,11 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
         _clip          = clip,
         _clipTarget    = opts.clipTarget,
         _customMask    = opts.customMask,
+        _rawMask       = opts.rawMask,
+        _noHooks       = opts.noHooks == true,
+        _ignoreVis     = opts.ignoreVisibility == true,
+        _widthHint     = opts.widthHint,
+        _heightHint    = opts.heightHint,
         _mover1        = mover1,
         _mover2        = mover2,
         _tiles1        = tiles1,
@@ -867,21 +872,28 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
         if not (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_barFlow", ctrl._fxOverride)) then
             return false
         end
-        if ctrl._holder and ctrl._holder.IsVisible and not ctrl._holder:IsVisible() then
-            return false
+        if (not ctrl._ignoreVis) and ctrl._holder and ctrl._holder.IsVisible then
+            local okV, vis = pcall(ctrl._holder.IsVisible, ctrl._holder)
+            if okV and not F.IsSecret(vis) and not vis then
+                return false
+            end
         end
         return true
     end
 
     local function MaskTile(tile, rad)
         if not tile then return end
-        if ctrl._customMask then
-            if ST.AttachCustomMask then
+        if ctrl._rawMask then
+            if tile.AddMaskTexture then
+                pcall(tile.AddMaskTexture, tile, ctrl._rawMask)
+            end
+        elseif ctrl._customMask then
+            if (not ctrl._noHooks) and ST.AttachCustomMask then
                 ST.AttachCustomMask(ctrl._holder, tile, ctrl._customMask)
             elseif tile.AddMaskTexture then
                 pcall(tile.AddMaskTexture, tile, ctrl._customMask)
             end
-        elseif rad ~= nil then
+        elseif (not ctrl._noHooks) and rad ~= nil then
             if rad > 0 then
                 ST.MaskTexture(ctrl._holder, tile, rad)
             elseif ST.UnmaskTexture then
@@ -938,10 +950,12 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
             ctrl._clip:ClearAllPoints()
             ctrl._clip:SetAllPoints(target)
         end
-        local w = F.PlainNumber(ctrl._bar.GetWidth and ctrl._bar:GetWidth(), 140) or 140
-        local h = F.PlainNumber(ctrl._bar.GetHeight and ctrl._bar:GetHeight(), 16) or 16
-        if w < 16 then w = 140 end
-        if h < 4 then h = 16 end
+        local hintW = F.PlainNumber(ctrl._widthHint, 140) or 140
+        local hintH = F.PlainNumber(ctrl._heightHint, 16) or 16
+        local w = F.PlainNumber(ctrl._bar.GetWidth and ctrl._bar:GetWidth(), 0) or 0
+        local h = F.PlainNumber(ctrl._bar.GetHeight and ctrl._bar:GetHeight(), 0) or 0
+        if w < 16 then w = (hintW >= 16) and hintW or 140 end
+        if h < 4 then h = (hintH >= 4) and hintH or 16 end
 
         local isSoft = ST.GetFXIntensity(ctrl._fxOverride) == "soft"
         local peak = isSoft and ctrl._peakSoft or ctrl._peakStd
@@ -984,7 +998,7 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
             return
         end
         local useRad = rad
-        if useRad == nil and not self._customMask then
+        if useRad == nil and not self._customMask and not self._rawMask then
             local gRad = ST.GetCornerRadius(6)
             if gRad > 0 then
                 local h = F.PlainNumber(self._holder.GetHeight and self._holder:GetHeight(), 16) or 16
@@ -1035,7 +1049,7 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
         if self._active then self:Refresh(self._maskedRad >= 0 and self._maskedRad or nil) end
     end
 
-    if statusBar.HookScript then
+    if (not ctrl._noHooks) and statusBar.HookScript then
         pcall(statusBar.HookScript, statusBar, "OnSizeChanged", function()
             if ctrl._active then LayoutFlow(ctrl._maskedRad >= 0 and ctrl._maskedRad or nil) end
         end)

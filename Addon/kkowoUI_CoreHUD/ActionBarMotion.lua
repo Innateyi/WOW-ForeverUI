@@ -9,8 +9,8 @@
 local _G = _G
 local F = _G.kkowoUI
 if not F then return end
-local ipairs, math_abs, math_floor, math_max, math_min, pairs, pcall, setmetatable, type =
-    ipairs, math.abs, math.floor, math.max, math.min, pairs, pcall, setmetatable, type
+local ipairs, math_abs, math_floor, math_max, math_min, pairs, pcall, select, setmetatable, type =
+    ipairs, math.abs, math.floor, math.max, math.min, pairs, pcall, select, setmetatable, type
 local CreateFrame = CreateFrame
 local GetTime = GetTime
 local C_Timer = C_Timer
@@ -1031,33 +1031,61 @@ local function DisablePixelSnap(obj)
     if obj.SetTexelSnappingBias then pcall(obj.SetTexelSnappingBias, obj, 0) end
 end
 
+local function SafeBoolMethod(obj, methodName, fallback)
+    if not (obj and type(obj[methodName]) == "function") then return fallback end
+    local ok, val = pcall(obj[methodName], obj)
+    if not ok or F.IsSecret(val) then return fallback end
+    return val == true
+end
+
 -- 追踪冷却条（ECME_TBBWrap*）模块级圆角与施法条同源液态玻璃/渐变/持续流动/柔光前沿统一
+local function GetTextureSafe(tex)
+    if not (tex and tex.GetTexture) then return nil end
+    local ok, raw = pcall(tex.GetTexture, tex)
+    if not ok or F.IsSecret(raw) then return nil end
+    return raw
+end
+
 local function RestoreTrackedBarVisuals(wrap, sb)
     local st = tbbState[wrap]
     if not st then return end
     if st.flow then st.flow:SetEnabled(false) end
     if st.sheen then st.sheen:Hide() end
     if st.bloomHost then st.bloomHost:Hide() end
-    if st.origFillTex and sb and sb.SetStatusBarTexture then
-        tbbBarTexBusy = true
-        pcall(sb.SetStatusBarTexture, sb, st.origFillTex)
-        tbbBarTexBusy = false
+    if st.origFillTex and sb then
+        local ft = sb.GetStatusBarTexture and sb:GetStatusBarTexture() or nil
+        if ft and ft.SetTexture then
+            pcall(ft.SetTexture, ft, st.origFillTex)
+        elseif sb.SetStatusBarTexture then
+            tbbBarTexBusy = true
+            pcall(sb.SetStatusBarTexture, sb, st.origFillTex)
+            tbbBarTexBusy = false
+        end
         st.origFillTex = nil
+        st.appliedFillTex = nil
     end
     if st.origGradTex and wrap._gradTex and wrap._gradTex.SetTexture then
         pcall(wrap._gradTex.SetTexture, wrap._gradTex, st.origGradTex)
         st.origGradTex = nil
+        st.appliedGradTex = nil
     end
     if st.origChargeTex and wrap._chargeHashFillTexture and wrap._chargeHashFillTexture.SetTexture then
         pcall(wrap._chargeHashFillTexture.SetTexture, wrap._chargeHashFillTexture, st.origChargeTex)
         st.origChargeTex = nil
+        st.appliedChargeTex = nil
     end
     if st.origThreshTex then
         for ov, origP in pairs(st.origThreshTex) do
-            if IsSafe(ov) and ov.SetStatusBarTexture and origP then
-                pcall(ov.SetStatusBarTexture, ov, origP)
+            if IsSafe(ov) and origP then
+                local ovT = ov.GetStatusBarTexture and ov:GetStatusBarTexture() or nil
+                if ovT and ovT.SetTexture then
+                    pcall(ovT.SetTexture, ovT, origP)
+                elseif ov.SetStatusBarTexture then
+                    pcall(ov.SetStatusBarTexture, ov, origP)
+                end
             end
             st.origThreshTex[ov] = nil
+            if st.appliedThreshTex then st.appliedThreshTex[ov] = nil end
         end
     end
     if st.origSparkTex and IsSafe(wrap._spark) then
@@ -1069,6 +1097,7 @@ local function RestoreTrackedBarVisuals(wrap, sb)
             tbbSparkSizeBusy = false
         end
         st.origSparkTex = nil
+        st.appliedSparkTex = nil
         st.origSparkBlend = nil
         st.origSparkW = nil
         st.origSparkH = nil
@@ -1099,8 +1128,7 @@ local function RoundTrackedBar(wrap, forceDisable)
     local h = F.PlainNumber(sb.GetHeight and sb:GetHeight(), 20) or 20
     local w = F.PlainNumber(sb.GetWidth and sb:GetWidth(), 180) or 180
     local isVert = (type(cfg) == "table" and cfg.verticalOrientation == true) or (h > w * 1.2)
-    local isRev = (type(cfg) == "table" and cfg.reverseFill == true)
-        or (sb.GetReverseFill and select(2, pcall(sb.GetReverseFill, sb)) == true)
+    local isRev = (type(cfg) == "table" and cfg.reverseFill == true) or SafeBoolMethod(sb, "GetReverseFill", false)
     local globalRad = ST.GetCornerRadius(6)
     local yieldBar = ShouldYieldTrackedBar(cdmNS, wrap, cfg)
     local wantCDM = (not forceDisable) and mod._active and mod:GetDB().roundCooldownManager ~= false and not yieldBar
@@ -1131,7 +1159,10 @@ local function RoundTrackedBar(wrap, forceDisable)
     if wantCDM and rad > 0 then
         local st = tbbState[wrap]
         if wantUnifiedBar and not st then
-            st = { origThreshTex = setmetatable({}, { __mode = "k" }) }
+            st = {
+                origThreshTex = setmetatable({}, { __mode = "k" }),
+                appliedThreshTex = setmetatable({}, { __mode = "k" }),
+            }
             tbbState[wrap] = st
         end
 
@@ -1139,6 +1170,15 @@ local function RoundTrackedBar(wrap, forceDisable)
             tbbHookedBar[sb] = true
             _G.hooksecurefunc(sb, "SetStatusBarTexture", function()
                 if tbbBarTexBusy then return end
+                local rSt = tbbState[wrap]
+                if rSt then
+                    rSt.appliedFillTex = nil
+                    rSt.appliedGradTex = nil
+                    rSt.appliedChargeTex = nil
+                    if rSt.appliedThreshTex then
+                        for k in pairs(rSt.appliedThreshTex) do rSt.appliedThreshTex[k] = nil end
+                    end
+                end
                 if mod._active and mod:GetDB().roundCooldownManager ~= false then
                     C_Timer.After(0, function()
                         if mod._active then RoundTrackedBar(wrap) end
@@ -1147,40 +1187,64 @@ local function RoundTrackedBar(wrap, forceDisable)
             end)
         end
 
-        -- 1) 施法条同源液态玻璃立体明暗填充（关闭 fx_barTexture 或停用时完整还原）
+        -- 1) 施法条同源液态玻璃立体明暗填充（直接改 fillTex 保留 EUI 缓存引用与 SetTimerDuration，按 applied* 幂等防副本中频繁 OnShow 重复换图脱罩）
         if wantUnifiedBar and st then
             local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
             if texOn then
                 local ftCur = sb.GetStatusBarTexture and sb:GetStatusBarTexture() or nil
-                local curP = ftCur and ftCur.GetTexture and F.PlainString(ftCur:GetTexture(), nil) or nil
-                if curP ~= wantFill then
-                    if st.origFillTex == nil and curP then st.origFillTex = curP end
-                    tbbBarTexBusy = true
-                    pcall(sb.SetStatusBarTexture, sb, wantFill)
-                    tbbBarTexBusy = false
+                if ftCur and st.appliedFillTex ~= wantFill then
+                    local curP = GetTextureSafe(ftCur)
+                    local already = curP and ST.SameTexturePath and ST.SameTexturePath(curP, wantFill)
+                    if st.origFillTex == nil and curP and not already then
+                        st.origFillTex = curP
+                    end
+                    if not already then
+                        if ftCur.SetTexture then
+                            pcall(ftCur.SetTexture, ftCur, wantFill)
+                        else
+                            tbbBarTexBusy = true
+                            pcall(sb.SetStatusBarTexture, sb, wantFill)
+                            tbbBarTexBusy = false
+                        end
+                    end
+                    st.appliedFillTex = wantFill
                 end
-                if IsSafe(wrap._gradTex) and wrap._gradTex.SetTexture then
-                    local gp = wrap._gradTex.GetTexture and F.PlainString(wrap._gradTex:GetTexture(), nil) or nil
-                    if gp ~= wantFill then
-                        if st.origGradTex == nil and gp then st.origGradTex = gp end
+                if IsSafe(wrap._gradTex) and wrap._gradTex.SetTexture and st.appliedGradTex ~= wantFill then
+                    local gp = GetTextureSafe(wrap._gradTex)
+                    local already = gp and ST.SameTexturePath and ST.SameTexturePath(gp, wantFill)
+                    if st.origGradTex == nil and gp and not already then
+                        st.origGradTex = gp
+                    end
+                    if not already then
                         pcall(wrap._gradTex.SetTexture, wrap._gradTex, wantFill)
                     end
+                    st.appliedGradTex = wantFill
                 end
-                if IsSafe(wrap._chargeHashFillTexture) and wrap._chargeHashFillTexture.SetTexture then
-                    local cp = wrap._chargeHashFillTexture.GetTexture and F.PlainString(wrap._chargeHashFillTexture:GetTexture(), nil) or nil
-                    if cp ~= wantFill then
-                        if st.origChargeTex == nil and cp then st.origChargeTex = cp end
+                if IsSafe(wrap._chargeHashFillTexture) and wrap._chargeHashFillTexture.SetTexture and st.appliedChargeTex ~= wantFill then
+                    local cp = GetTextureSafe(wrap._chargeHashFillTexture)
+                    local already = cp and ST.SameTexturePath and ST.SameTexturePath(cp, wantFill)
+                    if st.origChargeTex == nil and cp and not already then
+                        st.origChargeTex = cp
+                    end
+                    if not already then
                         pcall(wrap._chargeHashFillTexture.SetTexture, wrap._chargeHashFillTexture, wantFill)
                     end
+                    st.appliedChargeTex = wantFill
                 end
                 if type(wrap._threshOverlays) == "table" then
                     for _, ov in ipairs(wrap._threshOverlays) do
-                        if IsSafe(ov) and ov.SetStatusBarTexture then
+                        if IsSafe(ov) and st.appliedThreshTex[ov] ~= wantFill then
                             local ovT = ov.GetStatusBarTexture and ov:GetStatusBarTexture() or nil
-                            local ovP = ovT and ovT.GetTexture and F.PlainString(ovT:GetTexture(), nil) or nil
-                            if ovP ~= wantFill then
-                                if st.origThreshTex[ov] == nil and ovP then st.origThreshTex[ov] = ovP end
-                                pcall(ov.SetStatusBarTexture, ov, wantFill)
+                            if ovT and ovT.SetTexture then
+                                local ovP = GetTextureSafe(ovT)
+                                local already = ovP and ST.SameTexturePath and ST.SameTexturePath(ovP, wantFill)
+                                if st.origThreshTex[ov] == nil and ovP and not already then
+                                    st.origThreshTex[ov] = ovP
+                                end
+                                if not already then
+                                    pcall(ovT.SetTexture, ovT, wantFill)
+                                end
+                                st.appliedThreshTex[ov] = wantFill
                             end
                         end
                     end
@@ -1202,7 +1266,7 @@ local function RoundTrackedBar(wrap, forceDisable)
                         if not (mod._active and mod:GetDB().roundCooldownManager ~= false) then return end
                         if wrap._gradientActive or wrap._blizzFillAtlas or wrap._classicArt then return end
                         if not ST.IsFXEnabled("fx_barTexture") then return end
-                        local rev = sb.GetReverseFill and select(2, pcall(sb.GetReverseFill, sb)) == true
+                        local rev = SafeBoolMethod(sb, "GetReverseFill", false)
                         tbbFillVCBusy = true
                         ST.ApplySoftFlatGradient(self, r, g, b, a, rev)
                         tbbFillVCBusy = false
@@ -1220,13 +1284,16 @@ local function RoundTrackedBar(wrap, forceDisable)
             ST.MaskTexture(sb, ft, rad)
         end
 
-        -- 3) 柔和前沿光刃 + 羽化 Bloom（替代生硬 8px 竖白条，完整同步显示状态与机密布尔值）
+        -- 3) 柔和前沿光刃 + 羽化 Bloom（替代生硬 8px 竖白条，按 appliedSparkTex 幂等防反复脱罩）
         if wantUnifiedBar and st and texOn and IsSafe(wrap._spark) and not wrap._blizzSpark and not wrap._classicSpark then
             local sp = wrap._spark
             local wantSp = ST.GetSparkTexture and ST.GetSparkTexture() or ST.TEX.SPARK_SOFT
-            local curSp = sp.GetTexture and F.PlainString(sp:GetTexture(), nil) or nil
-            if curSp ~= wantSp then
-                if st.origSparkTex == nil and curSp then st.origSparkTex = curSp end
+            if st.appliedSparkTex ~= wantSp then
+                local curSp = GetTextureSafe(sp)
+                local alreadySp = curSp and ST.SameTexturePath and ST.SameTexturePath(curSp, wantSp)
+                if st.origSparkTex == nil and curSp and not alreadySp then
+                    st.origSparkTex = curSp
+                end
                 if st.origSparkBlend == nil and sp.GetBlendMode then
                     local okB, bm = pcall(sp.GetBlendMode, sp)
                     if okB and not F.IsSecret(bm) then st.origSparkBlend = bm end
@@ -1238,8 +1305,11 @@ local function RoundTrackedBar(wrap, forceDisable)
                         st.origSparkH = F.PlainNumber(sh, h) or h
                     end
                 end
-                pcall(sp.SetTexture, sp, wantSp)
+                if not alreadySp then
+                    pcall(sp.SetTexture, sp, wantSp)
+                end
                 if sp.SetBlendMode then pcall(sp.SetBlendMode, sp, "ADD") end
+                st.appliedSparkTex = wantSp
             end
             local wantW = isVert and w or 18
             local wantH = isVert and 18 or (h + 4)
@@ -1257,21 +1327,20 @@ local function RoundTrackedBar(wrap, forceDisable)
                 local bt = bh:CreateTexture(nil, "OVERLAY", nil, 4)
                 bt:SetTexture(ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture() or ST.TEX.BAR_EDGE_BLOOM)
                 bt:SetBlendMode("ADD")
-                bt:SetVertexColor(1, 1, 1, 0.72)
+                bt:SetVertexColor(1, 1, 1, 0.48)
                 DisablePixelSnap(bt)
                 st.bloomHost = bh
                 st.bloomTex = bt
             end
-            st.bloomTex:SetTexture(ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture() or ST.TEX.BAR_EDGE_BLOOM)
+            local wantBloom = ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture() or ST.TEX.BAR_EDGE_BLOOM
+            if st.appliedBloomTex ~= wantBloom then
+                st.bloomTex:SetTexture(wantBloom)
+                st.appliedBloomTex = wantBloom
+            end
             st.bloomTex:SetSize(isVert and (w + 6) or 24, isVert and 24 or (h + 10))
             st.bloomTex:ClearAllPoints()
             st.bloomTex:SetPoint("CENTER", sp, "CENTER", 0, 0)
-            local spShown = true
-            if sp.IsShown then
-                local okVis, vis = pcall(sp.IsShown, sp)
-                if okVis and not F.IsSecret(vis) then spShown = (vis == true) end
-            end
-            st.bloomHost:SetShown(spShown)
+            st.bloomHost:SetShown(SafeBoolMethod(sp, "IsShown", true))
             ST.MaskTexture(sb, st.bloomTex, rad)
 
             if not tbbHookedSpark[sp] then
@@ -1328,7 +1397,7 @@ local function RoundTrackedBar(wrap, forceDisable)
             st.bloomHost:Hide()
         end
 
-        -- 4) 顶部 1px 玻璃高光线 + 双层连续液态流动（仅水平条开启连续水平流动）
+        -- 4) 顶部 1px 玻璃高光线 + 双层连续液态流动（仅水平条开启；充能条自动跟随 _chargeHashFillClip）
         if wantUnifiedBar and st then
             if not st.sheen then
                 local sh = sb:CreateTexture(nil, "OVERLAY", nil, 2)
@@ -1338,8 +1407,9 @@ local function RoundTrackedBar(wrap, forceDisable)
                 sh:SetColorTexture(1, 1, 1, 0.14)
                 st.sheen = sh
             end
-            st.sheen:SetShown(texOn and not isVert)
-            if st.sheen:IsShown() then ST.MaskTexture(sb, st.sheen, rad) end
+            local wantSheen = texOn and not isVert
+            st.sheen:SetShown(wantSheen)
+            if wantSheen then ST.MaskTexture(sb, st.sheen, rad) end
 
             if not isVert then
                 if not st.flow then
@@ -1348,7 +1418,8 @@ local function RoundTrackedBar(wrap, forceDisable)
                     })
                 end
                 st.flow:SetReverse(isRev)
-                st.flow:SetEnabled(wrap:IsShown() == true, rad)
+                st.flow:SetClipTarget(wrap._chargeHashFillActive and wrap._chargeHashFillClip or nil)
+                st.flow:SetEnabled(SafeBoolMethod(wrap, "IsShown", false), rad)
             elseif st.flow then
                 st.flow:SetEnabled(false)
             end

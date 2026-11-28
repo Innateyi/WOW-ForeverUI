@@ -402,6 +402,16 @@ function ST.ApplyBarGradient(statusBar, r1, g1, b1, r2, g2, b2, alpha, reverse)
     end
 end
 
+-- 规范化贴图路径比较（WoW 实机 GetTexture() 对自定义 .tga 常返回小写、无 .tga 后缀或数字 FileID）
+function ST.SameTexturePath(a, b)
+    if F.IsSecret(a) or F.IsSecret(b) then return false end
+    if a == b then return true end
+    if type(a) ~= "string" or type(b) ~= "string" then return false end
+    local na = a:lower():gsub("/", "\\"):gsub("%.tga$", ""):gsub("%.blp$", "")
+    local nb = b:lower():gsub("/", "\\"):gsub("%.tga$", ""):gsub("%.blp$", "")
+    return na == nb
+end
+
 -- 将纯色填充升级为与施法条同源的柔和横向渐变（自动跳过机密值、透明色与纯白渐变复位色）
 function ST.ApplySoftFlatGradient(tex, r, g, b, a, reverse)
     if not tex then return false end

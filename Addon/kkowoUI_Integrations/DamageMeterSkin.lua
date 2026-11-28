@@ -101,11 +101,16 @@ local function ApplyRoundedStatusBar(fillBar, enable, rad, addTrack)
                 pcall(rec.attachedTex.RemoveMaskTexture, rec.attachedTex, rec.mask)
             end
             rec.attachedTex = nil
-            if rec.origFillTex and fillBar.SetStatusBarTexture then
-                dmBarTexBusy = true
-                pcall(fillBar.SetStatusBarTexture, fillBar, rec.origFillTex)
-                dmBarTexBusy = false
+            if rec.origFillTex then
+                if tex and tex.SetTexture then
+                    pcall(tex.SetTexture, tex, rec.origFillTex)
+                elseif fillBar.SetStatusBarTexture then
+                    dmBarTexBusy = true
+                    pcall(fillBar.SetStatusBarTexture, fillBar, rec.origFillTex)
+                    dmBarTexBusy = false
+                end
                 rec.origFillTex = nil
+                rec.appliedFillTex = nil
             end
             if rec.track then rec.track:Hide() end
             if rec.trackMask and rec.track and rec.track.RemoveMaskTexture then
@@ -121,24 +126,44 @@ local function ApplyRoundedStatusBar(fillBar, enable, rad, addTrack)
         skinnedBars[fillBar] = rec
     end
 
-    -- 统一主伤害条/明细条材质为自制立体液态玻璃条体（关闭 fx_barTexture 或停用时无损还原）
+    -- 统一主伤害条/明细条材质为自制立体液态玻璃条体：
+    -- 直接改 fillTex:SetTexture 绝不重置机密伤害 StatusBar 进度，按 appliedFillTex 幂等防副本内反复 OnShow 脱罩
     local texOn = ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture")
-    if texOn and fillBar.SetStatusBarTexture then
+    if texOn then
         local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or nil
-        local curP = tex and tex.GetTexture and F.PlainString(tex:GetTexture(), nil) or nil
-        if wantFill and curP ~= wantFill then
-            if rec.origFillTex == nil and curP then rec.origFillTex = curP end
+        if wantFill and rec.appliedFillTex ~= wantFill then
+            local curP = nil
+            if tex and tex.GetTexture then
+                local okP, rawP = pcall(tex.GetTexture, tex)
+                if okP and not F.IsSecret(rawP) then curP = rawP end
+            end
+            local already = curP and ST.SameTexturePath and ST.SameTexturePath(curP, wantFill)
+            if rec.origFillTex == nil and curP and not already then
+                rec.origFillTex = curP
+            end
+            if not already then
+                if tex and tex.SetTexture then
+                    pcall(tex.SetTexture, tex, wantFill)
+                elseif fillBar.SetStatusBarTexture then
+                    dmBarTexBusy = true
+                    pcall(fillBar.SetStatusBarTexture, fillBar, wantFill)
+                    dmBarTexBusy = false
+                    tex = fillBar.GetStatusBarTexture and fillBar:GetStatusBarTexture() or tex
+                end
+            end
+            rec.appliedFillTex = wantFill
+        end
+    elseif rec.origFillTex then
+        if tex and tex.SetTexture then
+            pcall(tex.SetTexture, tex, rec.origFillTex)
+        elseif fillBar.SetStatusBarTexture then
             dmBarTexBusy = true
-            pcall(fillBar.SetStatusBarTexture, fillBar, wantFill)
+            pcall(fillBar.SetStatusBarTexture, fillBar, rec.origFillTex)
             dmBarTexBusy = false
             tex = fillBar.GetStatusBarTexture and fillBar:GetStatusBarTexture() or tex
         end
-    elseif rec.origFillTex and fillBar.SetStatusBarTexture then
-        dmBarTexBusy = true
-        pcall(fillBar.SetStatusBarTexture, fillBar, rec.origFillTex)
-        dmBarTexBusy = false
         rec.origFillTex = nil
-        tex = fillBar.GetStatusBarTexture and fillBar:GetStatusBarTexture() or tex
+        rec.appliedFillTex = nil
     end
 
     if not rec.mask and fillBar.CreateMaskTexture then
@@ -189,6 +214,7 @@ local function ApplyRoundedStatusBar(fillBar, enable, rad, addTrack)
         hookedSetTex[fillBar] = true
         _G.hooksecurefunc(fillBar, "SetStatusBarTexture", function(self)
             if dmBarTexBusy then return end
+            rec.appliedFillTex = nil
             if mod._active then
                 local wantMain = mod:GetDB().roundMainBars ~= false
                 local isTT = rec.isTooltipBar == true

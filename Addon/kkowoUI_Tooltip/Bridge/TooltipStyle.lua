@@ -392,10 +392,11 @@ local function InstallSmartItemFooter(view, model, ctx)
             local left = footerLeft[index]
             local right = footerRight[index]
             local leftW = 0
-            if left and left.durability then
-                local cur, mx = left.durability[1] or 0, left.durability[2] or 0
+            if type(left) == "table" and type(left.durability) == "table" then
+                local cur = F.PlainNumber(left.durability[1], 0) or 0
+                local mx = F.PlainNumber(left.durability[2], 0) or 0
                 leftW = FOOTER_DURABILITY_BAR + 7 + measureStyled(panel, cur .. " / " .. mx, fStyle)
-            elseif left and left.left then
+            elseif type(left) == "table" and type(left.left) == "string" and not F.IsSecret(left.left) then
                 leftW = measureStyled(panel, left.left, fStyle)
             end
             local rightW = right and (measureStyled(panel, FooterRowText(right), fStyle) + 6) or 0
@@ -406,8 +407,9 @@ local function InstallSmartItemFooter(view, model, ctx)
     end
 
     view.footer.draw = function(panel, y)
-        local p = padFn(panel)
-        local inner = math_max(60, (panel.width or 188) - 2 * p)
+        local p = F.PlainNumber(padFn(panel), 12) or 12
+        local pw = F.PlainNumber(panel.width, 188) or 188
+        local inner = math_max(60, pw - 2 * p)
         local fSize = F.PlainNumber(fStyle.size, 13) or 13
         local rowsN = math_max(#footerLeft, #footerRight)
         for index = 1, rowsN do
@@ -415,10 +417,13 @@ local function InstallSmartItemFooter(view, model, ctx)
             local right = footerRight[index]
             local h1, h2 = 0, 0
             local leftNeed = 0
-            if left and left.durability then
-                local cur, mx = left.durability[1] or 0, left.durability[2] or 0
+            local hasLeftDur = type(left) == "table" and type(left.durability) == "table"
+            local hasLeftText = (not hasLeftDur) and type(left) == "table" and type(left.left) == "string" and not F.IsSecret(left.left)
+            if hasLeftDur then
+                local cur = F.PlainNumber(left.durability[1], 0) or 0
+                local mx = F.PlainNumber(left.durability[2], 0) or 0
                 leftNeed = FOOTER_DURABILITY_BAR + 7 + measureStyled(panel, cur .. " / " .. mx, fStyle) + 2
-            elseif left and left.left then
+            elseif hasLeftText then
                 leftNeed = measureStyled(panel, left.left, fStyle) + 2
             end
 
@@ -426,11 +431,12 @@ local function InstallSmartItemFooter(view, model, ctx)
             if right then
                 local content = FooterRowText(right)
                 local color = { .88, .78, .60 }
-                if right.requirement then
-                    color = right.met and { 1, 1, 1 } or { 1, .34, .28 }
+                if type(right) == "table" and right.requirement then
+                    local met = (not F.IsSecret(right.met)) and right.met == true
+                    color = met and { 1, 1, 1 } or { 1, .34, .28 }
                 end
                 local rightNeed = measureStyled(panel, content, fStyle) + 6
-                if not left then
+                if not (hasLeftDur or hasLeftText) then
                     rightWidth = math_min(rightNeed, inner)
                 elseif leftNeed + colGap + rightNeed <= inner then
                     rightWidth = rightNeed
@@ -438,11 +444,12 @@ local function InstallSmartItemFooter(view, model, ctx)
                     local maxForRight = math_max(36, inner - 36 - colGap)
                     rightWidth = math_min(rightNeed, math_min(maxForRight, math_max(inner * 0.60, inner - leftNeed - colGap)))
                 end
-                h2 = styledAt(panel, content, panel.width - p - rightWidth, y, rightWidth, fStyle, color, "RIGHT")
+                h2 = styledAt(panel, content, pw - p - rightWidth, y, rightWidth, fStyle, color, "RIGHT")
             end
 
-            if left and left.durability then
-                local cur, mx = left.durability[1] or 0, left.durability[2] or 0
+            if hasLeftDur then
+                local cur = F.PlainNumber(left.durability[1], 0) or 0
+                local mx = F.PlainNumber(left.durability[2], 0) or 0
                 local color = FooterDurabilityColor(cur, mx)
                 if type(acquireTexture) == "function" then
                     local track = acquireTexture(panel, nil, 0)
@@ -461,7 +468,7 @@ local function InstallSmartItemFooter(view, model, ctx)
                     or math_max(90, fSize * 8)
                 h1 = styledAt(panel, cur .. " / " .. mx, p + FOOTER_DURABILITY_BAR + 7, y,
                     durTextW, fStyle, healthy and { .82, .78, .71 } or color)
-            elseif left then
+            elseif hasLeftText then
                 local availLeft = right and math_max(32, inner - rightWidth - colGap) or inner
                 h1 = styledAt(panel, left.left, p, y, availLeft, fStyle, left.color or { .82, .78, .71 })
             end

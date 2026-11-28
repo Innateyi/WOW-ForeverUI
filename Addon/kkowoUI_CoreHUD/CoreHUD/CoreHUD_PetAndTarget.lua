@@ -844,17 +844,11 @@ local function BuildTargetAuraStyleTable(sz, rad, isDebuff)
 end
 
 local TARGET_AURA_EXPIRE_TICK_KEY = "kkowoUI_Target_AuraExpire"
-local engineAuraSlideHooked = setmetatable({}, { __mode = "k" })
 
-local function HookEngineTargetAuraSlide(btn)
-    if not (btn and btn.HookScript) or engineAuraSlideHooked[btn] then return end
-    engineAuraSlideHooked[btn] = true
-    pcall(btn.HookScript, btn, "OnShow", function(self)
-        if mod._active and M.PlayAuraSlotSlideIn then
-            M.PlayAuraSlotSlideIn(self, 5, 0)
-        end
-    end)
-end
+-- WoW 12.1 铁律：AuraContainer 引擎光环按钮严禁挂任何 OnShow/OnHide/OnSizeChanged 脚本钩子，
+-- 否则副本/战斗中 C++ AuraContainer 调用 button:SetShown(secret) 会直接报错
+-- ("Cannot be called with secrets due to existing script handlers")。
+-- 仅在非引擎自绘回退槽位（fallbackSlots）与双翼自绘槽位上播放滑入动效。
 
 local function TickTargetExpiringAuras(now)
     if not (mod._active and ST.IsFXEnabled("fx_auraFeel")) then
@@ -1029,11 +1023,9 @@ local function EnsureTargetAuraEngine()
         tgtAuraState.engineBuffBtns = {}
         local function TrackDebuffBtn(btn)
             tgtAuraState.engineDebuffBtns[#tgtAuraState.engineDebuffBtns + 1] = btn
-            HookEngineTargetAuraSlide(btn)
         end
         local function TrackBuffBtn(btn)
             tgtAuraState.engineBuffBtns[#tgtAuraState.engineBuffBtns + 1] = btn
-            HookEngineTargetAuraSlide(btn)
         end
         local myDebuffLayout = {
             elementWidth = sz, elementHeight = sz,
