@@ -848,97 +848,12 @@ function Diag.ToggleProbe()
 end
 
 ----------------------------------------------------------------------
---  3) /kk markcal：头顶标记视觉校准滑块
+--  3) /kk markcal：已改为自动 1:1 清晰大图标同步（保留命令友好提示，不报错）
 ----------------------------------------------------------------------
-local calFrame = nil
-
 function Diag.OpenMarkCalibrator()
     local mb = F.Modules.Get("markBar")
-    if not mb then
-        F.Print("未加载快捷标记条模块，无法校准。")
-        return
-    end
-    local initSize = F.PlainNumber(mb:GetDB().overheadSize, 36) or 36
-    if not calFrame then
-        local f = CreateFrame("Frame", "kkowoUI_MarkCalibrator", _G.UIParent)
-        f:SetSize(320, 146)
-        f:SetPoint("CENTER", _G.UIParent, "CENTER", 0, 120)
-        f:SetFrameStrata("DIALOG")
-        f:SetFrameLevel(140)
-        f:EnableMouse(true)
-        f:SetMovable(true)
-        f:RegisterForDrag("LeftButton")
-        f:SetScript("OnDragStart", f.StartMoving)
-        f:SetScript("OnDragStop", f.StopMovingOrSizing)
-        f:HookScript("OnHide", f.StopMovingOrSizing)
-        if F.Theme and F.Theme.StylePanel then F.Theme.StylePanel(f, 0.94, 0.90) end
-        if F.Theme and F.Theme.RegisterEscapeClose then F.Theme.RegisterEscapeClose(f) end
-
-        local title = f:CreateFontString(nil, "OVERLAY")
-        if F.Theme and F.Theme.ApplyFont then F.Theme.ApplyFont(title, 13, "", 0.95, 0.85, 0.72, 1) end
-        title:SetPoint("TOP", f, "TOP", 0, -12)
-        title:SetText("头顶标记大小校准")
-
-        local hint = f:CreateFontString(nil, "OVERLAY")
-        if F.Theme and F.Theme.ApplyFont then F.Theme.ApplyFont(hint, 11, "", 0.78, 0.80, 0.84, 1) end
-        hint:SetPoint("TOP", title, "BOTTOM", 0, -6)
-        hint:SetText("拖动滑块使姓名板标记与自己头顶标记大小一致")
-
-        local valFS = f:CreateFontString(nil, "OVERLAY")
-        if F.Theme and F.Theme.ApplyFont then F.Theme.ApplyFont(valFS, 13, "", 1, 1, 1, 1) end
-        valFS:SetPoint("TOP", hint, "BOTTOM", 0, -10)
-        f._valFS = valFS
-
-        local sl = CreateFrame("Slider", "kkowoUI_MarkCalSlider", f, "OptionsSliderTemplate")
-        sl:SetWidth(260)
-        sl:SetPoint("TOP", valFS, "BOTTOM", 0, -8)
-        sl:SetMinMaxValues(16, 64)
-        sl:SetValueStep(1)
-        if sl.SetObeyStepOnDrag then sl:SetObeyStepOnDrag(true) end
-        sl:SetScript("OnValueChanged", function(_, v)
-            local sz = math_floor((F.PlainNumber(v, 36) or 36) + 0.5)
-            f._curVal = sz
-            f._valFS:SetText(tostring(sz) .. " px")
-            local m = F.Modules.Get("markBar")
-            if m and m.ApplyOverheadSize then m:ApplyOverheadSize(sz) end
-        end)
-        f._slider = sl
-
-        local okBtn = CreateFrame("Button", nil, f)
-        okBtn:SetSize(120, 26)
-        okBtn:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 28, 12)
-        if F.Theme and F.Theme.StyleButton then F.Theme.StyleButton(okBtn, 12) end
-        okBtn:SetText("确认设为默认")
-        okBtn:SetScript("OnClick", function()
-            local sz = f._curVal or 36
-            local m = F.Modules.Get("markBar")
-            if m and m.ApplyOverheadSize then m:ApplyOverheadSize(sz) end
-            if F.db then
-                F.db.markcal = { value = sz, timestamp = NowStamp(), char = F.GetCharKey() }
-            end
-            F.Print("已保存校准后的默认标记大小：" .. tostring(sz) .. " px。")
-            f:Hide()
-        end)
-
-        local cancelBtn = CreateFrame("Button", nil, f)
-        cancelBtn:SetSize(100, 26)
-        cancelBtn:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -28, 12)
-        if F.Theme and F.Theme.StyleButton then F.Theme.StyleButton(cancelBtn, 12) end
-        cancelBtn:SetText("取消")
-        cancelBtn:SetScript("OnClick", function()
-            local m = F.Modules.Get("markBar")
-            if m and m.ApplyOverheadSize and f._origVal then m:ApplyOverheadSize(f._origVal) end
-            f:Hide()
-        end)
-
-        calFrame = f
-    end
-
-    calFrame._origVal = initSize
-    calFrame._curVal = initSize
-    calFrame._valFS:SetText(tostring(initSize) .. " px")
-    calFrame._slider:SetValue(initSize)
-    calFrame:Show()
+    local sz = (mb and mb.OVERHEAD_MARKER_SIZE) or 40
+    F.Print(string_format("头顶与目标标记已改为自动 1:1 同步（固定 %dpx 清晰大图标），无需手动校准；可在 /kk「快捷标记条」调节标记条按钮大小。", sz))
 end
 
 ----------------------------------------------------------------------
@@ -1056,10 +971,10 @@ function Diag.RunSelfTest()
     -- 6) ESC 注册检查（SettingsPanel 等）
     Assert("esc:ThemeAPI", type(F.Theme and F.Theme.RegisterEscapeClose) == "function", "RegisterEscapeClose ready")
 
-    -- 7) 标记矩阵快照与尺寸核验（含 nameRaidMarkerSize + 关闭还原断言）
+    -- 7) 标记矩阵快照与固定 1:1 尺寸核验（含 nameRaidMarkerSize + 关闭还原断言）
     local matrix = InspectMarkerMatrix("selftest")
     local mb = F.Modules.Get("markBar")
-    local wantSz = mb and F.PlainNumber(mb:GetDB().overheadSize, 36) or 36
+    local wantSz = (mb and mb.OVERHEAD_MARKER_SIZE) or 40
     if matrix.euiProfile then
         Assert("mark:euiSize",
             matrix.euiProfile.raidMarkerSize == wantSz

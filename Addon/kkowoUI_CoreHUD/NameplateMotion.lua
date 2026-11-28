@@ -955,22 +955,11 @@ local function AnchorBreathingArrows(plate, fx, w, h)
     local barH = F.PlainNumber(plate.health.GetHeight and plate.health:GetHeight(), 14) or 14
     local dy = (h - barH) * 0.5
 
-    -- 左侧箭头：若 EUI 原生左箭头处于显示状态（仅被我们 SetAlpha(0) 静音），直接同步其防重叠外推坐标；
-    -- 若目标标记额外放大（MarkBar 当前目标放大），补足额外外推避免与放大后的标记重叠
-    local markExtraL, markExtraR = 0, 0
-    if plate.raidFrame and plate.raidFrame.IsShown and plate.raidFrame:IsShown() then
-        local extra = F.PlainNumber(plate.raidFrame._kkScaledExtra, 0) or 0
-        if extra > 0 then
-            local npNS = GetEUINPNS()
-            local rmPos = npNS and type(npNS.GetRaidMarkerPos) == "function" and npNS.GetRaidMarkerPos() or nil
-            if rmPos == "left" then markExtraL = extra
-            elseif rmPos == "right" then markExtraR = extra end
-        end
-    end
+    -- 左侧箭头：若 EUI 原生左箭头处于显示状态（仅被我们 SetAlpha(0) 静音），直接同步其防重叠外推坐标
     fx.leftBox:ClearAllPoints()
     if plate.leftArrow and IsSafe(plate.leftArrow) and plate.leftArrow.IsShown and plate.leftArrow:IsShown() then
-        fx.leftBox:SetPoint("TOP", plate.leftArrow, "CENTER", -markExtraL, halfH)
-        fx.leftBox:SetPoint("BOTTOM", plate.leftArrow, "CENTER", -markExtraL, -halfH)
+        fx.leftBox:SetPoint("TOP", plate.leftArrow, "CENTER", 0, halfH)
+        fx.leftBox:SetPoint("BOTTOM", plate.leftArrow, "CENTER", 0, -halfH)
     else
         local lPush = ComputeSidePush(plate, "left", h)
         local lx = 6 + w * 0.5 + lPush
@@ -982,8 +971,8 @@ local function AnchorBreathingArrows(plate, fx, w, h)
     -- 右侧箭头同理
     fx.rightBox:ClearAllPoints()
     if plate.rightArrow and IsSafe(plate.rightArrow) and plate.rightArrow.IsShown and plate.rightArrow:IsShown() then
-        fx.rightBox:SetPoint("TOP", plate.rightArrow, "CENTER", markExtraR, halfH)
-        fx.rightBox:SetPoint("BOTTOM", plate.rightArrow, "CENTER", markExtraR, -halfH)
+        fx.rightBox:SetPoint("TOP", plate.rightArrow, "CENTER", 0, halfH)
+        fx.rightBox:SetPoint("BOTTOM", plate.rightArrow, "CENTER", 0, -halfH)
     else
         local rPush = ComputeSidePush(plate, "right", h)
         local rx = 6 + w * 0.5 + rPush

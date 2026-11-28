@@ -707,7 +707,7 @@ def _vgrad(y: np.ndarray, y0: float, y1: float, c_top, c_bot) -> np.ndarray:
     return ct * (1.0 - t) + cb * t
 
 
-def _compose_marker_base(d_shape, d_shadow, fill_rgb, outline_col, outline_w=0.028, aa=0.0045):
+def _compose_marker_base(d_shape, d_shadow, fill_rgb, outline_col, outline_w=0.034, aa=0.0045):
     """
     Composes a crisp modern flat-vector marker with:
       1) Soft subtle ambient drop shadow (for 3D world & bright/dark background separation)
@@ -718,8 +718,8 @@ def _compose_marker_base(d_shape, d_shadow, fill_rgb, outline_col, outline_w=0.0
     rgb = np.zeros((h, w, 3), dtype=np.float32)
     a = np.zeros((h, w), dtype=np.float32)
 
-    # 1) Soft drop shadow
-    sh_a = (1.0 - _smoothstep(-0.01, 0.115, d_shadow)) * 0.42
+    # 1) Soft drop shadow (tighter radius so larger ~88% icons never clip at cell edge)
+    sh_a = (1.0 - _smoothstep(-0.01, 0.085, d_shadow)) * 0.44
     rgb, a = _over(rgb, a, np.zeros((h, w, 3), dtype=np.float32), sh_a)
 
     # 2) Outer dark contour
@@ -735,163 +735,146 @@ def _compose_marker_base(d_shape, d_shadow, fill_rgb, outline_col, outline_w=0.0
     # 4) Subtle upper-edge inner specular rim for modern vector polish
     rim = _smoothstep(-0.08, -0.012, d_shape) * (1.0 - _smoothstep(-0.012, 0.005, d_shape))
     top_bias = np.clip((-RY + 0.45) / 1.25, 0.0, 1.0)
-    spec_a = rim * top_bias * 0.22 * fill_a
+    spec_a = rim * top_bias * 0.24 * fill_a
     rgb, a = _over(rgb, a, np.ones((h, w, 3), dtype=np.float32), spec_a)
 
     return np.concatenate([rgb, a[:, :, None]], axis=-1)
 
 
 def render_raid_mark1():
-    """Mark1 — 星星 (Star): 5-pointed rounded golden star + luminous inner core."""
+    """Mark1 — 星星 (Star): Bold ~88% fill 5-pointed rounded golden star + luminous inner core."""
     pts = []
-    ro, ri = 0.78, 0.32
-    cy = 0.045
+    ro, ri = 0.855, 0.355
+    cy = 0.042
     for i in range(10):
         ang = -math.pi * 0.5 + i * (math.pi / 5.0)
         r = ro if (i % 2 == 0) else ri
         pts.append((r * math.cos(ang), cy + r * math.sin(ang)))
-    d = _sd_polygon(RX, RY, pts) - 0.022
-    d_sh = _sd_polygon(RX, RY - 0.045, pts) - 0.022
-    fill = _vgrad(RY, -0.75, 0.75, (255, 224, 92), (236, 180, 40))
-    # Warm glowing center disc matching original Star design
-    d_core = sd_circle(RX, RY, 0.0, cy + 0.01, 0.245)
-    core_a = (1.0 - _smoothstep(-0.03, 0.045, d_core)) * 0.52
+    d = _sd_polygon(RX, RY, pts) - 0.024
+    d_sh = _sd_polygon(RX, RY - 0.036, pts) - 0.024
+    fill = _vgrad(RY, -0.82, 0.82, (255, 224, 92), (236, 180, 40))
+    d_core = sd_circle(RX, RY, 0.0, cy + 0.01, 0.275)
+    core_a = (1.0 - _smoothstep(-0.03, 0.045, d_core)) * 0.54
     core_col = np.array([255, 248, 152], dtype=np.float32) / 255.0
     fill = fill * (1.0 - core_a[:, :, None]) + core_col * core_a[:, :, None]
-    return _compose_marker_base(d, d_sh, fill, (74, 48, 10), outline_w=0.028)
+    return _compose_marker_base(d, d_sh, fill, (64, 40, 8), outline_w=0.034)
 
 
 def render_raid_mark2():
-    """Mark2 — 大饼 (Circle): Vibrant orange concentric ring + deep espresso inner ring."""
-    d = sd_circle(RX, RY, 0.0, 0.0, 0.725)
-    d_sh = sd_circle(RX, RY - 0.045, 0.0, 0.0, 0.725)
-    fill = _vgrad(RY, -0.72, 0.72, (254, 188, 88), (236, 124, 40))
-    # Recessed espresso dark ring (between r=0.28 and r=0.49)
+    """Mark2 — 大饼 (Circle): Bold ~87% fill vibrant orange concentric ring + deep espresso inner ring."""
+    d = sd_circle(RX, RY, 0.0, 0.0, 0.825)
+    d_sh = sd_circle(RX, RY - 0.036, 0.0, 0.0, 0.825)
+    fill = _vgrad(RY, -0.82, 0.82, (254, 188, 88), (236, 124, 40))
     r_dist = np.hypot(RX, RY)
-    d_ring = np.abs(r_dist - 0.385) - 0.105
+    d_ring = np.abs(r_dist - 0.435) - 0.120
     ring_a = 1.0 - _smoothstep(-0.005, 0.005, d_ring)
-    ring_col = _vgrad(RY, -0.50, 0.50, (66, 34, 14), (42, 20, 8))
+    ring_col = _vgrad(RY, -0.56, 0.56, (66, 34, 14), (42, 20, 8))
     fill = fill * (1.0 - ring_a[:, :, None]) + ring_col * ring_a[:, :, None]
-    # Bright center dot subtle lift
-    d_dot = sd_circle(RX, RY, 0.0, 0.0, 0.275)
-    dot_a = (1.0 - _smoothstep(-0.01, 0.01, d_dot)) * 0.14
+    d_dot = sd_circle(RX, RY, 0.0, 0.0, 0.312)
+    dot_a = (1.0 - _smoothstep(-0.01, 0.01, d_dot)) * 0.15
     fill = np.clip(fill + dot_a[:, :, None] * np.array([0.16, 0.12, 0.05], dtype=np.float32), 0.0, 1.0)
-    return _compose_marker_base(d, d_sh, fill, (58, 26, 8), outline_w=0.028)
+    return _compose_marker_base(d, d_sh, fill, (52, 22, 6), outline_w=0.034)
 
 
 def render_raid_mark3():
-    """Mark3 — 菱形 (Diamond): Amethyst crystal diamond with clean faceted inner highlight."""
-    pts = [(0.0, -0.79), (0.63, 0.0), (0.0, 0.79), (-0.63, 0.0)]
-    d = _sd_polygon(RX, RY, pts) - 0.024
-    d_sh = _sd_polygon(RX, RY - 0.045, pts) - 0.024
-    fill = _vgrad(RY, -0.78, 0.78, (214, 140, 254), (162, 78, 232))
-    # Right-side subtle crystal facet darkening
+    """Mark3 — 菱形 (Diamond): Bold ~88% amethyst crystal diamond with clean faceted inner highlight."""
+    pts = [(0.0, -0.865), (0.725, 0.0), (0.0, 0.865), (-0.725, 0.0)]
+    d = _sd_polygon(RX, RY, pts) - 0.025
+    d_sh = _sd_polygon(RX, RY - 0.036, pts) - 0.025
+    fill = _vgrad(RY, -0.86, 0.86, (214, 140, 254), (162, 78, 232))
     right_facet = _smoothstep(-0.006, 0.006, RX)
     fill = fill * (1.0 - 0.11 * right_facet[:, :, None])
-    # Inner bright lavender diamond facet
-    in_pts = [(0.0, -0.45), (0.35, -0.02), (0.0, 0.41), (-0.35, -0.02)]
-    d_in = _sd_polygon(RX, RY, in_pts) - 0.015
-    in_a = (1.0 - _smoothstep(-0.006, 0.006, d_in)) * 0.42
-    in_col = _vgrad(RY, -0.45, 0.41, (242, 196, 255), (210, 144, 252))
+    in_pts = [(0.0, -0.50), (0.405, -0.02), (0.0, 0.46), (-0.405, -0.02)]
+    d_in = _sd_polygon(RX, RY, in_pts) - 0.016
+    in_a = (1.0 - _smoothstep(-0.006, 0.006, d_in)) * 0.44
+    in_col = _vgrad(RY, -0.50, 0.46, (242, 196, 255), (210, 144, 252))
     fill = fill * (1.0 - in_a[:, :, None]) + in_col * in_a[:, :, None]
-    return _compose_marker_base(d, d_sh, fill, (54, 20, 88), outline_w=0.028)
+    return _compose_marker_base(d, d_sh, fill, (48, 16, 80), outline_w=0.034)
 
 
 def render_raid_mark4():
-    """Mark4 — 三角 (Triangle): Bright emerald inverted triangle + deep forest inner cutout."""
-    pts = [(-0.74, -0.56), (0.74, -0.56), (0.0, 0.74)]
+    """Mark4 — 三角 (Triangle): Bold ~88% emerald inverted triangle + deep forest inner cutout."""
+    pts = [(-0.835, -0.635), (0.835, -0.635), (0.0, 0.835)]
     d = _sd_polygon(RX, RY, pts) - 0.028
-    d_sh = _sd_polygon(RX, RY - 0.045, pts) - 0.028
-    fill = _vgrad(RY, -0.58, 0.76, (100, 244, 154), (42, 198, 108))
-    # Concentric dark forest-green inner triangle
-    in_pts = [(-0.40, -0.35), (0.40, -0.35), (0.0, 0.35)]
-    d_in = _sd_polygon(RX, RY, in_pts) - 0.014
+    d_sh = _sd_polygon(RX, RY - 0.036, pts) - 0.028
+    fill = _vgrad(RY, -0.65, 0.85, (100, 244, 154), (42, 198, 108))
+    in_pts = [(-0.455, -0.395), (0.455, -0.395), (0.0, 0.395)]
+    d_in = _sd_polygon(RX, RY, in_pts) - 0.015
     in_a = 1.0 - _smoothstep(-0.005, 0.005, d_in)
-    in_col = _vgrad(RY, -0.35, 0.35, (14, 54, 32), (8, 34, 20))
+    in_col = _vgrad(RY, -0.40, 0.40, (14, 54, 32), (8, 34, 20))
     fill = fill * (1.0 - in_a[:, :, None]) + in_col * in_a[:, :, None]
-    return _compose_marker_base(d, d_sh, fill, (10, 44, 24), outline_w=0.028)
+    return _compose_marker_base(d, d_sh, fill, (8, 38, 20), outline_w=0.034)
 
 
 def render_raid_mark5():
-    """Mark5 — 月亮 (Moon): Luminous silver-blue crescent moon with clean symmetrical cusps."""
+    """Mark5 — 月亮 (Moon): Bold ~87% luminous silver-blue crescent moon with clean symmetrical cusps."""
     def moon_sdf(x, y):
-        d_outer = sd_circle(x, y, -0.02, 0.02, 0.725)
-        d_cut = sd_circle(x, y, 0.30, -0.14, 0.565)
-        # Mild smooth intersection so crescent cusps are crisp yet completely free of outline overshoot
-        return -_smin(-d_outer, d_cut, 0.014)
+        d_outer = sd_circle(x, y, -0.02, 0.02, 0.825)
+        d_cut = sd_circle(x, y, 0.34, -0.16, 0.642)
+        return -_smin(-d_outer, d_cut, 0.015)
 
     d = moon_sdf(RX, RY)
-    d_sh = moon_sdf(RX, RY - 0.045)
-    fill = _vgrad(RY, -0.72, 0.74, (238, 246, 255), (176, 198, 228))
-    # Soft inner specular along left outer curve
-    glow = np.clip(1.0 - np.hypot(RX + 0.36, RY + 0.16) / 0.65, 0.0, 1.0) * 0.18
+    d_sh = moon_sdf(RX, RY - 0.036)
+    fill = _vgrad(RY, -0.82, 0.84, (238, 246, 255), (176, 198, 228))
+    glow = np.clip(1.0 - np.hypot(RX + 0.40, RY + 0.18) / 0.74, 0.0, 1.0) * 0.18
     fill = np.clip(fill + glow[:, :, None], 0.0, 1.0)
-    return _compose_marker_base(d, d_sh, fill, (34, 46, 66), outline_w=0.024)
+    return _compose_marker_base(d, d_sh, fill, (28, 40, 60), outline_w=0.030)
 
 
 def render_raid_mark6():
-    """Mark6 — 方块 (Square): Vibrant sky-to-azure rounded square + navy recessed frame."""
-    d = sd_round_box(RX, RY, 0.0, 0.0, 0.68, 0.68, 0.155)
-    d_sh = sd_round_box(RX, RY - 0.045, 0.0, 0.0, 0.68, 0.68, 0.155)
-    fill = _vgrad(RY, -0.68, 0.68, (108, 218, 255), (36, 152, 240))
-    # Deep navy recessed square frame
-    d_navy = sd_round_box(RX, RY, 0.0, 0.0, 0.435, 0.435, 0.060)
+    """Mark6 — 方块 (Square): Bold ~86% optical sky-to-azure rounded square + navy recessed frame."""
+    d = sd_round_box(RX, RY, 0.0, 0.0, 0.78, 0.78, 0.175)
+    d_sh = sd_round_box(RX, RY - 0.036, 0.0, 0.0, 0.78, 0.78, 0.175)
+    fill = _vgrad(RY, -0.78, 0.78, (108, 218, 255), (36, 152, 240))
+    d_navy = sd_round_box(RX, RY, 0.0, 0.0, 0.50, 0.50, 0.068)
     navy_a = 1.0 - _smoothstep(-0.005, 0.005, d_navy)
-    navy_col = _vgrad(RY, -0.44, 0.44, (20, 56, 92), (14, 38, 66))
+    navy_col = _vgrad(RY, -0.50, 0.50, (20, 56, 92), (14, 38, 66))
     fill = fill * (1.0 - navy_a[:, :, None]) + navy_col * navy_a[:, :, None]
-    # Bright inner sky square
-    d_inner = sd_round_box(RX, RY, 0.0, 0.0, 0.265, 0.265, 0.036)
+    d_inner = sd_round_box(RX, RY, 0.0, 0.0, 0.305, 0.305, 0.042)
     in_a = 1.0 - _smoothstep(-0.005, 0.005, d_inner)
-    in_col = _vgrad(RY, -0.27, 0.27, (106, 214, 255), (48, 168, 244))
+    in_col = _vgrad(RY, -0.31, 0.31, (106, 214, 255), (48, 168, 244))
     fill = fill * (1.0 - in_a[:, :, None]) + in_col * in_a[:, :, None]
-    return _compose_marker_base(d, d_sh, fill, (14, 42, 74), outline_w=0.028)
+    return _compose_marker_base(d, d_sh, fill, (12, 36, 66), outline_w=0.034)
 
 
 def render_raid_mark7():
-    """Mark7 — 红叉 (Cross): Bold crimson-coral rounded X + soft center highlight."""
-    arm = 0.465
-    thick = 0.205
+    """Mark7 — 红叉 (Cross): Bold ~86% crimson-coral rounded X + soft center highlight."""
+    arm = 0.535
+    thick = 0.238
     d1 = sd_segment(RX, RY, -arm, -arm, arm, arm) - thick
     d2 = sd_segment(RX, RY, -arm, arm, arm, -arm) - thick
     d = np.minimum(d1, d2)
-    d1s = sd_segment(RX, RY - 0.045, -arm, -arm, arm, arm) - thick
-    d2s = sd_segment(RX, RY - 0.045, -arm, arm, arm, -arm) - thick
+    d1s = sd_segment(RX, RY - 0.036, -arm, -arm, arm, arm) - thick
+    d2s = sd_segment(RX, RY - 0.036, -arm, arm, arm, -arm) - thick
     d_sh = np.minimum(d1s, d2s)
-    fill = _vgrad(RY, -0.68, 0.68, (252, 102, 108), (220, 48, 60))
-    # Subtle warm highlight at center crossing matching original design
-    d_cen = sd_circle(RX, RY, 0.0, 0.0, 0.14)
-    cen_a = (1.0 - _smoothstep(-0.03, 0.07, d_cen)) * 0.24
+    fill = _vgrad(RY, -0.78, 0.78, (252, 102, 108), (220, 48, 60))
+    d_cen = sd_circle(RX, RY, 0.0, 0.0, 0.16)
+    cen_a = (1.0 - _smoothstep(-0.03, 0.07, d_cen)) * 0.25
     fill = fill * (1.0 - cen_a[:, :, None]) + np.array([1.0, 0.72, 0.74], dtype=np.float32) * cen_a[:, :, None]
-    return _compose_marker_base(d, d_sh, fill, (74, 14, 22), outline_w=0.028)
+    return _compose_marker_base(d, d_sh, fill, (64, 10, 18), outline_w=0.034)
 
 
 def render_raid_mark8():
-    """Mark8 — 骷髅 (Skull): Crisp pearl-white modern flat skull with hollow eyes, nose & teeth."""
+    """Mark8 — 骷髅 (Skull): Bold ~88% pearl-white modern flat skull with hollow eyes, nose & teeth."""
     def skull_sdf(x, y):
-        # Upper cranium dome
-        d_top = _sd_ellipse_approx(x, y, 0.0, -0.15, 0.655, 0.565)
-        # Tapered cheek/jaw block
-        d_jaw = sd_round_box(x, y, 0.0, 0.36, 0.415, 0.355, 0.115)
-        # Smooth organic blend between cranium & jaw
-        return _smin(d_top, d_jaw, 0.12)
+        d_top = _sd_ellipse_approx(x, y, 0.0, -0.17, 0.75, 0.645)
+        d_jaw = sd_round_box(x, y, 0.0, 0.41, 0.475, 0.405, 0.13)
+        return _smin(d_top, d_jaw, 0.135)
 
     d = skull_sdf(RX, RY)
-    d_sh = skull_sdf(RX, RY - 0.045)
-    fill = _vgrad(RY, -0.72, 0.72, (252, 253, 255), (206, 214, 228))
+    d_sh = skull_sdf(RX, RY - 0.036)
+    fill = _vgrad(RY, -0.82, 0.82, (252, 253, 255), (206, 214, 228))
 
-    # Eye sockets (slightly oval, clean deep dark charcoal)
-    d_eye_l = _sd_ellipse_approx(RX, RY, -0.255, -0.025, 0.158, 0.168)
-    d_eye_r = _sd_ellipse_approx(RX, RY,  0.255, -0.025, 0.158, 0.168)
+    d_eye_l = _sd_ellipse_approx(RX, RY, -0.29, -0.03, 0.182, 0.192)
+    d_eye_r = _sd_ellipse_approx(RX, RY,  0.29, -0.03, 0.182, 0.192)
     d_eyes = np.minimum(d_eye_l, d_eye_r)
 
-    # Nose cavity (clean inverted teardrop / rounded triangle)
-    nose_pts = [(0.0, 0.115), (-0.095, 0.305), (0.095, 0.305)]
-    d_nose = _sd_polygon(RX, RY, nose_pts) - 0.018
+    nose_pts = [(0.0, 0.13), (-0.108, 0.35), (0.108, 0.35)]
+    d_nose = _sd_polygon(RX, RY, nose_pts) - 0.020
 
-    # Three crisp vertical jaw teeth slots rising from bottom edge
-    d_t1 = sd_segment(RX, RY, -0.175, 0.49, -0.175, 0.80) - 0.036
-    d_t2 = sd_segment(RX, RY,  0.000, 0.49,  0.000, 0.80) - 0.036
-    d_t3 = sd_segment(RX, RY,  0.175, 0.49,  0.175, 0.80) - 0.036
+    d_t1 = sd_segment(RX, RY, -0.200, 0.56, -0.200, 0.89) - 0.042
+    d_t2 = sd_segment(RX, RY,  0.000, 0.56,  0.000, 0.89) - 0.042
+    d_t3 = sd_segment(RX, RY,  0.200, 0.56,  0.200, 0.89) - 0.042
     d_teeth = np.minimum(np.minimum(d_t1, d_t2), d_t3)
 
     d_features = np.minimum(np.minimum(d_eyes, d_nose), d_teeth)
@@ -899,7 +882,7 @@ def render_raid_mark8():
     feat_col = np.array([17, 20, 28], dtype=np.float32) / 255.0
     fill = fill * (1.0 - feat_a[:, :, None]) + feat_col * feat_a[:, :, None]
 
-    return _compose_marker_base(d, d_sh, fill, (16, 19, 26), outline_w=0.028)
+    return _compose_marker_base(d, d_sh, fill, (14, 17, 24), outline_w=0.034)
 
 
 RAID_MARK_RENDERERS = [
@@ -943,7 +926,7 @@ def generate_raid_marker_atlas():
 
     atlas_master_cell = 512  # Build 2048x2048 master atlas -> 1024x1024 base mip for ultra-crisp Lanczos AA
     atlas_master = np.zeros((atlas_master_cell * 4, atlas_master_cell * 4, 4), dtype=np.float32)
-    pad_sz = 468  # ~91.4% inside 512px master cell (generous 22px safety border per side -> zero mip cell bleed!)
+    pad_sz = 488  # ~95.3% inside 512px master cell (12px safety border per side -> 0 mip cell bleed & ~88% icon fill!)
     off = (atlas_master_cell - pad_sz) // 2
 
     for idx, fn in enumerate(RAID_MARK_RENDERERS, start=1):

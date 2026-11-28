@@ -415,13 +415,13 @@ def run_all():
         mb = F.Modules.Get('markBar')
         mb.SetEnabled(mb, False)
         mb.SetEnabled(mb, True)
-        mb.ApplyOverheadSize(mb, 40)
         st = lua.globals().__TEST_MARK_STATE
         prof = st.prof
-        assert prof.raidMarkerSize == 40 and prof.raidMarkerCoreSize == 40, f'EUI 敌方板未同步: {prof.raidMarkerSize}/{prof.raidMarkerCoreSize}'
-        assert prof.nameRaidMarkerSize == 40, f'nameRaidMarkerSize 未同步: {prof.nameRaidMarkerSize}'
+        assert mb.OVERHEAD_MARKER_SIZE == 40, f'固定 1:1 标记常量应为 40: {mb.OVERHEAD_MARKER_SIZE}'
+        assert prof.raidMarkerSize == 40 and prof.raidMarkerCoreSize == 40, f'EUI 敌方板未自动同步 40px: {prof.raidMarkerSize}/{prof.raidMarkerCoreSize}'
+        assert prof.nameRaidMarkerSize == 40, f'nameRaidMarkerSize 未自动同步 40px: {prof.nameRaidMarkerSize}'
         assert prof.nameRaidMarkerEnabled is False, 'raidMarkerPos="top" 时不应强制开启 nameRaidMarkerEnabled 导致重复标记'
-        assert abs(st.blizzNP.UnitFrame.RaidTargetFrame.GetWidth(st.blizzNP.UnitFrame.RaidTargetFrame) - 40) < 0.1, '友方仅名字板暴雪 RaidTargetFrame 未缩放'
+        assert abs(st.blizzNP.UnitFrame.RaidTargetFrame.GetWidth(st.blizzNP.UnitFrame.RaidTargetFrame) - 40) < 0.1, '友方仅名字板暴雪 RaidTargetFrame 未缩放至 40px'
         assert abs(st.enemyNP.UnitFrame.RaidTargetFrame.GetWidth(st.enemyNP.UnitFrame.RaidTargetFrame) - 21.87) < 0.1, '已隐藏的敌方原生 UnitFrame 不应被误改'
 
         # Secret idx global hook check
@@ -430,24 +430,23 @@ def run_all():
             _G.__TEST_SECRET_TEX = t
             SetRaidTargetIconTexture(t, _G.__TEST_SECRET_IDX)
         ''')
-        # Target scale +50% -> 60px, then untarget -> 40px
-        mb.ApplyTargetScalePct(mb, 50)
-        assert abs(st.ep.raidFrame.GetWidth(st.ep.raidFrame) - 60) < 0.1, f'目标放大未生效: {st.ep.raidFrame.GetWidth(st.ep.raidFrame)}'
-        assert st.ep.raidFrame._npSz == 60 and st.ep.raidFrame._kkScaledExtra == 20, '目标放大未同步 _npSz/_kkScaledExtra 给呼吸箭头避让'
-        lua.execute('_G.UnitExists = function(u) return u == "player" end')
-        mock.FireEvent('PLAYER_TARGET_CHANGED')
-        assert abs(st.ep.raidFrame.GetWidth(st.ep.raidFrame) - 40) < 0.1, '取消目标后标记未还原'
+        # MarkBar button icon size adjustment (16..32px)
+        new_btn_sz = mb.ApplyBarIconSize(mb, 28)
+        assert new_btn_sz == 28 and mb.GetDB(mb).iconSize == 28, f'标记条按钮大小调整失败: {new_btn_sz}'
+        bar_h_28 = lua.eval('_G.kkowoUI_MarkBar and _G.kkowoUI_MarkBar:GetHeight() or 0')
+        mb.ApplyBarIconSize(mb, 20)
+        bar_h_20 = lua.eval('_G.kkowoUI_MarkBar and _G.kkowoUI_MarkBar:GetHeight() or 0')
+        assert bar_h_28 > bar_h_20 + 6, f'标记条高度未随按钮图标大小缩放: h28={bar_h_28}, h20={bar_h_20}'
 
         # Disable restore check
         mb.SetEnabled(mb, False)
         assert prof.raidMarkerSize == 24 and prof.raidMarkerCoreSize == 24 and prof.nameRaidMarkerSize == 14 and prof.nameRaidMarkerEnabled is False, \
             f'关闭模块未无损还原 EUI 原值: {prof.raidMarkerSize}/{prof.raidMarkerCoreSize}/{prof.nameRaidMarkerSize}/{prof.nameRaidMarkerEnabled}'
         assert abs(st.blizzNP.UnitFrame.RaidTargetFrame.GetWidth(st.blizzNP.UnitFrame.RaidTargetFrame) - 21.87) < 0.1, '关闭模块未还原暴雪 RaidTargetFrame 原尺寸'
-        mb.ApplyTargetScalePct(mb, 0)
         mb.SetEnabled(mb, True)
-        return '敌方/友方/仅名字板/机密值/目标+50%放大与还原/关闭无损恢复全部通过'
+        return '敌方/友方/仅名字板 1:1(40px)自动同步 + 机密值 + 标记条按钮缩放 + 关闭无损还原全部通过'
 
-    check('任务 B：头顶标记统一同步、目标放大与关闭还原', t_raid_markers)
+    check('任务 B：头顶标记 1:1 自动同步、标记条按钮缩放与关闭还原', t_raid_markers)
 
     # 10. Runtime translation injection & official-first priority
     def t_runtime_translations():

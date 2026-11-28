@@ -18,7 +18,7 @@ local GameTooltip = _G.GameTooltip
 
 local mod = F.RegisterModule("markBar", {
     title = "快捷标记条",
-    desc = "提供快捷标记条、高清重绘标记与姓名板标记大小统一调节。",
+    desc = "提供快捷标记条、高清放大团队标记（头顶与目标自动 1:1 同步）与可调标记条按钮大小。",
     group = "combat",
     order = 40,
     defaults = {
@@ -31,24 +31,25 @@ local mod = F.RegisterModule("markBar", {
         idleAlpha = 0.78,
         combatFade = false,
         v4NoCombatFadeMigrated = false,
-        iconSize = 20,
-        overheadSize = 36,        -- 头顶 / 姓名板团队标记尺寸（默认 36px，接近角色自身头顶暴雪默认 3D 标记）
-        targetMarkerScalePct = 0, -- 当前目标标记额外放大百分比（默认 0%，范围 0~100%）
+        iconSize = 20,            -- 快捷标记条按钮图标大小（16~32px，可自由调节）
         savedEUIRaidMarker = nil, -- 备份 EUI 姓名板原标记尺寸，关闭模块时无损还原
         pullSeconds = 10,
     },
 })
+
+-- 固定 1:1 校准常量：与角色自身头顶 3D 暴雪标记常规视距下视觉 1:1 持平（清晰醒目，无需手动调滑块）
+local OVERHEAD_MARKER_SIZE = 40
+mod.OVERHEAD_MARKER_SIZE = OVERHEAD_MARKER_SIZE
 
 local MARK_DIR = F.MEDIA .. "MarkBar\\"
 local RAID_ATLAS = MARK_DIR .. "UI-RaidTargetingIcons.blp"
 local globalIconHooked = false
 local euiRefreshHooked = false
 local restoringMarkers = false
-local pendingCombatTargetScale = false
+local pendingCombatBlizzRestore = false
 -- 记录被换成现代图集的贴图：GetTexture() 返回值会被引擎规范化（且 12.x 可能是机密值），不能拿路径字符串比较
 local replacedRaidTex = setmetatable({}, { __mode = "k" })
 local origBlizzRaidSize = setmetatable({}, { __mode = "k" })
-local scaledTargetMarkers = setmetatable({}, { __mode = "k" })
 
 -- 关闭像素网格吸附与 texel 偏置：放大后的团队标记（尤其在移动的 3D 姓名板上）按子像素平滑采样，消除锯齿抖动
 local function DisablePixelSnap(tex)
@@ -135,16 +136,6 @@ local function RetexturePlate(plate, wantModern)
     RetextureRaidTex(plate.nameRaid, wantModern)
 end
 
-local function GetConfiguredOverheadSize()
-    local raw = F.PlainNumber(mod:GetDB().overheadSize, 36) or 36
-    return math_max(16, math_min(64, math_floor(raw + 0.5)))
-end
-
-local function GetTargetMarkerScalePct()
-    local raw = F.PlainNumber(mod:GetDB().targetMarkerScalePct, 0) or 0
-    return math_max(0, math_min(100, math_floor(raw + 0.5)))
-end
-
 local function IsSafeObj(obj)
     if not obj then return false end
     if obj.IsForbidden then
@@ -166,159 +157,7 @@ local function IsBlizzUFVisiblyActive(uf)
     return true
 end
 
-local function RefreshPlateArrows(plate, npNS)
-    if not plate then return end
-    if npNS and type(npNS.PositionArrowsOutsideAuras) == "function" then
-        pcall(npNS.PositionArrowsOutsideAuras, plate)
-    end
-    if type(F._RefreshNameplateMotionArrows) == "function" then
-        pcall(F._RefreshNameplateMotionArrows, plate)
-    end
-end
-
-local function RestoreScaledTargetMarkers(exceptObj)
-    local inCombatNow = _G.InCombatLockdown and _G.InCombatLockdown()
-    local npNS = GetEUINameplateNS()
-    local toClear = {}
-    for obj, info in pairs(scaledTargetMarkers) do
-        if obj ~= exceptObj then
-            if info.kind == "blizz" then
-                if inCombatNow then
-                    pendingCombatTargetScale = true
-                else
-                    if IsSafeObj(obj) and obj.SetSize then
-                        pcall(obj.SetSize, obj, info.baseW, info.baseH)
-                    end
-                    toClear[#toClear + 1] = obj
-                end
-            else
-                if IsSafeObj(obj) and obj.SetSize then
-                    pcall(obj.SetSize, obj, info.baseW, info.baseH)
-                end
-                if info.kind == "plate" and info.plate then
-                    if info.obj == info.plate.raidFrame then
-                        info.plate.raidFrame._npSz = info.baseW
-                        info.plate.raidFrame._kkScaledExtra = nil
-                    end
-                    RefreshPlateArrows(info.plate, npNS)
-                end
-                toClear[#toClear + 1] = obj
-            end
-        end
-    end
-    for _, obj in ipairs(toClear) do
-        scaledTargetMarkers[obj] = nil
-    end
-end
-
--- 当前目标标记额外放大：战斗中只改插件自建框体/贴图（plate.raidFrame / overlay.raid），绝不碰受保护的暴雪 RaidTargetFrame
-local function ApplyTargetMarkerScale(restore)
-    local pct = GetTargetMarkerScalePct()
-    if restore or (not mod._active) or pct <= 0 then
-        RestoreScaledTargetMarkers(nil)
-        return
-    end
-    local okE, exists = false, false
-    if _G.UnitExists then okE, exists = pcall(_G.UnitExists, "target") end
-    if not (okE and not F.IsSecret(exists) and exists == true) then
-        RestoreScaledTargetMarkers(nil)
-        return
-    end
-
-    local baseSz = GetConfiguredOverheadSize()
-    local targetSz = math_floor(baseSz * (1 + pct / 100) + 0.5)
-    local npNS = GetEUINameplateNS()
-    local inCombatNow = _G.InCombatLockdown and _G.InCombatLockdown()
-    local activeObj = nil
-
-    -- 1) 定位当前目标对应的姓名板 token
-    local targetNP = nil
-    if _G.C_NamePlate and _G.C_NamePlate.GetNamePlateForUnit then
-        local okN, np = pcall(_G.C_NamePlate.GetNamePlateForUnit, "target")
-        if okN and IsSafeObj(np) then targetNP = np end
-    end
-    local unitToken = targetNP and F.PlainString(targetNP.namePlateUnitToken or (targetNP.UnitFrame and targetNP.UnitFrame.unit), nil) or nil
-
-    local function FindUnitInTable(tbl)
-        if type(tbl) ~= "table" then return nil end
-        if unitToken and tbl[unitToken] then return tbl[unitToken] end
-        if _G.UnitIsUnit then
-            for u, pl in pairs(tbl) do
-                local okU, same = pcall(_G.UnitIsUnit, u, "target")
-                if okU and not F.IsSecret(same) and same == true then
-                    return pl
-                end
-            end
-        end
-        return nil
-    end
-
-    local ep = npNS and FindUnitInTable(npNS.plates) or nil
-    local fp = npNS and FindUnitInTable(npNS.friendlyPlates) or nil
-
-    -- 2) 优先改插件自建的 EUI 敌方板 / 友方板（战斗内外均可即时生效）
-    local euiPlate = (ep and IsSafeObj(ep) and ep:IsShown() and ep)
-        or (fp and IsSafeObj(fp) and fp:IsShown() and fp) or nil
-    if euiPlate and euiPlate.raidFrame and IsSafeObj(euiPlate.raidFrame) and euiPlate.raidFrame.SetSize then
-        activeObj = euiPlate.raidFrame
-        local wasScaled = scaledTargetMarkers[activeObj] ~= nil
-        RestoreScaledTargetMarkers(activeObj)
-        scaledTargetMarkers[activeObj] = {
-            obj = activeObj, kind = "plate", plate = euiPlate, baseW = baseSz, baseH = baseSz,
-        }
-        pcall(activeObj.SetSize, activeObj, targetSz, targetSz)
-        activeObj._npSz = targetSz
-        activeObj._kkScaledExtra = targetSz - baseSz
-        RefreshPlateArrows(euiPlate, npNS)
-        if not wasScaled and targetSz > baseSz and F.Motion and F.Motion.PlayScalePop then
-            F.Motion.PlayScalePop(euiPlate.raid or activeObj, 1.12, 0.18)
-        end
-        return
-    end
-
-    -- 3) 友方 NPC 仅名字覆盖层（插件自建，战斗内外均安全）
-    if targetNP and targetNP.GetChildren then
-        local okC, children = pcall(function() return { targetNP:GetChildren() } end)
-        if okC and type(children) == "table" then
-            for _, ch in ipairs(children) do
-                if ch and ch ~= ep and ch ~= fp and IsSafeObj(ch) and ch.raid and IsSafeObj(ch.raid)
-                    and ch:IsShown() and ch.raid.SetSize then
-                    activeObj = ch.raid
-                    RestoreScaledTargetMarkers(activeObj)
-                    scaledTargetMarkers[activeObj] = {
-                        obj = activeObj, kind = "overlay", baseW = baseSz, baseH = baseSz,
-                    }
-                    pcall(activeObj.SetSize, activeObj, targetSz, targetSz)
-                    return
-                end
-            end
-        end
-    end
-
-    -- 4) 暴雪原生姓名板（含友方玩家「仅名字」板）：仅脱战时缩放
-    if targetNP then
-        local uf = targetNP.UnitFrame
-        local rtf = uf and uf.RaidTargetFrame
-        if IsBlizzUFVisiblyActive(uf) and IsSafeObj(rtf) and rtf.SetSize then
-            if inCombatNow then
-                pendingCombatTargetScale = true
-                RestoreScaledTargetMarkers(nil)
-            else
-                activeObj = rtf
-                RestoreScaledTargetMarkers(activeObj)
-                scaledTargetMarkers[activeObj] = {
-                    obj = activeObj, kind = "blizz", baseW = baseSz, baseH = baseSz,
-                }
-                pcall(rtf.SetSize, rtf, targetSz, targetSz)
-            end
-            return
-        end
-    end
-
-    RestoreScaledTargetMarkers(nil)
-end
-
--- 同步覆盖层（EUI 友方 NPC 仅名字覆盖层）与暴雪原生姓名板（含友方玩家「仅名字」板）的团队标记贴图及尺寸
+-- 同步覆盖层（EUI 友方 NPC 仅名字覆盖层）与暴雪原生姓名板（含友方玩家「仅名字」板）的团队标记贴图及固定 1:1 尺寸
 local function SyncNameplateChildMarkers(wantModern, sz, restore)
     local CNP = _G.C_NamePlate
     if not (CNP and CNP.GetNamePlates) then return end
@@ -376,7 +215,7 @@ local function SyncNameplateChildMarkers(wantModern, sz, restore)
                         pcall(rtf.SetSize, rtf, sz, sz)
                     end
                 elseif restore then
-                    pendingCombatTargetScale = true
+                    pendingCombatBlizzRestore = true
                 end
             end
         end
@@ -386,7 +225,6 @@ end
 local function SyncEUIPlateRaidIcons(unit)
     local ns = GetEUINameplateNS()
     local wantModern = mod._active and (mod:GetDB().iconPack or "modern") ~= "blizzard"
-    local sz = GetConfiguredOverheadSize()
     if ns then
         if unit then
             if type(ns.plates) == "table" then RetexturePlate(ns.plates[unit], wantModern) end
@@ -400,14 +238,13 @@ local function SyncEUIPlateRaidIcons(unit)
             end
         end
     end
-    SyncNameplateChildMarkers(wantModern, sz, not mod._active)
-    ApplyTargetMarkerScale(not mod._active)
+    SyncNameplateChildMarkers(wantModern, OVERHEAD_MARKER_SIZE, not mod._active)
 end
 
--- 将「标记大小」同步到 EUI 姓名板（敌方板 + 友方血条板 + 名字旁标记 + 友方 NPC 覆盖层）及暴雪原生/友方仅名字板
+-- 将固定 1:1 清晰大图标尺寸（40px）同步到 EUI 姓名板（敌方板 + 友方血条板 + 名字旁标记 + 友方 NPC 覆盖层）及暴雪原生/友方仅名字板
 local function SyncOverheadMarkerSize(restore)
     local db = mod:GetDB()
-    local sz = GetConfiguredOverheadSize()
+    local sz = OVERHEAD_MARKER_SIZE
     local wantModern = (not restore) and mod._active and (db.iconPack or "modern") ~= "blizzard"
     local npNS = GetEUINameplateNS()
     local p = GetEUINameplateProfile()
@@ -478,7 +315,6 @@ local function SyncOverheadMarkerSize(restore)
         end
     end
     SyncNameplateChildMarkers(wantModern, sz, restore == true)
-    ApplyTargetMarkerScale(restore == true)
     restoringMarkers = false
 end
 
@@ -690,7 +526,7 @@ local function LayoutAndStyle()
     local showBg = db.showBackdrop ~= false
     local useModern = (db.iconPack or "modern") ~= "blizzard"
 
-    local iconSz = math_max(14, math_floor(F.PlainNumber(db.iconSize, 20) + 0.5))
+    local iconSz = math_max(16, math_min(32, math_floor(F.PlainNumber(db.iconSize, 20) + 0.5)))
     local cellSz = iconSz + 6
     local gap = 2
     local padX = showBg and 6 or 2
@@ -967,7 +803,6 @@ function mod:OnEnable()
     end)
     self:RegisterEvent("PLAYER_TARGET_CHANGED", function()
         RefreshTargetMarkHighlight()
-        ApplyTargetMarkerScale(false)
     end)
     self:RegisterEvent("RAID_TARGET_UPDATE", function()
         RefreshTargetMarkHighlight()
@@ -979,19 +814,16 @@ function mod:OnEnable()
         if not u then return end
         C_Timer.After(0, function() if mod._active then SyncEUIPlateRaidIcons(u) end end)
     end)
-    self:RegisterEvent("NAME_PLATE_UNIT_REMOVED", function()
-        if mod._active then ApplyTargetMarkerScale(false) end
-    end)
-    -- 冲突优先权：本模块开启时以 kkowoUI 标记大小为准，避免在 EUI 面板里误调导致不同步
+    -- 冲突优先权：本模块开启时自动保持 1:1 清晰头顶标记尺寸（40px）与 EUI 姓名板同步
     local EUI = _G.EllesmereUI
     if (not euiRefreshHooked) and EUI and type(EUI.RegisterWidgetRefresh) == "function" then
         euiRefreshHooked = true
         pcall(EUI.RegisterWidgetRefresh, function()
             if restoringMarkers or not mod._active then return end
             local p = GetEUINameplateProfile()
-            local sz = GetConfiguredOverheadSize()
-            if p and (p.raidMarkerSize ~= sz or p.raidMarkerCoreSize ~= sz or p.nameRaidMarkerSize ~= sz) then
-                F.PrintOnce("markBarEuiPriority", "标记大小当前由 kkowoUI 统一管理，请在 kkowoUI「标记与标记条」中调节。")
+            if p and (p.raidMarkerSize ~= OVERHEAD_MARKER_SIZE
+                or p.raidMarkerCoreSize ~= OVERHEAD_MARKER_SIZE
+                or p.nameRaidMarkerSize ~= OVERHEAD_MARKER_SIZE) then
                 SyncOverheadMarkerSize(false)
             end
         end)
@@ -1020,7 +852,7 @@ function mod:OnEnable()
     self:RegisterEvent("PLAYER_REGEN_ENABLED", function()
         inCombat = false
         if mod:GetDB().combatFade == true then SyncAlpha(false) end
-        pendingCombatTargetScale = false
+        pendingCombatBlizzRestore = false
         SyncEUIPlateRaidIcons()
     end)
 end
@@ -1031,22 +863,20 @@ function mod:OnDisable()
     -- 停用后把姓名板标记尺寸（含敌方/友方/仅名字板）与已换掉的全部团队标记还原成原状
     SyncOverheadMarkerSize(true)
     SyncAllRaidIcons()
-    local needDeferredBlizzRestore = pendingCombatTargetScale
+    local needDeferredBlizzRestore = pendingCombatBlizzRestore
         or (_G.InCombatLockdown and _G.InCombatLockdown())
         or next(origBlizzRaidSize) ~= nil
-        or next(scaledTargetMarkers) ~= nil
     if needDeferredBlizzRestore then
         F.RunOutOfCombat("FUI_MarkBarRestoreBlizz", function()
             if not mod._active then
-                pendingCombatTargetScale = false
-                RestoreScaledTargetMarkers(nil)
+                pendingCombatBlizzRestore = false
                 for rtf, orig in pairs(origBlizzRaidSize) do
                     if IsSafeObj(rtf) and rtf.SetSize and type(orig) == "table" then
                         pcall(rtf.SetSize, rtf, orig[1], orig[2])
                     end
                     origBlizzRaidSize[rtf] = nil
                 end
-                SyncNameplateChildMarkers(false, GetConfiguredOverheadSize(), true)
+                SyncNameplateChildMarkers(false, OVERHEAD_MARKER_SIZE, true)
             end
         end)
     end
@@ -1061,18 +891,11 @@ function mod:OnDisable()
     end
 end
 
-function mod:ApplyOverheadSize(sz)
+function mod:ApplyBarIconSize(sz)
     local db = self:GetDB()
-    db.overheadSize = math_max(16, math_min(64, math_floor((F.PlainNumber(sz, 36) or 36) + 0.5)))
-    SyncOverheadMarkerSize(false)
-    return db.overheadSize
-end
-
-function mod:ApplyTargetScalePct(pct)
-    local db = self:GetDB()
-    db.targetMarkerScalePct = math_max(0, math_min(100, math_floor((F.PlainNumber(pct, 0) or 0) + 0.5)))
-    ApplyTargetMarkerScale(false)
-    return db.targetMarkerScalePct
+    db.iconSize = math_max(16, math_min(32, math_floor((F.PlainNumber(sz, 20) or 20) + 0.5)))
+    LayoutAndStyle()
+    return db.iconSize
 end
 
 function mod:OnThemeChanged()
@@ -1085,7 +908,7 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     _, h = W:DualRow(parent, y, enableSlot, {
         type = "dropdown",
         text = "标记图标风格",
-        tooltip = "可选现代矢量重绘标记，或切回暴雪原版团队标记图标。",
+        tooltip = "可选高清放大矢量重绘标记（目标与人物头顶自动 1:1 清晰对齐），或切回暴雪原版。",
         values = {
             modern   = "现代扁平矢量重绘（推荐）",
             blizzard = "经典暴雪原版标记",
@@ -1098,43 +921,22 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
 
     _, h = W:DualRow(parent, y, {
         type = "slider",
-        text = "标记大小 (px)",
-        tooltip = "统一调节敌友与仅名字板标记，自己头顶由游戏绘制无法调整。",
-        min = 16, max = 64, step = 1,
-        getValue = function() return GetConfiguredOverheadSize() end,
-        setValue = function(v)
-            db.overheadSize = math_max(16, math_min(64, math_floor((v or 36) + 0.5)))
-            SyncOverheadMarkerSize(false)
-        end,
+        text = "按钮图标大小 (px)",
+        tooltip = "调节快捷标记条本身的按钮图标大小（16~32px）；头顶与目标标记已自动锁定 1:1 清晰大图标。",
+        min = 16, max = 32, step = 1,
+        getValue = function() return F.PlainNumber(db.iconSize, 20) or 20 end,
+        setValue = function(v) mod:ApplyBarIconSize(v) end,
     }, {
         type = "slider",
-        text = "当前目标放大 (%)",
-        tooltip = "选中目标时额外放大其姓名板标记，切换目标自动还原。默认 0%。",
-        min = 0, max = 100, step = 5,
-        getValue = function() return GetTargetMarkerScalePct() end,
-        setValue = function(v)
-            mod:ApplyTargetScalePct(v)
-        end,
+        text = "开怪倒数 (秒)",
+        min = 3, max = 20, step = 1,
+        getValue = function() return db.pullSeconds or 10 end,
+        setValue = function(v) db.pullSeconds = v; RefreshActionMacros() end,
     })
     y = y - h
 
     local function buildAdv(w, p, curY)
         local _, rh
-        _, rh = w:DualRow(p, curY, {
-            type = "slider",
-            text = "按钮图标大小 (px)",
-            min = 16, max = 28, step = 1,
-            getValue = function() return db.iconSize or 20 end,
-            setValue = function(v) db.iconSize = v; LayoutAndStyle() end,
-        }, {
-            type = "slider",
-            text = "开怪倒数 (秒)",
-            min = 3, max = 20, step = 1,
-            getValue = function() return db.pullSeconds or 10 end,
-            setValue = function(v) db.pullSeconds = v; RefreshActionMacros() end,
-        })
-        curY = curY - rh
-
         _, rh = w:DualRow(p, curY, {
             type = "toggle",
             text = "显示玻璃托底",
