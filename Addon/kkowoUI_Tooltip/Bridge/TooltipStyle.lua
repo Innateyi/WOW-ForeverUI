@@ -180,12 +180,13 @@ local function NormalizeInlineIcons(text, fontSize, isMoney)
     local arrowSz = math_max(10, iconSz - 1)
 
     local s = text
-    -- 1) 规范化 |Tpath:...|t 贴图尺寸与基线（xoff=0, yoff=1，消除硬币与箭头下沉及右缘错位）
+    -- 1) 规范化 |Tpath:...|t 贴图尺寸与基线：
+    --    硬币采用 xoff=1, yoff=1（与数字紧密贴合且不触发词间换行，消除 "33 / [铜币])" 孤儿隔行）
     s = s:gsub("|T([^:|]+)[^|]*|t", function(path)
         local low = string_lower(path)
         if low:find("moneyframe", 1, true)
             and (low:find("goldicon", 1, true) or low:find("silvericon", 1, true) or low:find("coppericon", 1, true)) then
-            return string_format("|T%s:%d:%d:0:1|t", path, coinSz, coinSz)
+            return string_format("|T%s:%d:%d:1:1|t", path, coinSz, coinSz)
         end
         if low:find("arrow", 1, true) then
             return string_format("|T%s:%d:%d:0:1|t", path, arrowSz, arrowSz)
@@ -197,7 +198,7 @@ local function NormalizeInlineIcons(text, fontSize, isMoney)
     s = s:gsub("|A:([^:|]+)[^|]*|a", function(atlas)
         local low = string_lower(atlas)
         if low:find("^coin%-") then
-            return string_format("|A:%s:%d:%d:0:1|a", atlas, coinSz, coinSz)
+            return string_format("|A:%s:%d:%d:1:1|a", atlas, coinSz, coinSz)
         end
         if low:find("arrow", 1, true) then
             return string_format("|A:%s:%d:%d:0:1|a", atlas, arrowSz, arrowSz)
@@ -205,16 +206,19 @@ local function NormalizeInlineIcons(text, fontSize, isMoney)
         return string_format("|A:%s:%d:%d:0:1|a", atlas, iconSz, iconSz)
     end)
 
-    -- 3) 补足数字与硬币图标之间的单半角空格，统一多组硬币间距并去掉尾随空格
+    -- 3) 去掉数字与紧随硬币图标之间的换行断点空格（靠 xoff=1 留出精致 1px 呼吸感），
+    --    并在硬币图标与下一组金额数字之间保持单个半角空格，杜绝多币值粘连与孤儿换行
     if isMoney or s:find("MoneyFrame", 1, true) or s:find("|A:coin%-", 1, false) then
-        s = s:gsub("(%d)(|TInterface[\\/]MoneyFrame[\\/]UI%-)", "%1 %2")
-        s = s:gsub("(%d|r)(|TInterface[\\/]MoneyFrame[\\/]UI%-)", "%1 %2")
-        s = s:gsub("(%d)(|A:coin%-)", "%1 %2")
-        s = s:gsub("(%d|r)(|A:coin%-)", "%1 %2")
+        s = s:gsub("(%d)%s+(|TInterface[\\/]MoneyFrame[\\/]UI%-)", "%1%2")
+        s = s:gsub("(%d|r)%s+(|TInterface[\\/]MoneyFrame[\\/]UI%-)", "%1%2")
+        s = s:gsub("(%d)%s+(|A:coin%-)", "%1%2")
+        s = s:gsub("(%d|r)%s+(|A:coin%-)", "%1%2")
         s = s:gsub("(|t)(%d)", "%1 %2")
         s = s:gsub("(|a)(%d)", "%1 %2")
-        s = s:gsub("  +(|TInterface[\\/]MoneyFrame[\\/]UI%-)", " %1")
-        s = s:gsub("  +(|A:coin%-)", " %1")
+        s = s:gsub("(|t)(|c%x%x%x%x%x%x%x%x%d)", "%1 %2")
+        s = s:gsub("(|a)(|c%x%x%x%x%x%x%x%x%d)", "%1 %2")
+        s = s:gsub("(|t)  +(%d)", "%1 %2")
+        s = s:gsub("(|a)  +(%d)", "%1 %2")
     end
 
     -- 清理行尾多余空白（含 |cffffffff未知  |r 这类包裹在颜色码内的尾部空格）
@@ -329,6 +333,144 @@ local function DedupeVendorExtraRows(model)
     model.extras = kept
 end
 
+local FOOTER_DURABILITY_BAR = 54
+
+local function FooterRowText(row)
+    if type(row) ~= "table" then return "" end
+    local l = (type(row.left) == "string" and not F.IsSecret(row.left)) and row.left or ""
+    local r = (type(row.right) == "string" and not F.IsSecret(row.right)) and row.right or ""
+    if r ~= "" then return l .. " " .. r end
+    return l
+end
+
+local function FooterDurabilityColor(current, maximum)
+    local ratio = (maximum and maximum > 0) and (current / maximum) or 0
+    if current == 0 then return { 1, .34, .28 } end
+    if ratio < .25 then return { 1, .52, .25 } end
+    if ratio < .5 then return { .95, .76, .30 } end
+    return { .45, .80, .40 }
+end
+
+local function InstallSmartItemFooter(view, model, ctx)
+    if type(view.footer) ~= "table" then return end
+    local ui = (ctx and ctx.ui) or (ptNS and ptNS.ui)
+    local fStyle = ctx and ctx.styles and ctx.styles.footer
+    if not (type(ui) == "table" and type(ui.measureStyled) == "function"
+        and type(ui.styledAt) == "function" and type(ui.pad) == "function" and type(fStyle) == "table") then
+        return
+    end
+
+    local showSell = true
+    if ptNS and type(ptNS.option) == "function" then
+        local okS, val = pcall(ptNS.option, "sellPrice")
+        if okS and val == false then showSell = false end
+    end
+    local footerLeft = type(model.footerLeft) == "table" and model.footerLeft or {}
+    local footerRight = {}
+    if type(model.footerRight) == "table" then
+        for _, row in ipairs(model.footerRight) do
+            if showSell or not (type(row) == "table" and row.sellPrice == true) then
+                footerRight[#footerRight + 1] = row
+            end
+        end
+    end
+    if #footerLeft == 0 and #footerRight == 0 then return end
+
+    local colGap = F.PlainNumber(ui.COLUMN_GAP, 14) or 14
+    local padFn = ui.pad
+    local measureStyled = ui.measureStyled
+    local styledAt = ui.styledAt
+    local acquireTexture = ui.acquireTexture
+
+    -- 智能分配页脚左右列宽（零侵入 Vendor/）：
+    -- • 左侧为空时（如毛料等材料仅右列卖店价），右列可用至 100% 内宽，不再被原版 inner*0.6 强行截断隔行；
+    -- • 左右均有内容且总宽不超内宽时，两侧均拿足实际宽度单行展示；仅当确实超宽时按剩余空间弹性缩放。
+    view.footer.measure = function(panel)
+        local need = 0
+        local rowsN = math_max(#footerLeft, #footerRight)
+        for index = 1, rowsN do
+            local left = footerLeft[index]
+            local right = footerRight[index]
+            local leftW = 0
+            if left and left.durability then
+                local cur, mx = left.durability[1] or 0, left.durability[2] or 0
+                leftW = FOOTER_DURABILITY_BAR + 7 + measureStyled(panel, cur .. " / " .. mx, fStyle)
+            elseif left and left.left then
+                leftW = measureStyled(panel, left.left, fStyle)
+            end
+            local rightW = right and (measureStyled(panel, FooterRowText(right), fStyle) + 6) or 0
+            local gap = (left and right) and colGap or 0
+            need = math_max(need, leftW + gap + rightW)
+        end
+        return need
+    end
+
+    view.footer.draw = function(panel, y)
+        local p = padFn(panel)
+        local inner = math_max(60, (panel.width or 188) - 2 * p)
+        local fSize = F.PlainNumber(fStyle.size, 13) or 13
+        local rowsN = math_max(#footerLeft, #footerRight)
+        for index = 1, rowsN do
+            local left = footerLeft[index]
+            local right = footerRight[index]
+            local h1, h2 = 0, 0
+            local leftNeed = 0
+            if left and left.durability then
+                local cur, mx = left.durability[1] or 0, left.durability[2] or 0
+                leftNeed = FOOTER_DURABILITY_BAR + 7 + measureStyled(panel, cur .. " / " .. mx, fStyle) + 2
+            elseif left and left.left then
+                leftNeed = measureStyled(panel, left.left, fStyle) + 2
+            end
+
+            local rightWidth = 0
+            if right then
+                local content = FooterRowText(right)
+                local color = { .88, .78, .60 }
+                if right.requirement then
+                    color = right.met and { 1, 1, 1 } or { 1, .34, .28 }
+                end
+                local rightNeed = measureStyled(panel, content, fStyle) + 6
+                if not left then
+                    rightWidth = math_min(rightNeed, inner)
+                elseif leftNeed + colGap + rightNeed <= inner then
+                    rightWidth = rightNeed
+                else
+                    local maxForRight = math_max(36, inner - 36 - colGap)
+                    rightWidth = math_min(rightNeed, math_min(maxForRight, math_max(inner * 0.60, inner - leftNeed - colGap)))
+                end
+                h2 = styledAt(panel, content, panel.width - p - rightWidth, y, rightWidth, fStyle, color, "RIGHT")
+            end
+
+            if left and left.durability then
+                local cur, mx = left.durability[1] or 0, left.durability[2] or 0
+                local color = FooterDurabilityColor(cur, mx)
+                if type(acquireTexture) == "function" then
+                    local track = acquireTexture(panel, nil, 0)
+                    track:SetPoint("TOPLEFT", panel, "TOPLEFT", p, -(y + math_floor(fSize * 0.5)))
+                    track:SetSize(FOOTER_DURABILITY_BAR, 4)
+                    track:SetVertexColor(.16, .14, .13, 1)
+                    local fill = acquireTexture(panel, nil, 1)
+                    local wFill = mx > 0 and (FOOTER_DURABILITY_BAR * cur / mx) or 0
+                    fill:SetPoint("TOPLEFT", track, "TOPLEFT")
+                    fill:SetSize(math_max(wFill, 1), 4)
+                    fill:SetVertexColor(color[1], color[2], color[3], 1)
+                    if wFill < 1 then fill:Hide() end
+                end
+                local healthy = mx > 0 and (cur / mx) >= .5
+                local durTextW = right and math_max(40, inner - rightWidth - colGap - FOOTER_DURABILITY_BAR - 7)
+                    or math_max(90, fSize * 8)
+                h1 = styledAt(panel, cur .. " / " .. mx, p + FOOTER_DURABILITY_BAR + 7, y,
+                    durTextW, fStyle, healthy and { .82, .78, .71 } or color)
+            elseif left then
+                local availLeft = right and math_max(32, inner - rightWidth - colGap) or inner
+                h1 = styledAt(panel, left.left, p, y, availLeft, fStyle, left.color or { .82, .78, .71 })
+            end
+            y = y + math_max(h1, h2, fSize + 2) + 4
+        end
+        return y
+    end
+end
+
 local function FormatItemViewLayout(view, model, ctx)
     if type(view) ~= "table" or type(model) ~= "table" then return end
     local styles = ctx and ctx.styles
@@ -349,6 +491,9 @@ local function FormatItemViewLayout(view, model, ctx)
             end
         end
     end
+
+    -- 1b) 替换页脚宽分配器：消除左空右满仍被 inner*0.6 强行折行的问题
+    InstallSmartItemFooter(view, model, ctx)
 
     -- 2) 规范化附加区（Auctionator / Scales / 来源等）与分解价值区排版
     if type(view.sections) == "table" then
