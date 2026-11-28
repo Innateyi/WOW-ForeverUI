@@ -108,8 +108,8 @@ if (Test-Path -LiteralPath $wtfAccount) {
         } else {
             $newText = [regex]::Replace($text, '\b(ForeverUI|KkowoUI)(Char)?DB\b', 'kkowoUI${2}DB')   # 区分大小写
         }
-        # 保险：迁移结果里绝不允许出现把新变量置空的行或括号失衡
-        if ($newText -cmatch '(?m)^kkowoUI(Char)?DB = nil' -or -not (Test-LuaSvBalanced $newText)) {
+        # 保险：迁移结果里绝不允许出现把新变量（含录像存档 kkowoUIRecordDB）置空的行或括号失衡
+        if ($newText -cmatch '(?m)^kkowoUI(Char|Record)?DB = nil' -or -not (Test-LuaSvBalanced $newText)) {
             Write-Host "跳过 $($f.FullName)：迁移结果未通过语法/非空校验，保持原样。" -ForegroundColor Yellow
             continue
         }

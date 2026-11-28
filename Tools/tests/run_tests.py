@@ -2019,6 +2019,46 @@ def run_all():
             assert 'wow_running' in alc_src and 'BACKUP_ROOT' in alc_src, \
                 'Tools/apply_live_config.py 缺少游戏运行检测与备份保护（P45-16）'
 
+            # E) Recorder SV stripping in prepare_share_wtf.py & make_friend_pack.py + deploy.ps1 guard
+            psw_spec = importlib.util.spec_from_file_location('psw_test', str(REPO / 'Tools' / 'prepare_share_wtf.py'))
+            psw_mod = importlib.util.module_from_spec(psw_spec)
+            psw_spec.loader.exec_module(psw_mod)
+            mfp_spec = importlib.util.spec_from_file_location('mfp_test', str(REPO / 'Tools' / 'make_friend_pack.py'))
+            mfp_mod = importlib.util.module_from_spec(mfp_spec)
+            mfp_spec.loader.exec_module(mfp_mod)
+            sample_sv = (
+                '\nkkowoUIDB = {\n["version"] = 1,\n["modules"] = { ["immersiveHUD"] = { ["enabled"] = true, }, },\n}\n'
+                'kkowoUIRecordDB = {\n["schemaVersion"] = 1,\n["sessions"] = { { ["instanceName"] = "死亡矿井", }, },\n}\n'
+            )
+            scrubbed_mfp, dropped_mfp = mfp_mod.scrub_kkowo(sample_sv)
+            assert 'kkowoUIRecordDB' not in scrubbed_mfp and 'kkowoUIDB' in scrubbed_mfp and dropped_mfp >= 1, \
+                'make_friend_pack.scrub_kkowo 未剔除 kkowoUIRecordDB'
+            fake_acc = tmp_p / 'fake_acc'
+            (fake_acc / 'SavedVariables').mkdir(parents=True)
+            (fake_acc / 'SavedVariables' / 'kkowoUI.lua').write_text(sample_sv, encoding='utf-8')
+            fake_addons = tmp_p / 'fake_game' / 'Interface' / 'AddOns'
+            (fake_addons / 'kkowoUI').mkdir(parents=True)
+            old_game = psw_mod.GAME
+            old_bk = psw_mod.BACKUP_ROOT
+            try:
+                psw_mod.GAME = str(tmp_p / 'fake_game')
+                psw_mod.BACKUP_ROOT = str(bk)
+                _, keep_list, failed_list, removed_list = psw_mod.plan_account(str(fake_acc), set(), True)
+                assert not failed_list, f'prepare_share_wtf.plan_account 失败: {failed_list}'
+                sv_after = (fake_acc / 'SavedVariables' / 'kkowoUI.lua').read_text(encoding='utf-8')
+                assert 'kkowoUIRecordDB' not in sv_after and 'kkowoUIDB' in sv_after, \
+                    'prepare_share_wtf.plan_account 未剔除 kkowoUIRecordDB'
+                assert not psw_mod.residual_scan(str(fake_acc), set()), 'prepare_share_wtf 脱敏后仍残留可疑项'
+                # Verify residual_scan catches leaked kkowoUIRecordDB
+                (fake_acc / 'SavedVariables' / 'kkowoUI.lua').write_text(sample_sv, encoding='utf-8')
+                leaks = psw_mod.residual_scan(str(fake_acc), set())
+                assert any('kkowoUIRecordDB' in x or '录像' in x for x in leaks), 'residual_scan 未拦截泄漏的 kkowoUIRecordDB'
+            finally:
+                psw_mod.GAME = old_game
+                psw_mod.BACKUP_ROOT = old_bk
+            dep_src = (REPO / 'Tools' / 'deploy.ps1').read_text(encoding='utf-8')
+            assert 'kkowoUI(Char|Record)?DB = nil' in dep_src, 'deploy.ps1 缺少 kkowoUIRecordDB 防置空保护'
+
         return '工具脚本零违规删除(sync_vendored_tooltip保留中文/install_mmo_fonts/prepare_share_wtf/apply_live_config)全部通过'
 
     check('阶段5-22：阶段 4.5 工具脚本防删与完整性测试', t_phase45_tools_no_delete)
