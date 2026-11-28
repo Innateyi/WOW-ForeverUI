@@ -18,3 +18,4 @@ CastbarMotion.lua
 SwingTimerMotion.lua
 ActionBarMotion.lua
 NameplateMotion.lua
+MotionDemo.lua

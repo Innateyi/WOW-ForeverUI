@@ -174,6 +174,13 @@ _G.SlashCmdList.KKOWOUI = function(msg)
             return
         end
     end
+    if cmd == "motion" then
+        if F.MotionDemo and type(F.MotionDemo.HandleSlash) == "function" then
+            local _, rest = raw:match("^(%S+)%s*(.*)$")
+            F.MotionDemo.HandleSlash(rest)
+            return
+        end
+    end
     if cmd == "" then
         local EUI = _G.EllesmereUI
         if EUI and EUI.OpenPlugin then

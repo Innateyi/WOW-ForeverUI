@@ -3216,6 +3216,99 @@ def run_all():
 
     check('第二批条形动效与贴图升级（2a~2h + 2-T 行为与零污染校验）', t_batch2_motion_fx)
 
+    # 28. Step 3: /kk motion demo OOC comparison panel behavioral & resource cleanup test
+    def t_motion_demo():
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(2.0, 4)
+
+        pre_ou = len(list(m_env.GetActiveOnUpdates().values()))
+        pre_db_intensity = str(l_env.eval('kkowoUI.Modules.Get("motionFX"):GetDB().intensity'))
+
+        # 1) Combat refusal
+        m_env.SetInCombat(True)
+        m_env.ClearPrints()
+        m_env.RunSlash('/kk', 'motion demo')
+        prints = ' '.join(str(x) for x in m_env.GetPrints().values())
+        assert '脱战' in prints, f'战斗中执行 /kk motion demo 应提示脱战后再用，实际={prints}'
+        assert l_env.eval('kkowoUI.MotionDemo.IsOpen()') is False, '战斗中绝不能打开演示面板'
+        m_env.SetInCombat(False)
+
+        # 2) Open OOC & verify K12 + 19 scripts + intensity switch does not mutate F.db
+        m_env.RunSlash('/kk', 'motion demo')
+        open_chk = l_env.eval('''(function()
+            local f = _G.kkowoUI_MotionDemoFrame
+            local nScripts = #kkowoUI.MotionDemo.GetScripts()
+            local nonBtnMouse = 0
+            local btnCount = 0
+            local function walk(node)
+                for _, ch in ipairs({ node:GetChildren() }) do
+                    local ot = ch.GetObjectType and ch:GetObjectType() or ""
+                    if ot == "Button" then
+                        btnCount = btnCount + 1
+                    else
+                        if ch.IsMouseClickEnabled and ch:IsMouseClickEnabled() then
+                            nonBtnMouse = nonBtnMouse + 1
+                        end
+                    end
+                    walk(ch)
+                end
+            end
+            walk(f)
+            return {
+                shown = f:IsShown(),
+                rootMouse = f:IsMouseClickEnabled(),
+                nonBtnMouse = nonBtnMouse,
+                btnCount = btnCount,
+                nScripts = nScripts,
+            }
+        end)()''')
+        assert open_chk.shown and (not open_chk.rootMouse) and open_chk.nonBtnMouse == 0, f'演示面板 K12 鼠标透传违规: {open_chk}'
+        assert open_chk.nScripts == 19 and open_chk.btnCount >= 24, f'演示面板应包含全部 19 个剧本与控制按钮: {open_chk}'
+
+        # Toggle demo intensity off -> soft -> standard -> verify user DB untouched
+        for lvl in ('off', 'soft', 'standard'):
+            l_env.execute(f'kkowoUI.MotionDemo.SetIntensity("{lvl}")')
+            assert str(l_env.eval('kkowoUI.MotionDemo.GetIntensity()')) == lvl
+            assert str(l_env.eval('kkowoUI.Modules.Get("motionFX"):GetDB().intensity')) == pre_db_intensity, '演示面板不得改动真实用户配置'
+
+        # 3) PlayAll across all 19 scripts + individual script playback -> 0 errors
+        l_env.execute('kkowoUI.MotionDemo.PlayAll()')
+        for _ in range(32):
+            m_env.StepTime(0.85, 4)
+        l_env.execute('kkowoUI.MotionDemo.PlayScript("cast_interrupt")')
+        m_env.StepTime(1.6, 6)
+        l_env.execute('kkowoUI.MotionDemo.PlayScript("plate_outline")')
+        m_env.StepTime(0.6, 4)
+
+        # 4) Entering combat auto-closes cleanly
+        m_env.SetInCombat(True)
+        m_env.FireEvent('PLAYER_REGEN_DISABLED')
+        m_env.StepTime(0.1, 1)
+        assert l_env.eval('kkowoUI.MotionDemo.IsOpen()') is False, '演示中进战必须立即自动关闭'
+        assert l_env.eval('_G.kkowoUI_MotionDemoFrame:IsShown()') is False, '自动关闭后必须严格 Hide'
+        m_env.SetInCombat(False)
+
+        # 5) Re-open, play script, close via slash -> 0 leftover shown frames, OnUpdate count restored to pre-open
+        m_env.RunSlash('/kk', 'motion demo')
+        l_env.execute('kkowoUI.MotionDemo.PlayScript("fade_curve")')
+        m_env.StepTime(0.2, 2)
+        m_env.RunSlash('/kk', 'motion close')
+        m_env.StepTime(0.2, 2)
+
+        post_ou = len(list(m_env.GetActiveOnUpdates().values()))
+        post_ticks = int(l_env.eval('kkowoUI.Motion.GetActiveTextTickCount()'))
+        demo_shown = bool(l_env.eval('_G.kkowoUI_MotionDemoFrame:IsShown()'))
+        assert (not demo_shown) and post_ou <= pre_ou and post_ticks == 0, (
+            f'关闭演示后应无残留框体且 OnUpdate/TextTick 归位: shown={demo_shown}, preOU={pre_ou}, postOU={post_ou}, ticks={post_ticks}'
+        )
+        return f'脱战校验/战斗自动关闭/19项剧本连播/3档强度不改配置/K12仅按钮可点/关闭Hide且OnUpdate归位({pre_ou}->{post_ou}) 全部通过'
+
+    check('演示命令 /kk motion demo（脱战新旧对比与零残留回收）', t_motion_demo)
+
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0
 

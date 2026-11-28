@@ -587,6 +587,106 @@ local function BuildCastbarOverlay()
     RefreshOverlayChrome()
 end
 
+-- 供 /kk motion demo 复用与真实施法条一致的构建样式（完全独立副本，绝不触碰真实 overlay/ghostFrame）
+function F._BuildDemoCastbar(parent, w, h, fxOverride)
+    w = w or 186
+    h = h or 16
+    local f = CreateFrame("Frame", nil, parent)
+    f:SetSize(w, h)
+    f:EnableMouse(false)
+
+    local barHost = CreateFrame("Frame", nil, f)
+    barHost:SetAllPoints(f)
+    barHost:EnableMouse(false)
+    f._barHost = barHost
+
+    local bg = barHost:CreateTexture(nil, "BACKGROUND", nil, -6)
+    bg:SetAllPoints()
+    bg:SetTexture(ST.TEX.FLAT)
+    local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
+    bg:SetVertexColor(r1 * 0.14 + 0.06, g1 * 0.14 + 0.06, b1 * 0.14 + 0.08, 0.44)
+    f._bg = bg
+
+    local sb = CreateFrame("StatusBar", nil, barHost)
+    sb:SetAllPoints()
+    local fillTexPath = ST.GetBarFillTexture and ST.GetBarFillTexture(false, fxOverride) or ST.TEX.FLAT
+    sb:SetStatusBarTexture(fillTexPath)
+    sb._kkFillPath = fillTexPath
+    sb:SetMinMaxValues(0, 1)
+    sb:SetValue(0)
+    sb:EnableMouse(false)
+    if M.DisablePixelSnap then M.DisablePixelSnap(sb) end
+    local sbFill = sb:GetStatusBarTexture()
+    if sbFill and M.DisablePixelSnap then M.DisablePixelSnap(sbFill) end
+    f._bar = sb
+
+    f._spark = M.AttachEdgeSpark(sb, { width = 18, extraHeight = 4, a = 0.94, levelOffset = 4, fxOverride = fxOverride })
+    if f._spark and f._spark._spark and M.DisablePixelSnap then
+        M.DisablePixelSnap(f._spark._spark)
+    end
+
+    local textHost = CreateFrame("Frame", nil, f)
+    textHost:SetAllPoints(f)
+    textHost:SetFrameLevel(sb:GetFrameLevel() + 6)
+    textHost:EnableMouse(false)
+    f._textHost = textHost
+
+    local nameFS = textHost:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(nameFS, ST.FONT.caption, 0.96, 0.97, 0.99, 1)
+    nameFS:SetPoint("LEFT", barHost, "LEFT", 5, 0)
+    nameFS:SetJustifyH("LEFT")
+    nameFS:SetWordWrap(false)
+    f._nameFS = nameFS
+
+    local timeFS = textHost:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(timeFS, ST.FONT.caption, 0.94, 0.96, 0.99, 1)
+    timeFS:SetPoint("RIGHT", barHost, "RIGHT", -5, 0)
+    timeFS:SetJustifyH("RIGHT")
+    timeFS:SetWordWrap(false)
+    f._timeFS = timeFS
+
+    local g = CreateFrame("Frame", nil, f)
+    g:SetAllPoints(f)
+    g:SetFrameLevel(textHost:GetFrameLevel() + 2)
+    g:EnableMouse(false)
+    g:Hide()
+    local gFill = g:CreateTexture(nil, "ARTWORK")
+    gFill:SetAllPoints()
+    gFill:SetTexture(ST.TEX.FLAT)
+    g._fill = gFill
+    local gLabel = g:CreateFontString(nil, "OVERLAY")
+    ST.ApplyText(gLabel, ST.FONT.caption, 1, 1, 1, 1)
+    gLabel:SetPoint("CENTER", g, "CENTER", 0, 0)
+    g._label = gLabel
+    f._ghost = g
+
+    local rad = math_min(ST.GetCornerRadius(6), math_max(2, math_floor(h * 0.45)))
+    if rad > 0 then
+        ST.MaskTexture(barHost, bg, rad)
+        if sbFill then ST.MaskTexture(barHost, sbFill, rad) end
+        if f._spark and f._spark._spark then ST.MaskTexture(barHost, f._spark._spark, rad) end
+        ST.ApplyRoundedBorder(barHost, rad, 0.02, 0.02, 0.03, 0.94, 5)
+    end
+    ST.ApplyBarGradient(sb, r1, g1, b1, r2, g2, b2, 0.96, false)
+
+    function f:ApplyDemoStyle(ov)
+        local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false, ov) or ST.TEX.FLAT
+        if sb._kkFillPath ~= wantFill then
+            sb:SetStatusBarTexture(wantFill)
+            sb._kkFillPath = wantFill
+            local ft = sb:GetStatusBarTexture()
+            if ft and M.DisablePixelSnap then M.DisablePixelSnap(ft) end
+            if rad > 0 and ft then ST.MaskTexture(barHost, ft, rad) end
+        end
+        if f._spark then
+            f._spark._fxOverride = ov
+            f._spark:RefreshTexture()
+        end
+        ST.ApplyBarGradient(sb, r1, g1, b1, r2, g2, b2, 0.96, false)
+    end
+    return f
+end
+
 local function LayoutChannelTicks(spellID, spellName)
     if not overlay then return end
     for i = 1, 15 do overlay._ticks[i]:Hide() end
