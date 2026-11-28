@@ -54,6 +54,7 @@ local mod = F.RegisterModule("motionFX", {
         fx_fadeCurve    = true,
         fx_plateOutline = true,
         fx_barTexture   = true,
+        fx_barFlow      = true,
     },
 })
 

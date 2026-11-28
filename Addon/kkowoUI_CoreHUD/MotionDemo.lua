@@ -228,10 +228,13 @@ local function BuildComparisonRow(parent, titleText, isNew, yTop)
         delay = 0.14, speed = 7.2, color = ST.COLORS.trail, levelOffset = 1, fxOverride = ov,
     })
     hpHolder._spark = M.AttachEdgeSpark(hpHolder._bar, {
-        width = 16, extraHeight = 4, a = 0.90, levelOffset = 3, fxOverride = ov,
+        width = 18, extraHeight = 4, a = 0.88, levelOffset = 3, maskHost = hpHolder, fxOverride = ov,
     })
     hpHolder._healPred = M.AttachHealPrediction(hpHolder._bar, {
-        reverse = false, levelOffset = 2, fxOverride = ov,
+        reverse = false, levelOffset = 2, maskHost = hpHolder, fxOverride = ov,
+    })
+    hpHolder._flow = M.AttachBarLivingFlow(hpHolder, hpHolder._bar, {
+        reverse = false, period = 3.6, sweepRatio = 0.56, peakAlpha = 0.22, softAlpha = 0.12, fxOverride = ov,
     })
     if CH and CH.ApplyWingStyle then
         local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
@@ -357,7 +360,7 @@ local function BuildComparisonRow(parent, titleText, isNew, yTop)
     buffLbl:SetText("Buff 滑入/到期")
     row.buffBox, row.buffGlow, row.buffSlideAG, row.buffPulseAG = buffBox, buffGlow, buffSlideAG, buffPulseAG
 
-    -- 6) 动作按键（仅移动图标纹理 1 物理像素，绝不用 Scale）
+    -- 6) 动作按键（下沉 2 UI 像素 + 瞬时微亮内边 + 0.10s 弹性回弹，绝不用 Scale）
     local keyBox = CreateFrame("Frame", nil, box)
     keyBox:SetSize(28, 28)
     keyBox:SetPoint("TOPLEFT", box, "TOPLEFT", 168, subY)
@@ -370,14 +373,30 @@ local function BuildComparisonRow(parent, titleText, isNew, yTop)
     keyIcon:SetPoint("BOTTOMRIGHT", keyBox, "BOTTOMRIGHT", -2, 2)
     keyIcon:SetTexture("Interface\\Icons\\Spell_Fire_FireBolt")
     keyIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    local keySheen = keyBox:CreateTexture(nil, "OVERLAY", nil, 5)
+    keySheen:SetAllPoints(keyBox)
+    keySheen:SetTexture(ST.TEX.FLAT)
+    keySheen:SetBlendMode("ADD")
+    keySheen:SetVertexColor(0.96, 0.98, 1.00, 1)
+    keySheen:SetAlpha(0)
+    keySheen:Hide()
+    local keySheenAG = keySheen:CreateAnimationGroup()
+    local ksAl = keySheenAG:CreateAnimation("Alpha")
+    ksAl:SetOrder(1); ksAl:SetFromAlpha(0.24); ksAl:SetToAlpha(0); ksAl:SetDuration(0.10); ksAl:SetSmoothing("OUT")
+    keySheenAG:SetScript("OnFinished", function() keySheen:SetAlpha(0); keySheen:Hide() end)
+    keySheenAG:SetScript("OnStop", function() keySheen:SetAlpha(0); keySheen:Hide() end)
     local keyRelAG = keyIcon:CreateAnimationGroup()
-    local kTr = keyRelAG:CreateAnimation("Translation")
-    kTr:SetOrder(1); kTr:SetOffset(0, 1); kTr:SetDuration(0.08); kTr:SetSmoothing("OUT")
+    local kJump = keyRelAG:CreateAnimation("Translation")
+    kJump:SetOrder(1); kJump:SetOffset(0, -2); kJump:SetDuration(0)
+    local kBounce = keyRelAG:CreateAnimation("Translation")
+    kBounce:SetOrder(2); kBounce:SetOffset(0, 2.5); kBounce:SetDuration(0.06); kBounce:SetSmoothing("OUT")
+    local kSettle = keyRelAG:CreateAnimation("Translation")
+    kSettle:SetOrder(3); kSettle:SetOffset(0, -0.5); kSettle:SetDuration(0.04); kSettle:SetSmoothing("IN")
     local keyLbl = box:CreateFontString(nil, "OVERLAY")
     ST.ApplyText(keyLbl, ST.FONT.caption, 0.76, 0.82, 0.88, 0.90)
     keyLbl:SetPoint("LEFT", keyBox, "RIGHT", 6, 0)
-    keyLbl:SetText("按键 1px 回弹")
-    row.keyBox, row.keyIcon, row.keyRelAG = keyBox, keyIcon, keyRelAG
+    keyLbl:SetText("按键 2px 回弹")
+    row.keyBox, row.keyIcon, row.keyRelAG, row.keySheen, row.keySheenAG = keyBox, keyIcon, keyRelAG, keySheen, keySheenAG
 
     -- 7) 脱战淡隐曲线预览块
     local fadeCard = CreateFrame("Frame", nil, box)
@@ -436,6 +455,10 @@ local function RefreshNewRowOverride()
     if newRow.hpHolder._trail then newRow.hpHolder._trail._fxOverride = ov; newRow.hpHolder._trail:RefreshStyle() end
     if newRow.hpHolder._spark then newRow.hpHolder._spark._fxOverride = ov; newRow.hpHolder._spark:RefreshTexture() end
     if newRow.hpHolder._healPred then newRow.hpHolder._healPred._fxOverride = ov; newRow.hpHolder._healPred:SyncLayout() end
+    if newRow.hpHolder._flow then
+        newRow.hpHolder._flow._fxOverride = ov
+        newRow.hpHolder._flow:SetEnabled(true, 5)
+    end
     if newRow.castBar and newRow.castBar.ApplyDemoStyle then newRow.castBar:ApplyDemoStyle(ov) end
 end
 
@@ -448,10 +471,17 @@ local function ResetRowBaseline(row)
         row.hpHolder._trail:SetEnabled(true)
         row.hpHolder._trail:SetValue(1000, 1000, true)
     end
+    if row.hpHolder._flow then
+        row.hpHolder._flow:SetEnabled(row.isNew == true, 5)
+    end
+    if row.hpHolder._spark then
+        row.hpHolder._spark:SetShown(false)
+    end
     if row.hpHolder._healPred and row.hpHolder._healPred._clip then
         row.hpHolder._healPred._clip:Hide()
     end
     if row.castBar then
+        if row.castBar._flow then row.castBar._flow:SetEnabled(false) end
         if row.castBar._ghost then
             M.StopFrameAnims(row.castBar._ghost)
             row.castBar._ghost:Hide()
@@ -466,6 +496,8 @@ local function ResetRowBaseline(row)
     if row.buffSlideAG then row.buffSlideAG:Stop() end
     if row.buffGlow then row.buffGlow:Hide() end
     if row.keyRelAG then row.keyRelAG:Stop() end
+    if row.keySheenAG then row.keySheenAG:Stop() end
+    if row.keySheen then row.keySheen:SetAlpha(0); row.keySheen:Hide() end
     if row.keyIcon then
         row.keyIcon:ClearAllPoints()
         row.keyIcon:SetPoint("TOPLEFT", row.keyBox, "TOPLEFT", 2, -2)
@@ -484,6 +516,7 @@ local function RunCastOnRow(row, label, dur, isChannel, myGen, onFinish)
     if not cb then return end
     if cb._ghost then M.StopFrameAnims(cb._ghost); cb._ghost:Hide() end
     if cb._nameFS then cb._nameFS:SetText(label) end
+    if cb._flow then cb._flow:SetEnabled(true) end
     local useClient = ST.IsFXEnabled("fx_castTimer", ov) and M.ArmClientTimerBar ~= nil
     local startAt = GetTime()
     if useClient then
@@ -501,6 +534,7 @@ local function RunCastOnRow(row, label, dur, isChannel, myGen, onFinish)
         end
         if cb._timeFS then cb._timeFS:SetText(string_format("%.1fs", rem)) end
         if elapsed >= dur then
+            if cb._flow then cb._flow:SetEnabled(false) end
             if onFinish then onFinish(row, cb, ov) end
             return false
         end
@@ -533,7 +567,8 @@ local SCRIPTS = {
                 ScheduleStep(myGen, 0.12, function()
                     M.SetBarValue(row.hpHolder._bar, 440, { fxKey = "fx_smoothMain", override = ov, instant = false })
                     if row.hpHolder._trail then row.hpHolder._trail:SetValue(440, 1000, false) end
-                    M.TriggerBarHitFlash(row.hpHolder._bar, "damage", { override = ov, force = true })
+                    if row.hpHolder._spark then row.hpHolder._spark:SetShown(true); if row.hpHolder._spark.Pulse then row.hpHolder._spark:Pulse(1.0) end end
+                    M.TriggerBarHitFlash(row.hpHolder._bar, "damage", { maskHost = row.hpHolder, radius = 5, override = ov, force = true })
                 end)
             end
         end,
@@ -562,7 +597,8 @@ local SCRIPTS = {
                 ScheduleStep(myGen, 0.12, function()
                     M.SetBarValue(row.hpHolder._bar, 940, { fxKey = "fx_smoothMain", override = ov, instant = false })
                     if row.hpHolder._trail then row.hpHolder._trail:SetValue(940, 1000, true) end
-                    M.TriggerBarHitFlash(row.hpHolder._bar, "heal", { override = ov, force = true })
+                    if row.hpHolder._spark then row.hpHolder._spark:SetShown(true); if row.hpHolder._spark.Pulse then row.hpHolder._spark:Pulse(1.0) end end
+                    M.TriggerBarHitFlash(row.hpHolder._bar, "heal", { maskHost = row.hpHolder, radius = 5, override = ov, force = true })
                 end)
             end
         end,
@@ -602,10 +638,13 @@ local SCRIPTS = {
         end,
     },
     {
-        id = "target_arrive", label = "换目标入场", dur = 1.0,
+        id = "target_arrive", label = "换目标 55% 滑入", dur = 1.0,
         run = function()
             for _, row in ipairs({ oldRow, newRow }) do
                 local ov = row.override
+                if M.PlayFrameArriveSlide then
+                    M.PlayFrameArriveSlide(row.hpHolder, { override = ov, dx = 8, startAlpha = 0.35 })
+                end
                 if not M.PlayBarArriveGlide(row.hpHolder._bar, 1000, 1000, row.hpHolder._trail, { override = ov }) then
                     M.SetBarValue(row.hpHolder._bar, 1000, { fxKey = "fx_smoothMain", override = ov, instant = true })
                     if row.hpHolder._trail then row.hpHolder._trail:SetValue(1000, 1000, true) end
@@ -807,20 +846,26 @@ local SCRIPTS = {
         end,
     },
     {
-        id = "button_press", label = "按键反馈", dur = 0.9,
+        id = "button_press", label = "按键 2px 反馈", dur = 0.9,
         run = function(myGen)
             for _, row in ipairs({ oldRow, newRow }) do
                 local ov = row.override
                 if ST.IsFXEnabled("fx_buttonPress", ov) then
-                    local px = ST.GetPixel(row.keyBox) or 1
+                    local dip = (ST.GetFXIntensity(ov) == "soft") and 1.2 or 2.0
                     row.keyIcon:ClearAllPoints()
-                    row.keyIcon:SetPoint("TOPLEFT", row.keyBox, "TOPLEFT", 2, -2 - px)
-                    row.keyIcon:SetPoint("BOTTOMRIGHT", row.keyBox, "BOTTOMRIGHT", -2, 2 - px)
+                    row.keyIcon:SetPoint("TOPLEFT", row.keyBox, "TOPLEFT", 2, -2 - dip)
+                    row.keyIcon:SetPoint("BOTTOMRIGHT", row.keyBox, "BOTTOMRIGHT", -2, 2 - dip)
+                    if row.keySheen then
+                        if row.keySheenAG then row.keySheenAG:Stop() end
+                        row.keySheen:SetAlpha((ST.GetFXIntensity(ov) == "soft") and 0.14 or 0.24)
+                        row.keySheen:Show()
+                    end
                     ScheduleStep(myGen, 0.22, function()
                         row.keyIcon:ClearAllPoints()
                         row.keyIcon:SetPoint("TOPLEFT", row.keyBox, "TOPLEFT", 2, -2)
                         row.keyIcon:SetPoint("BOTTOMRIGHT", row.keyBox, "BOTTOMRIGHT", -2, 2)
                         if row.keyRelAG then row.keyRelAG:Stop(); row.keyRelAG:Play() end
+                        if row.keySheenAG then row.keySheenAG:Stop(); row.keySheenAG:Play() end
                     end)
                 end
             end
@@ -873,6 +918,28 @@ local SCRIPTS = {
             end
         end,
     },
+    {
+        id = "bar_flow", label = "条内轻流光与质感", dur = 2.2,
+        run = function(myGen)
+            for _, row in ipairs({ oldRow, newRow }) do
+                local ov = row.override
+                M.SetBarValue(row.hpHolder._bar, 680, { fxKey = "fx_smoothMain", override = ov, instant = true })
+                if row.hpHolder._trail then row.hpHolder._trail:SetValue(680, 1000, true) end
+                if row.hpHolder._spark then
+                    row.hpHolder._spark:SetShown(true)
+                    row.hpHolder._spark:SyncAnchor()
+                end
+                if row.hpHolder._flow then
+                    row.hpHolder._flow:SetEnabled(true, 5)
+                end
+                ScheduleStep(myGen, 0.55, function()
+                    M.SetBarValue(row.hpHolder._bar, 780, { fxKey = "fx_smoothMain", override = ov, instant = false })
+                    if row.hpHolder._trail then row.hpHolder._trail:SetValue(780, 1000, true) end
+                    if row.hpHolder._spark and row.hpHolder._spark.Pulse then row.hpHolder._spark:Pulse(1.0) end
+                end)
+            end
+        end,
+    },
 }
 
 ----------------------------------------------------------------------
@@ -886,6 +953,8 @@ local function CleanupDemoRuntime()
     for _, row in ipairs({ oldRow, newRow }) do
         if row then
             if row.hpHolder and row.hpHolder._trail then row.hpHolder._trail:SetEnabled(false) end
+            if row.hpHolder and row.hpHolder._flow then row.hpHolder._flow:SetEnabled(false) end
+            if row.castBar and row.castBar._flow then row.castBar._flow:SetEnabled(false) end
             if row.castBar and row.castBar._ghost then
                 M.StopFrameAnims(row.castBar._ghost)
                 row.castBar._ghost:Hide()
@@ -893,6 +962,8 @@ local function CleanupDemoRuntime()
             if row.buffPulseAG then row.buffPulseAG:Stop() end
             if row.buffSlideAG then row.buffSlideAG:Stop() end
             if row.keyRelAG then row.keyRelAG:Stop() end
+            if row.keySheenAG then row.keySheenAG:Stop() end
+            if row.keySheen then row.keySheen:SetAlpha(0); row.keySheen:Hide() end
         end
     end
     for _, b in pairs(scriptBtns) do StyleMiniButtonSelected(b, false) end
@@ -932,7 +1003,7 @@ local function PlayScriptByIndex(idx, chainNext)
                 PlayScriptByIndex(idx + 1, true)
             else
                 demoPlayAllIndex = 0
-                if statusFS then statusFS:SetText("全部 19 项对比演示完毕，可点选单项复看或切换强度。") end
+                if statusFS then statusFS:SetText("全部 20 项对比演示完毕，可点选单项复看或切换强度。") end
                 for _, b in ipairs(scriptBtns) do StyleMiniButtonSelected(b, false) end
             end
         end)
@@ -996,7 +1067,7 @@ local function EnsurePanel()
         intensityBtns[d.key] = b
     end
 
-    local playAllBtn = CreateMiniButton(f, "一键连播全部 (19 项)", 142, 22, function()
+    local playAllBtn = CreateMiniButton(f, "一键连播全部 (20 项)", 142, 22, function()
         PlayScriptByIndex(1, true)
     end)
     playAllBtn:SetPoint("TOPLEFT", f, "TOPLEFT", 282, -39)

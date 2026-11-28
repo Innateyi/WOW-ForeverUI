@@ -2526,11 +2526,11 @@ def run_all():
                 return ok
             end
         ''')
-        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', '', 40, 1)  # 4% < 8% -> no flash
-        assert l_env.eval('_G.__HF_COUNT') == 0, '4% 小额伤害不应触发受击闪光'
-        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', '', 120, 1)  # 12% >= 8% -> flash
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', '', 20, 1)  # 2% < 3% -> no flash
+        assert l_env.eval('_G.__HF_COUNT') == 0, '2% 极小额伤害不应触发受击闪光'
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', '', 120, 1)  # 12% >= 3% -> flash
         assert l_env.eval('_G.__HF_COUNT') == 1, '12% 大额伤害应触发受击闪光'
-        m_env.FireEvent('UNIT_COMBAT', 'player', 'HEAL', '', 150, 1)  # 15% >= 10% -> flash
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'HEAL', '', 150, 1)  # 15% >= 4% -> flash
         assert l_env.eval('_G.__HF_COUNT') == 2, '15% 大额治疗应触发治疗闪光'
         # Secret amount + plain non-crit -> skip; secret amount + plain CRITICAL -> flash
         sec_amt = m_env.NewSecret('dmg')
@@ -2788,14 +2788,14 @@ def run_all():
         end)()''')
         assert fb_ok is True, '2a 缺少 Calculator API 时未正确回退 UnitGetIncomingHeals/Absorbs'
 
-        # 2b) Target arrive: plain starts ~80% Immediate then glides ExponentialEaseOut; secret skips glide; rapid switch cancels old
+        # 2b) Target arrive: plain starts ~55% Immediate then glides ExponentialEaseOut; secret skips glide; rapid switch cancels old
         l_env.execute('UnitHealth = function(u) return u == "target" and 1000 or 1000 end')
         m_env.FireEvent('PLAYER_TARGET_CHANGED')
         arr_start = l_env.eval('''(function()
             local b = _G.kkowoUI_TopTargetHUD._hpBar._bar
             return { val = b:GetValue(), interp = b._lastInterp }
         end)()''')
-        assert abs(float(arr_start.val) - 800.0) < 1.0 and arr_start.interp == 0, f'2b 换目标明文应先 Immediate 设至 ~80%(800)，实际={arr_start}'
+        assert abs(float(arr_start.val) - 550.0) < 1.0 and arr_start.interp == 0, f'2b 换目标明文应先 Immediate 设至 ~55%(550)，实际={arr_start}'
         m_env.StepTime(0.05, 1)
         arr_end = l_env.eval('''(function()
             local b = _G.kkowoUI_TopTargetHUD._hpBar._bar
@@ -3266,7 +3266,7 @@ def run_all():
             }
         end)()''')
         assert open_chk.shown and (not open_chk.rootMouse) and open_chk.nonBtnMouse == 0, f'演示面板 K12 鼠标透传违规: {open_chk}'
-        assert open_chk.nScripts == 19 and open_chk.btnCount >= 24, f'演示面板应包含全部 19 个剧本与控制按钮: {open_chk}'
+        assert open_chk.nScripts == 20 and open_chk.btnCount >= 25, f'演示面板应包含全部 20 个剧本与控制按钮: {open_chk}'
 
         # Toggle demo intensity off -> soft -> standard -> verify user DB untouched
         for lvl in ('off', 'soft', 'standard'):
@@ -3304,7 +3304,7 @@ def run_all():
         assert (not demo_shown) and post_ou <= pre_ou and post_ticks == 0, (
             f'关闭演示后应无残留框体且 OnUpdate/TextTick 归位: shown={demo_shown}, preOU={pre_ou}, postOU={post_ou}, ticks={post_ticks}'
         )
-        return f'脱战校验/战斗自动关闭/19项剧本连播/3档强度不改配置/K12仅按钮可点/关闭Hide且OnUpdate归位({pre_ou}->{post_ou}) 全部通过'
+        return f'脱战校验/战斗自动关闭/20项剧本连播/3档强度不改配置/K12仅按钮可点/关闭Hide且OnUpdate归位({pre_ou}->{post_ou}) 全部通过'
 
     check('演示命令 /kk motion demo（脱战新旧对比与零残留回收）', t_motion_demo)
 

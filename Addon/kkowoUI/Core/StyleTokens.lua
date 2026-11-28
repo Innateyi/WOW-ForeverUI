@@ -26,6 +26,8 @@ ST.TEX = {
     SPARK_SOFT   = F.MEDIA .. "Textures\\SparkSoft.tga",
     BAR_FILL_SHADED   = F.MEDIA .. "Textures\\BarFillShaded.tga",
     BAR_FILL_SEAMLESS = F.MEDIA .. "Textures\\BarFillSeamless.tga",
+    BAR_FLOW_SHEEN    = F.MEDIA .. "Textures\\BarFlowSheen.tga",
+    BAR_EDGE_BLOOM    = F.MEDIA .. "Textures\\BarEdgeBloom.tga",
     SOFT_GLOW    = F.MEDIA .. "Textures\\SoftGlow.tga",
     VIGNETTE     = F.MEDIA .. "Textures\\VignetteEdge.tga",
     DIAG_STRIPES = F.MEDIA .. "Textures\\DiagStripes.tga",
@@ -207,23 +209,25 @@ ST.FX_DEFAULTS = {
     fx_fadeCurve    = true,
     fx_plateOutline = true,
     fx_barTexture   = true,
+    fx_barFlow      = true,
 }
 
 ST.FX_ITEMS = {
     { key = "fx_smoothMain",   label = "主条平滑过渡",     tip = "血条与能量条使用客户端原生平滑，脱战/换目标/死亡瞬切。" },
     { key = "fx_trailTune",    label = "掉血拖尾调校",     tip = "调整掉血残影停顿与追赶节奏，和平滑主条配合更柔和。" },
-    { key = "fx_hitFlash",     label = "受击与治疗闪光",   tip = "大额受伤或治疗时在填充上叠一层柔和瞬闪，不改条体尺寸。" },
+    { key = "fx_hitFlash",     label = "受击闪光与治疗扫光", tip = "受伤瞬闪冲击，受治疗时柔绿光波横扫整条，不改条体尺寸。" },
     { key = "fx_castTimer",    label = "施法条客户端计时", tip = "施法条改用引擎计时，省去逐帧计算且机密值下保留样式。" },
     { key = "fx_castFinish",   label = "施法收尾打磨",     tip = "打磨施法成功、打断、失败与引导结束时的残影收尾动画。" },
     { key = "fx_healPredict",  label = "治疗预估与护盾",   tip = "玩家与目标血条叠加即将到账的治疗预估、吸收盾与超量标记。" },
-    { key = "fx_targetArrive", label = "换目标入场滑动",   tip = "切换目标时目标血条轻快滑入当前血量（机密值自动退回淡入）。" },
+    { key = "fx_targetArrive", label = "换目标入场滑动",   tip = "切换目标时目标框轻滑到位、血条从 55% 顺滑推至当前血量。" },
     { key = "fx_xpSmooth",     label = "经验与声望平滑",   tip = "经验条、声望条平滑推进并在获得经验时提示浅亮增益段。" },
     { key = "fx_timerBars",    label = "计时条客户端驱动", tip = "掷点条、武器特效条、灵魂石条改用客户端计时，空闲零轮询。" },
-    { key = "fx_buttonPress",  label = "动作条按键下沉",   tip = "按键按下时图标微沉 1 物理像素并轻快回弹，不碰受保护按钮。" },
-    { key = "fx_auraFeel",     label = "增益滑入与到期脉动", tip = "右上角 Buff 图标出现时轻柔滑入，剩余不足 5 秒时柔和脉动。" },
+    { key = "fx_buttonPress",  label = "动作条按键下沉",   tip = "按键按下时图标下沉 2px 叠柔光并 0.10s 弹性回弹，战斗 100% 安全。" },
+    { key = "fx_auraFeel",     label = "增益滑入与到期脉动", tip = "右上角与双翼/目标光环出现时轻柔滑入，剩余不足 5 秒时琥珀脉动。" },
     { key = "fx_fadeCurve",    label = "脱战淡隐平滑曲线", tip = "将脱战淡隐动画升级为距离缩放的 smoothstep 缓动曲线。" },
     { key = "fx_plateOutline", label = "目标姓名板描边绘制", tip = "切换目标时当前目标姓名板细描边从左到右流畅绘出。" },
-    { key = "fx_barTexture",   label = "条体明暗与柔和火花", tip = "启用自制轻微上下明暗条体贴图与柔和前沿火花（需重启客户端）。" },
+    { key = "fx_barTexture",   label = "条体立体明暗与光晕", tip = "启用自制液态玻璃立体明暗条体与前沿柔和光晕（需冷重启客户端）。" },
+    { key = "fx_barFlow",      label = "条内柔和轻流光",   tip = "血条、蓝条、目标条与施法条内叠加极柔斜向丝绸流光，纯 C 端零额外占用。" },
 }
 
 local SMOOTH_GATED_KEYS = {
@@ -293,6 +297,13 @@ function ST.GetSparkTexture(override)
         return ST.TEX.SPARK_SOFT
     end
     return ST.TEX.SPARK_BLADE
+end
+
+function ST.GetEdgeBloomTexture(override)
+    if ST.IsFXEnabled("fx_barTexture", override) then
+        return ST.TEX.BAR_EDGE_BLOOM
+    end
+    return ST.TEX.SOFT_GLOW
 end
 
 function ST.GetGradientMode()

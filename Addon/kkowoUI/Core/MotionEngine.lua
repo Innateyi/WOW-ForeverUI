@@ -9,8 +9,8 @@
 local _, F = ...
 
 local _G = _G
-local math_abs, math_exp, math_max, math_min, next, pairs, pcall, setmetatable, type =
-    math.abs, math.exp, math.max, math.min, next, pairs, pcall, setmetatable, type
+local math_abs, math_exp, math_floor, math_max, math_min, next, pairs, pcall, setmetatable, type =
+    math.abs, math.exp, math.floor, math.max, math.min, next, pairs, pcall, setmetatable, type
 local CreateFrame = CreateFrame
 local GetTime = GetTime
 local C_Timer = C_Timer
@@ -179,6 +179,10 @@ end
 function M.UnregisterLoopAnim(ag)
     if not ag then return end
     loopAnimRegistry[ag] = nil
+end
+
+function M.IsLoopAnimRegistered(ag)
+    return (ag ~= nil) and (loopAnimRegistry[ag] ~= nil)
 end
 
 function M.DisablePixelSnap(obj)
@@ -604,7 +608,7 @@ function M.CreateSmoothBar(statusBar, _speed)
 end
 
 ----------------------------------------------------------------------
---  4) EdgeSpark：进度前沿高光切边控制器（纯锚定追踪，0 OnUpdate）
+--  4) EdgeSpark：进度前沿高光切边与柔和光晕 Bloom 控制器（纯锚定追踪，0 OnUpdate）
 ----------------------------------------------------------------------
 function M.AttachEdgeSpark(statusBar, opts)
     if not (statusBar and statusBar.GetStatusBarTexture) then return nil end
@@ -616,31 +620,95 @@ function M.AttachEdgeSpark(statusBar, opts)
     local lvl = F.PlainNumber(statusBar.GetFrameLevel and statusBar:GetFrameLevel(), 10) or 10
     host:SetFrameLevel(lvl + (opts.levelOffset or 3))
 
+    local bloom = host:CreateTexture(nil, "OVERLAY", nil, 4)
+    bloom:SetTexture(ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture(opts.fxOverride) or ST.TEX.SOFT_GLOW)
+    bloom:SetBlendMode("ADD")
+    M.DisablePixelSnap(bloom)
+
     local spark = host:CreateTexture(nil, "OVERLAY", nil, 5)
     local customTex = opts.texture
     spark:SetTexture(customTex or (ST.GetSparkTexture and ST.GetSparkTexture(opts.fxOverride) or ST.TEX.SPARK_BLADE))
     spark:SetBlendMode("ADD")
-    if spark.SetSnapToPixelGrid then pcall(spark.SetSnapToPixelGrid, spark, false) end
-    if spark.SetTexelSnappingBias then pcall(spark.SetTexelSnappingBias, spark, 0) end
+    M.DisablePixelSnap(spark)
+
+    -- 变动瞬时提亮脉冲（纯 C 端 AnimationGroup，复用零分配，0 OnUpdate）
+    local pulseAG = bloom:CreateAnimationGroup()
+    local pRise = pulseAG:CreateAnimation("Alpha")
+    pRise:SetOrder(1); pRise:SetDuration(0.05); pRise:SetSmoothing("OUT")
+    local pFall = pulseAG:CreateAnimation("Alpha")
+    pFall:SetOrder(2); pFall:SetDuration(0.20); pFall:SetSmoothing("OUT")
+    pulseAG._rise = pRise
+    pulseAG._fall = pFall
+
     local w = opts.width or 18
     local extraH = opts.extraHeight or 6
     spark:SetWidth(w)
 
     local ctrl = {
-        _host       = host,
-        _bar        = statusBar,
-        _spark      = spark,
-        _customTex  = customTex,
-        _fxOverride = opts.fxOverride,
-        _width      = w,
-        _extraH     = extraH,
-        _reverse    = opts.reverse == true,
+        _host        = host,
+        _bar         = statusBar,
+        _spark       = spark,
+        _bloom       = bloom,
+        _pulseAG     = pulseAG,
+        _maskHost    = opts.maskHost or nil,
+        _maskedRad   = -1,
+        _customTex   = customTex,
+        _fxOverride  = opts.fxOverride,
+        _width       = w,
+        _extraH      = extraH,
+        _baseAlpha   = opts.a or 0.88,
+        _r           = opts.r or 1,
+        _g           = opts.g or 1,
+        _b           = opts.b or 1,
+        _reverse     = opts.reverse == true,
+        _bloomEnabled = opts.noBloom ~= true,
     }
+
+    local function UpdateBloomBaseAlpha()
+        local inten = ST.GetFXIntensity(ctrl._fxOverride)
+        local texOn = ST.IsFXEnabled("fx_barTexture", ctrl._fxOverride)
+        if (not ctrl._bloomEnabled) or inten == "off" or not texOn then
+            ctrl._bloomBaseA = 0
+            ctrl._bloom:SetAlpha(0)
+            ctrl._bloom:Hide()
+            return
+        end
+        local ba = (inten == "soft") and 0.40 or math_min(0.86, (ctrl._baseAlpha or 0.72) * 0.92)
+        ctrl._bloomBaseA = ba
+        ctrl._bloom:SetAlpha(ba)
+        ctrl._bloom:Show()
+    end
+
+    pulseAG:SetScript("OnFinished", function()
+        if ctrl._bloom then ctrl._bloom:SetAlpha(ctrl._bloomBaseA or 0) end
+    end)
+    pulseAG:SetScript("OnStop", function()
+        if ctrl._bloom then ctrl._bloom:SetAlpha(ctrl._bloomBaseA or 0) end
+    end)
 
     function ctrl:RefreshTexture()
         if not self._customTex and ST.GetSparkTexture then
             self._spark:SetTexture(ST.GetSparkTexture(self._fxOverride))
         end
+        if self._bloom and ST.GetEdgeBloomTexture then
+            self._bloom:SetTexture(ST.GetEdgeBloomTexture(self._fxOverride))
+        end
+        UpdateBloomBaseAlpha()
+    end
+
+    function ctrl:SyncMask(maskHost, radius)
+        local mh = maskHost or self._maskHost
+        if not mh then return end
+        self._maskHost = mh
+        local rad = radius or 0
+        if rad > 0 then
+            ST.MaskTexture(mh, self._spark, rad)
+            if self._bloom then ST.MaskTexture(mh, self._bloom, rad) end
+        elseif ST.UnmaskTexture then
+            ST.UnmaskTexture(mh, self._spark)
+            if self._bloom then ST.UnmaskTexture(mh, self._bloom) end
+        end
+        self._maskedRad = rad
     end
 
     function ctrl:SyncAnchor()
@@ -650,17 +718,41 @@ function M.AttachEdgeSpark(statusBar, opts)
         local h = F.PlainNumber(self._bar:GetHeight(), 12) or 12
         self._spark:SetSize(self._width, h + self._extraH)
         self._spark:ClearAllPoints()
+        local bloomW = math_max(18, self._width * 1.25)
+        self._bloom:SetSize(bloomW, h + self._extraH + 6)
+        self._bloom:ClearAllPoints()
         if self._reverse then
             self._spark:SetTexCoord(1, 0, 0, 1)
             self._spark:SetPoint("CENTER", fillTex, "LEFT", 2, 0)
+            self._bloom:SetPoint("CENTER", fillTex, "LEFT", 3, 0)
         else
             self._spark:SetTexCoord(0, 1, 0, 1)
             self._spark:SetPoint("CENTER", fillTex, "RIGHT", -2, 0)
+            self._bloom:SetPoint("CENTER", fillTex, "RIGHT", -3, 0)
         end
     end
 
     function ctrl:SetColor(r, g, b, a)
-        self._spark:SetVertexColor(r or 1, g or 1, b or 1, a or 0.92)
+        self._r, self._g, self._b = r or 1, g or 1, b or 1
+        if a ~= nil then self._baseAlpha = a end
+        self._spark:SetVertexColor(self._r, self._g, self._b, self._baseAlpha)
+        if self._bloom then
+            self._bloom:SetVertexColor(self._r, self._g, self._b, 1)
+            UpdateBloomBaseAlpha()
+        end
+    end
+
+    function ctrl:Pulse(strength)
+        if not (self._bloom and self._pulseAG and self._host:IsShown()) then return end
+        local ba = self._bloomBaseA or 0
+        if ba <= 0.01 then return end
+        local peak = math_min(1.0, ba + 0.34 * (strength or 1.0))
+        self._pulseAG:Stop()
+        self._pulseAG._rise:SetFromAlpha(ba)
+        self._pulseAG._rise:SetToAlpha(peak)
+        self._pulseAG._fall:SetFromAlpha(peak)
+        self._pulseAG._fall:SetToAlpha(ba)
+        self._pulseAG:Play()
     end
 
     function ctrl:SetIntensity(alpha, widthScale)
@@ -668,14 +760,195 @@ function M.AttachEdgeSpark(statusBar, opts)
         local h = F.PlainNumber(self._bar:GetHeight(), 12) or 12
         self._spark:SetSize(self._width * sc, (h + self._extraH) * math_min(1.35, sc))
         self._spark:SetAlpha(alpha or 1)
+        if self._bloom and (self._bloomBaseA or 0) > 0 then
+            local bloomW = math_max(18, self._width * 1.25 * sc)
+            self._bloom:SetSize(bloomW, (h + self._extraH + 6) * math_min(1.35, sc))
+            self._bloom:SetAlpha(math_min(1, (self._bloomBaseA or 0.5) * (alpha or 1)))
+        end
     end
 
     function ctrl:SetShown(show)
-        self._host:SetShown(show == true)
+        local on = show == true
+        self._host:SetShown(on)
+        if not on and self._pulseAG and self._pulseAG:IsPlaying() then
+            self._pulseAG:Stop()
+        end
     end
 
-    ctrl:SetColor(opts.r or 1, opts.g or 1, opts.b or 1, opts.a or 0.92)
+    ctrl:SetColor(opts.r or 1, opts.g or 1, opts.b or 1, opts.a or 0.88)
     ctrl:SyncAnchor()
+    return ctrl
+end
+
+----------------------------------------------------------------------
+--  4b) AttachBarLivingFlow：条内柔和轻流光（fx_barFlow，纯 C 端 AnimationGroup 0 OnUpdate）
+--      • clip 直接锚定于 statusBar:GetStatusBarTexture()（仅跟随填充宽度，绝不读取任何数值 -> 12.x 机密值 100% 安全）
+--      • 纹理严格挂入外层 holder 圆角遮罩，绝不溢出圆角之外
+--      • 注册进 M.RegisterLoopAnim，过图不冻住；关闭 fx_barFlow 或 intensity="off" 瞬间停播隐藏
+----------------------------------------------------------------------
+function M.AttachBarLivingFlow(holder, statusBar, opts)
+    if not (holder and statusBar and statusBar.GetStatusBarTexture) then return nil end
+    opts = opts or {}
+
+    local clip = CreateFrame("Frame", nil, statusBar)
+    clip:SetClipsChildren(true)
+    clip:EnableMouse(false)
+    local lvl = F.PlainNumber(statusBar.GetFrameLevel and statusBar:GetFrameLevel(), 10) or 10
+    clip:SetFrameLevel(lvl + (opts.levelOffset or 2))
+
+    local sheen = clip:CreateTexture(nil, "OVERLAY", nil, 2)
+    sheen:SetTexture(ST.TEX.BAR_FLOW_SHEEN)
+    sheen:SetBlendMode("ADD")
+    sheen:SetVertexColor(opts.r or 1, opts.g or 1, opts.b or 1, 1)
+    sheen:SetAlpha(0)
+    M.DisablePixelSnap(sheen)
+
+    local ag = sheen:CreateAnimationGroup()
+    ag:SetLooping("REPEAT")
+    local tr = ag:CreateAnimation("Translation")
+    tr:SetOrder(1)
+    tr:SetSmoothing("IN_OUT")
+    local al = ag:CreateAnimation("Alpha")
+    al:SetOrder(1)
+    al:SetSmoothing("IN_OUT")
+    local rest = ag:CreateAnimation("Alpha")
+    rest:SetOrder(2)
+    rest:SetFromAlpha(0)
+    rest:SetToAlpha(0)
+
+    local ctrl = {
+        _holder     = holder,
+        _bar        = statusBar,
+        _clip       = clip,
+        _sheen      = sheen,
+        _ag         = ag,
+        _tr         = tr,
+        _al         = al,
+        _rest       = rest,
+        _reverse    = opts.reverse == true,
+        _period     = opts.period or 6.5,
+        _sweepRatio = opts.sweepRatio or 0.42,
+        _peakStd    = opts.peakAlpha or 0.18,
+        _peakSoft   = opts.softAlpha or 0.10,
+        _fxOverride = opts.fxOverride,
+        _enabled    = opts.enabled ~= false,
+        _active     = false,
+        _maskedRad  = -1,
+    }
+
+    local function IsFlowWantPlay()
+        if not ctrl._enabled then return false end
+        if not (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_barFlow", ctrl._fxOverride)) then
+            return false
+        end
+        if ctrl._holder and ctrl._holder.IsVisible and not ctrl._holder:IsVisible() then
+            return false
+        end
+        return true
+    end
+
+    local function LayoutSheen(rad)
+        local fillTex = ctrl._bar:GetStatusBarTexture()
+        if fillTex then
+            ctrl._clip:ClearAllPoints()
+            ctrl._clip:SetAllPoints(fillTex)
+        end
+        local w = F.PlainNumber(ctrl._bar.GetWidth and ctrl._bar:GetWidth(), 140) or 140
+        local h = F.PlainNumber(ctrl._bar.GetHeight and ctrl._bar:GetHeight(), 16) or 16
+        if w < 20 then w = 140 end
+        if h < 4 then h = 16 end
+        local bandW = math_max(46, math_min(110, math_floor(w * 0.44)))
+        local bandH = h + 6
+        ctrl._sheen:SetSize(bandW, bandH)
+        ctrl._sheen:ClearAllPoints()
+        local travel = w + bandW + 8
+        if ctrl._reverse then
+            ctrl._sheen:SetTexCoord(1, 0, 0, 1)
+            ctrl._sheen:SetPoint("LEFT", ctrl._bar, "RIGHT", 4, 0)
+            ctrl._tr:SetOffset(-travel, 0)
+        else
+            ctrl._sheen:SetTexCoord(0, 1, 0, 1)
+            ctrl._sheen:SetPoint("RIGHT", ctrl._bar, "LEFT", -4, 0)
+            ctrl._tr:SetOffset(travel, 0)
+        end
+        local period = math_max(1.0, ctrl._period or 6.5)
+        local sweepDur = math_max(0.75, math_min(period - 0.15, period * ctrl._sweepRatio))
+        local restDur = math_max(0.10, period - sweepDur)
+        ctrl._tr:SetDuration(sweepDur)
+        ctrl._al:SetDuration(sweepDur)
+        ctrl._rest:SetDuration(restDur)
+
+        if rad ~= nil then
+            if rad > 0 then
+                ST.MaskTexture(ctrl._holder, ctrl._sheen, rad)
+            elseif ST.UnmaskTexture then
+                ST.UnmaskTexture(ctrl._holder, ctrl._sheen)
+            end
+            ctrl._maskedRad = rad
+        end
+    end
+
+    function ctrl:SyncMask(rad)
+        local r = rad or 0
+        if r > 0 then
+            ST.MaskTexture(self._holder, self._sheen, r)
+        elseif ST.UnmaskTexture then
+            ST.UnmaskTexture(self._holder, self._sheen)
+        end
+        self._maskedRad = r
+    end
+
+    function ctrl:Refresh(rad)
+        local want = self._enabled and (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_barFlow", self._fxOverride)) == true
+        if not want then
+            self._active = false
+            if self._ag:IsPlaying() then self._ag:Stop() end
+            M.UnregisterLoopAnim(self._ag)
+            self._sheen:SetAlpha(0)
+            self._sheen:Hide()
+            self._clip:Hide()
+            return
+        end
+        local isSoft = ST.GetFXIntensity(self._fxOverride) == "soft"
+        local peak = isSoft and self._peakSoft or self._peakStd
+        local useRad = rad
+        if useRad == nil then
+            local gRad = ST.GetCornerRadius(6)
+            if gRad > 0 then
+                local h = F.PlainNumber(self._holder.GetHeight and self._holder:GetHeight(), 16) or 16
+                useRad = math_min(gRad, math_max(2, math_floor(h * 0.45)))
+            else
+                useRad = 0
+            end
+        end
+        LayoutSheen(useRad)
+        self._al:SetFromAlpha(peak * 0.72)
+        self._al:SetToAlpha(peak)
+        self._active = true
+        self._clip:Show()
+        self._sheen:Show()
+        M.RegisterLoopAnim(self._ag, IsFlowWantPlay)
+        if not self._ag:IsPlaying() then
+            self._ag:Play()
+        end
+    end
+
+    function ctrl:SetEnabled(on, rad)
+        self._enabled = on == true
+        self:Refresh(rad)
+    end
+
+    function ctrl:SetPeriod(period)
+        self._period = math_max(1.0, period or 6.5)
+        if self._active then self:Refresh(self._maskedRad >= 0 and self._maskedRad or nil) end
+    end
+
+    if statusBar.HookScript then
+        pcall(statusBar.HookScript, statusBar, "OnSizeChanged", function()
+            if ctrl._active then LayoutSheen(ctrl._maskedRad >= 0 and ctrl._maskedRad or nil) end
+        end)
+    end
+    ctrl:Refresh()
     return ctrl
 end
 
@@ -998,27 +1271,34 @@ function M.PlayStatBlink(region, duration)
     ag:Play()
 end
 
--- 5i) 受击/治疗柔光瞬闪（ADD 混合，贴合主条填充并共用遮罩，纯 AnimationGroup 0 OnUpdate，不改尺寸）
+-- 5i) 受击冲击瞬闪 + 治疗光波扫条（ADD 混合，贴合主条填充并共用外层宿主圆角遮罩，纯 AnimationGroup 0 OnUpdate）
 local hitFlashOverlays = setmetatable({}, { __mode = "k" })
 
 local function SyncSingleHitFlashMask(state, maskHost, rad)
     if not (state and state.tex) then return end
     local r = rad or 0
     local prevHost = state.maskedHost
+    local textures = { state.tex, state.redTex, state.sweepTex }
     if prevHost and prevHost ~= maskHost and ST.UnmaskTexture then
-        ST.UnmaskTexture(prevHost, state.tex)
+        for i = 1, #textures do
+            if textures[i] then ST.UnmaskTexture(prevHost, textures[i]) end
+        end
         state.maskedRad = -1
     end
     if r > 0 then
         if state.maskedRad ~= r or state.maskedHost ~= maskHost then
-            ST.MaskTexture(maskHost, state.tex, r)
+            for i = 1, #textures do
+                if textures[i] then ST.MaskTexture(maskHost, textures[i], r) end
+            end
             state.maskedHost = maskHost
             state.maskedRad = r
         end
     else
         if state.maskedRad and state.maskedRad > 0 then
             if ST.UnmaskTexture then
-                ST.UnmaskTexture(maskHost, state.tex)
+                for i = 1, #textures do
+                    if textures[i] then ST.UnmaskTexture(maskHost, textures[i]) end
+                end
             elseif maskHost == state.statusBar then
                 ST.ClearRoundedMask(maskHost)
             end
@@ -1058,7 +1338,7 @@ function M.TriggerBarHitFlash(statusBar, kind, opts)
         local rise = ag:CreateAnimation("Alpha")
         rise:SetOrder(1)
         rise:SetFromAlpha(0)
-        rise:SetDuration(0.06)
+        rise:SetDuration(0.05)
         rise:SetSmoothing("OUT")
         local fall = ag:CreateAnimation("Alpha")
         fall:SetOrder(2)
@@ -1073,11 +1353,74 @@ function M.TriggerBarHitFlash(statusBar, kind, opts)
             tex:SetAlpha(0)
             tex:Hide()
         end)
-        state = { statusBar = statusBar, tex = tex, ag = ag, rise = rise, fall = fall, maskedRad = -1, maskedHost = nil }
+
+        -- 受击淡红回落叠层（冷白冲击 -> 淡红柔和收尾）
+        local redTex = statusBar:CreateTexture(nil, "OVERLAY", nil, 3)
+        redTex:SetTexture(ST.TEX.FLAT)
+        redTex:SetBlendMode("ADD")
+        redTex:SetVertexColor(1.00, 0.34, 0.38, 1)
+        redTex:SetAllPoints(fillTex)
+        redTex:SetAlpha(0)
+        redTex:Hide()
+        local redAG = redTex:CreateAnimationGroup()
+        local rRise = redAG:CreateAnimation("Alpha")
+        rRise:SetOrder(1); rRise:SetStartDelay(0.03); rRise:SetFromAlpha(0); rRise:SetDuration(0.05); rRise:SetSmoothing("OUT")
+        local rFall = redAG:CreateAnimation("Alpha")
+        rFall:SetOrder(2); rFall:SetToAlpha(0); rFall:SetDuration(0.24); rFall:SetSmoothing("OUT")
+        redAG:SetScript("OnFinished", function() redTex:SetAlpha(0); redTex:Hide() end)
+        redAG:SetScript("OnStop", function() redTex:SetAlpha(0); redTex:Hide() end)
+
+        -- 治疗专属柔绿光波横扫（0.38s 沿填充方向扫过整条，纯 C 端 AnimationGroup）
+        local sweepClip = CreateFrame("Frame", nil, statusBar)
+        sweepClip:SetAllPoints(fillTex)
+        sweepClip:SetClipsChildren(true)
+        sweepClip:EnableMouse(false)
+        local lvl = F.PlainNumber(statusBar.GetFrameLevel and statusBar:GetFrameLevel(), 10) or 10
+        sweepClip:SetFrameLevel(lvl + 4)
+        sweepClip:Hide()
+
+        local sweepTex = sweepClip:CreateTexture(nil, "OVERLAY", nil, 5)
+        sweepTex:SetTexture(ST.TEX.BAR_FLOW_SHEEN)
+        sweepTex:SetBlendMode("ADD")
+        sweepTex:SetVertexColor(0.42, 1.00, 0.68, 1)
+        sweepTex:SetAlpha(0)
+        M.DisablePixelSnap(sweepTex)
+
+        local sweepAG = sweepTex:CreateAnimationGroup()
+        local sTr = sweepAG:CreateAnimation("Translation")
+        sTr:SetOrder(1); sTr:SetDuration(0.38); sTr:SetSmoothing("OUT")
+        local sAl = sweepAG:CreateAnimation("Alpha")
+        sAl:SetOrder(1); sAl:SetDuration(0.38); sAl:SetToAlpha(0); sAl:SetSmoothing("IN")
+        sweepAG:SetScript("OnFinished", function()
+            sweepTex:SetAlpha(0)
+            sweepTex:Hide()
+            sweepClip:Hide()
+        end)
+        sweepAG:SetScript("OnStop", function()
+            sweepTex:SetAlpha(0)
+            sweepTex:Hide()
+            sweepClip:Hide()
+        end)
+
+        state = {
+            statusBar = statusBar,
+            tex = tex, ag = ag, rise = rise, fall = fall,
+            redTex = redTex, redAG = redAG, rRise = rRise, rFall = rFall,
+            sweepClip = sweepClip, sweepTex = sweepTex, sweepAG = sweepAG, sTr = sTr, sAl = sAl,
+            maskedRad = -1, maskedHost = nil,
+        }
         hitFlashOverlays[statusBar] = state
     else
         state.tex:ClearAllPoints()
         state.tex:SetAllPoints(fillTex)
+        if state.redTex then
+            state.redTex:ClearAllPoints()
+            state.redTex:SetAllPoints(fillTex)
+        end
+        if state.sweepClip then
+            state.sweepClip:ClearAllPoints()
+            state.sweepClip:SetAllPoints(fillTex)
+        end
     end
 
     -- 共享外层宿主圆角遮罩（每张纹理仅挂 1 个遮罩，严守怪癖 7；圆角归零时正确卸除）
@@ -1089,27 +1432,80 @@ function M.TriggerBarHitFlash(statusBar, kind, opts)
             rad = 0
         else
             local h = F.PlainNumber(statusBar.GetHeight and statusBar:GetHeight(), 16) or 16
-            rad = math_min(gRad, math_max(2, math.floor(h * 0.45)))
+            rad = math_min(gRad, math_max(2, math_floor(h * 0.45)))
         end
     end
     SyncSingleHitFlashMask(state, maskHost, rad)
 
     local isHeal = (kind == "heal" or kind == "HEAL")
-    if isHeal then
-        state.tex:SetVertexColor(0.62, 1.00, 0.78, 1)
-    else
-        state.tex:SetVertexColor(1.00, 0.94, 0.90, 1)
-    end
-
     local inten = ST.GetFXIntensity(override)
-    local basePeak = (inten == "soft") and 0.20 or 0.35
-    local peak = basePeak * ((opts and opts.alphaMul) or 1.0)
-    state.ag:Stop()
-    state.rise:SetToAlpha(peak)
-    state.fall:SetFromAlpha(peak)
-    state.tex:SetAlpha(0)
-    state.tex:Show()
-    state.ag:Play()
+    local isSoft = (inten == "soft")
+    local mul = (opts and opts.alphaMul) or 1.0
+
+    if isHeal then
+        -- 治疗：柔和绿闪 + 0.38s 柔绿丝绸光波沿填充方向横扫整条
+        state.tex:SetVertexColor(0.54, 1.00, 0.74, 1)
+        if state.redAG then state.redAG:Stop() end
+        local peak = math_min(0.60, (isSoft and 0.18 or 0.32) * mul)
+        state.ag:Stop()
+        state.rise:SetToAlpha(peak)
+        state.fall:SetFromAlpha(peak)
+        state.tex:SetAlpha(0)
+        state.tex:Show()
+        state.ag:Play()
+
+        if state.sweepClip and state.sweepTex and state.sweepAG then
+            local w = F.PlainNumber(statusBar.GetWidth and statusBar:GetWidth(), 140) or 140
+            local h = F.PlainNumber(statusBar.GetHeight and statusBar:GetHeight(), 16) or 16
+            local rev = opts and opts.reverse
+            if rev == nil and statusBar.GetReverseFill then
+                local okR, rVal = pcall(statusBar.GetReverseFill, statusBar)
+                rev = okR and rVal == true
+            end
+            local bandW = math_max(54, math_floor(w * 0.50))
+            state.sweepTex:SetSize(bandW, h + 6)
+            state.sweepTex:ClearAllPoints()
+            local travel = w + bandW + 8
+            if rev then
+                state.sweepTex:SetTexCoord(1, 0, 0, 1)
+                state.sweepTex:SetPoint("LEFT", statusBar, "RIGHT", 4, 0)
+                state.sTr:SetOffset(-travel, 0)
+            else
+                state.sweepTex:SetTexCoord(0, 1, 0, 1)
+                state.sweepTex:SetPoint("RIGHT", statusBar, "LEFT", -4, 0)
+                state.sTr:SetOffset(travel, 0)
+            end
+            local sweepPeak = math_min(0.92, (isSoft and 0.42 or 0.72) * mul)
+            state.sweepAG:Stop()
+            state.sAl:SetFromAlpha(sweepPeak)
+            state.sAl:SetToAlpha(0)
+            state.sweepTex:SetAlpha(sweepPeak)
+            state.sweepClip:Show()
+            state.sweepTex:Show()
+            state.sweepAG:Play()
+        end
+    else
+        -- 受击：干脆冷白冲击（标准 0.48 / 柔和 0.28）-> 淡红柔和回落
+        state.tex:SetVertexColor(1.00, 0.96, 0.95, 1)
+        if state.sweepAG then state.sweepAG:Stop() end
+        local peak = math_min(0.75, (isSoft and 0.28 or 0.48) * mul)
+        state.ag:Stop()
+        state.rise:SetToAlpha(peak)
+        state.fall:SetFromAlpha(peak)
+        state.tex:SetAlpha(0)
+        state.tex:Show()
+        state.ag:Play()
+
+        if state.redTex and state.redAG then
+            local redPeak = math_min(0.55, (isSoft and 0.18 or 0.34) * mul)
+            state.redAG:Stop()
+            state.rRise:SetToAlpha(redPeak)
+            state.rFall:SetFromAlpha(redPeak)
+            state.redTex:SetAlpha(0)
+            state.redTex:Show()
+            state.redAG:Play()
+        end
+    end
     return true
 end
 
@@ -1446,9 +1842,9 @@ function M.AttachHealPrediction(healthBar, opts)
 end
 
 ----------------------------------------------------------------------
---  7) PlayBarArriveGlide：换目标轻快入场滑动（2b）
---     • 明文血量：先 Immediate 设至 80%（柔和 90%），下一帧用原生平滑滑至当前值
---     • 机密血量：不做算术，直接跳过滑动保留淡入
+--  7) PlayBarArriveGlide & PlayFrameArriveSlide：换目标轻快入场滑动（2b / 任务 8）
+--     • 明文血量：先 Immediate 设至 55%（柔和 72%），下一帧用原生平滑滑至当前值
+--     • 框体同步 8px 横向微滑 + 0.35 起步快淡入（纯 Translation+Alpha，不改最终锚点严守 Q12，机密血量同样生效）
 --     • 快速连续切换目标时按代数取消旧回调，拖尾绝不露出伪影
 ----------------------------------------------------------------------
 local arriveState = setmetatable({}, { __mode = "k" })
@@ -1458,6 +1854,48 @@ function M.CancelBarArriveGlide(bar)
     if st then
         st.gen = (st.gen or 0) + 1
     end
+end
+
+function M.PlayFrameArriveSlide(frame, opts)
+    if not (frame and frame.CreateAnimationGroup) then return false end
+    local override = opts and opts.override
+    if not (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_targetArrive", override)) then
+        return false
+    end
+    local isSoft = ST.GetFXIntensity(override) == "soft"
+    local dx = (opts and opts.dx) or (isSoft and 5 or 8)
+    local startA = (opts and opts.startAlpha) or 0.35
+    local slideDur = (opts and opts.duration) or 0.14
+    local fadeDur = (opts and opts.fadeDuration) or 0.08
+
+    local ag, cache = GetSlot(frame, "arriveSlide")
+    if not ag then
+        ag = frame:CreateAnimationGroup()
+        local jump = ag:CreateAnimation("Translation")
+        jump:SetOrder(1)
+        jump:SetDuration(0)
+        local slide = ag:CreateAnimation("Translation")
+        slide:SetOrder(2)
+        slide:SetSmoothing("OUT")
+        local fade = ag:CreateAnimation("Alpha")
+        fade:SetOrder(2)
+        fade:SetToAlpha(1.0)
+        fade:SetSmoothing("OUT")
+        ag._jump, ag._slide, ag._fade = jump, slide, fade
+        ag:SetScript("OnFinished", function() frame:SetAlpha(1) end)
+        ag:SetScript("OnStop", function() frame:SetAlpha(1) end)
+        cache.arriveSlide = ag
+    end
+    ag:Stop()
+    ag._jump:SetOffset(dx, 0)
+    ag._slide:SetOffset(-dx, 0)
+    ag._slide:SetDuration(slideDur)
+    ag._fade:SetFromAlpha(startA)
+    ag._fade:SetToAlpha(1.0)
+    ag._fade:SetDuration(fadeDur)
+    frame:SetAlpha(1)
+    ag:Play()
+    return true
 end
 
 function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
@@ -1478,7 +1916,7 @@ function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
         return false
     end
 
-    local ratio = (ST.GetFXIntensity(override) == "soft") and 0.90 or 0.80
+    local ratio = (ST.GetFXIntensity(override) == "soft") and 0.72 or 0.55
     local startVal = hp * ratio
 
     local st = arriveState[bar]
@@ -1572,4 +2010,86 @@ function M.ArmClientTimerBar(bar, startSec, durSec, isElapsed, override)
     M.DisablePixelSnap(bar)
     if bar.GetStatusBarTexture then M.DisablePixelSnap(bar:GetStatusBarTexture()) end
     return true
+end
+
+----------------------------------------------------------------------
+--  9) 公共光环槽轻量动效（fx_auraFeel：供双翼自身光环与目标光环复用，零字段污染，0 OnUpdate）
+----------------------------------------------------------------------
+local auraSlotFeel = setmetatable({}, { __mode = "k" })
+
+function M.PlayAuraSlotSlideIn(slot, dx, dy, override)
+    if not (slot and slot.CreateAnimationGroup) then return false end
+    if not (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_auraFeel", override)) then
+        return false
+    end
+    local isSoft = ST.GetFXIntensity(override) == "soft"
+    local ox = (dx or 5) * (isSoft and 0.65 or 1.0)
+    local oy = (dy or 0) * (isSoft and 0.65 or 1.0)
+    local ag, cache = GetSlot(slot, "auraSlide")
+    if not ag then
+        ag = slot:CreateAnimationGroup()
+        local jump = ag:CreateAnimation("Translation")
+        jump:SetOrder(1); jump:SetDuration(0)
+        local slide = ag:CreateAnimation("Translation")
+        slide:SetOrder(2); slide:SetDuration(0.18); slide:SetSmoothing("OUT")
+        local fade = ag:CreateAnimation("Alpha")
+        fade:SetOrder(2); fade:SetFromAlpha(0); fade:SetToAlpha(1); fade:SetDuration(0.18); fade:SetSmoothing("OUT")
+        ag._jump, ag._slide = jump, slide
+        ag:SetScript("OnFinished", function() slot:SetAlpha(1) end)
+        ag:SetScript("OnStop", function() slot:SetAlpha(1) end)
+        cache.auraSlide = ag
+    end
+    ag:Stop()
+    ag._jump:SetOffset(ox, oy)
+    ag._slide:SetOffset(-ox, -oy)
+    slot:SetAlpha(1)
+    ag:Play()
+    return true
+end
+
+function M.SyncAuraSlotExpireGlow(slot, expiring, radius, override)
+    if not slot then return end
+    local st = auraSlotFeel[slot]
+    local want = expiring == true and (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_auraFeel", override)) == true
+    if not want then
+        if st then
+            if st.pulseAG then
+                if st.pulseAG:IsPlaying() then st.pulseAG:Stop() end
+                M.UnregisterLoopAnim(st.pulseAG)
+            end
+            if st.glow then st.glow:Hide() end
+            st.active = false
+        end
+        return
+    end
+    if not st then
+        if not slot.CreateTexture then return end
+        local glow = slot:CreateTexture(nil, "OVERLAY", nil, 5)
+        glow:SetAllPoints(slot)
+        glow:SetTexture(ST.TEX.FLAT)
+        glow:SetBlendMode("ADD")
+        glow:SetVertexColor(1.00, 0.72, 0.24, 1)
+        glow:Hide()
+        st = { glow = glow, maskedRad = -1, active = false }
+        auraSlotFeel[slot] = st
+    end
+    local rad = radius or 0
+    if st.maskedRad ~= rad then
+        if rad > 0 then
+            ST.MaskTexture(slot, st.glow, rad)
+        elseif ST.UnmaskTexture then
+            ST.UnmaskTexture(slot, st.glow)
+        end
+        st.maskedRad = rad
+    end
+    local scale = ST.GetFXScale(override)
+    st.pulseAG = M.EnsurePulseAlpha(st.glow, 0.20 * scale, 0.42 * scale, 1.15)
+    st.glow:Show()
+    st.active = true
+    if st.pulseAG then
+        M.RegisterLoopAnim(st.pulseAG, function()
+            return st.active == true and slot:IsVisible() and ST.IsFXEnabled("fx_auraFeel", override)
+        end)
+        if not st.pulseAG:IsPlaying() then st.pulseAG:Play() end
+    end
 end

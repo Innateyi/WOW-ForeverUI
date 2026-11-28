@@ -8,11 +8,12 @@ if not F then return end
 local CH = F._CoreHUD
 if not CH then return end
 
-local ipairs, math_abs, math_floor, math_max, math_min, pairs, pcall, tostring, type =
-    ipairs, math.abs, math.floor, math.max, math.min, pairs, pcall, tostring, type
+local ipairs, math_abs, math_floor, math_max, math_min, pairs, pcall, setmetatable, tostring, type =
+    ipairs, math.abs, math.floor, math.max, math.min, pairs, pcall, setmetatable, tostring, type
 local string_format = string.format
 local table_concat, table_sort = table.concat, table.sort
 local CreateFrame = CreateFrame
+local GetTime = GetTime
 local InCombatLockdown = InCombatLockdown
 
 local ST = F.StyleTokens
@@ -532,9 +533,12 @@ local function BuildTopTargetHUD()
         delay = 0.16, reverse = false, color = ST.COLORS.trail,
     })
     hpBar._spark = M.AttachEdgeSpark(hpBar._bar, {
-        reverse = false, width = 10, extraHeight = 2, a = 0.50,
+        reverse = false, width = 18, extraHeight = 4, a = 0.72, maskHost = hpBar,
     })
     hpBar._spark:SetShown(false)
+    hpBar._flow = M.AttachBarLivingFlow(hpBar, hpBar._bar, {
+        reverse = false, period = 6.2, peakAlpha = 0.18, softAlpha = 0.10,
+    })
     f._hpBar = hpBar
 
     local targetTextLayer = CreateFrame("Frame", nil, f)
@@ -827,8 +831,47 @@ local function BuildTargetAuraStyleTable(sz, rad, isDebuff)
     }
 end
 
-local function HideFallbackTargetSlots()
+local TARGET_AURA_EXPIRE_TICK_KEY = "kkowoUI_Target_AuraExpire"
+local engineAuraSlideHooked = setmetatable({}, { __mode = "k" })
+
+local function HookEngineTargetAuraSlide(btn)
+    if not (btn and btn.HookScript) or engineAuraSlideHooked[btn] then return end
+    engineAuraSlideHooked[btn] = true
+    pcall(btn.HookScript, btn, "OnShow", function(self)
+        if mod._active and M.PlayAuraSlotSlideIn then
+            M.PlayAuraSlotSlideIn(self, 5, 0)
+        end
+    end)
+end
+
+local function TickTargetExpiringAuras(now)
+    if not (mod._active and ST.IsFXEnabled("fx_auraFeel")) then
+        for _, slot in ipairs(tgtAuraState.fallbackSlots) do
+            if M.SyncAuraSlotExpireGlow then M.SyncAuraSlotExpireGlow(slot, false, 0) end
+        end
+        return false
+    end
+    local anyTimed = false
     for _, slot in ipairs(tgtAuraState.fallbackSlots) do
+        if slot:IsShown() and slot._plainExpTime then
+            anyTimed = true
+            local rem = slot._plainExpTime - now
+            if M.SyncAuraSlotExpireGlow then
+                M.SyncAuraSlotExpireGlow(slot, rem > 0 and rem <= 5.0, slot._lastRad or 0)
+            end
+        elseif M.SyncAuraSlotExpireGlow then
+            M.SyncAuraSlotExpireGlow(slot, false, slot._lastRad or 0)
+        end
+    end
+    return anyTimed
+end
+
+local function HideFallbackTargetSlots()
+    if M.UnregisterTextTick then M.UnregisterTextTick(TARGET_AURA_EXPIRE_TICK_KEY) end
+    for _, slot in ipairs(tgtAuraState.fallbackSlots) do
+        slot._auraFeelKey = nil
+        slot._plainExpTime = nil
+        if M.SyncAuraSlotExpireGlow then M.SyncAuraSlotExpireGlow(slot, false, 0) end
         slot:Hide()
     end
     HideTargetAuraDivider()
@@ -974,9 +1017,11 @@ local function EnsureTargetAuraEngine()
         tgtAuraState.engineBuffBtns = {}
         local function TrackDebuffBtn(btn)
             tgtAuraState.engineDebuffBtns[#tgtAuraState.engineDebuffBtns + 1] = btn
+            HookEngineTargetAuraSlide(btn)
         end
         local function TrackBuffBtn(btn)
             tgtAuraState.engineBuffBtns[#tgtAuraState.engineBuffBtns + 1] = btn
+            HookEngineTargetAuraSlide(btn)
         end
         local myDebuffLayout = {
             elementWidth = sz, elementHeight = sz,
@@ -1181,6 +1226,13 @@ local function CollectTargetAurasFallback(filter, maxCount)
 end
 
 local function PaintTargetFallbackSlot(slot, data, isDebuff, sz, rad)
+    local wasShown = slot:IsShown()
+    local prevKey = slot._auraFeelKey
+    local newKey = (not F.IsSecret(data.auraInstanceID) and type(data.auraInstanceID) ~= "nil" and ("id:" .. tostring(data.auraInstanceID)))
+        or (not F.IsSecret(data.icon) and type(data.icon) ~= "nil" and ("ic:" .. tostring(data.icon)))
+        or nil
+    slot._auraFeelKey = newKey
+
     slot:SetSize(sz, sz)
     slot._auraIndex = data.index
     slot._auraInstanceID = data.auraInstanceID
@@ -1189,6 +1241,9 @@ local function PaintTargetFallbackSlot(slot, data, isDebuff, sz, rad)
 
     local cd = slot._cd
     local appliedCD = false
+    local dPlain = F.PlainNumber(data.duration, nil)
+    local ePlain = F.PlainNumber(data.expirationTime, nil)
+    slot._plainExpTime = (dPlain and ePlain and dPlain > 0 and ePlain > 0) and ePlain or nil
     if type(data.auraInstanceID) ~= "nil" and _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDuration and cd.SetCooldownFromDurationObject then
         local okD, durObj = pcall(_G.C_UnitAuras.GetAuraDuration, "target", data.auraInstanceID)
         if okD and type(durObj) ~= "nil" then
@@ -1196,10 +1251,8 @@ local function PaintTargetFallbackSlot(slot, data, isDebuff, sz, rad)
         end
     end
     if not appliedCD then
-        local d = F.PlainNumber(data.duration, nil)
-        local e = F.PlainNumber(data.expirationTime, nil)
-        if d and e and d > 0 then
-            pcall(cd.SetCooldown, cd, e - d, d)
+        if dPlain and ePlain and dPlain > 0 then
+            pcall(cd.SetCooldown, cd, ePlain - dPlain, dPlain)
             appliedCD = true
         end
     end
@@ -1247,6 +1300,19 @@ local function PaintTargetFallbackSlot(slot, data, isDebuff, sz, rad)
     end
     ST.ApplyRoundedBorder(slot, rad, br, bg, bb, ba, 4)
     slot:Show()
+    if ST.IsFXEnabled("fx_auraFeel") then
+        if (not wasShown) or (newKey ~= nil and prevKey ~= nil and newKey ~= prevKey) then
+            if M.PlayAuraSlotSlideIn then M.PlayAuraSlotSlideIn(slot, 5, 0) end
+        end
+        if slot._plainExpTime and M.SyncAuraSlotExpireGlow then
+            local rem = slot._plainExpTime - GetTime()
+            M.SyncAuraSlotExpireGlow(slot, rem > 0 and rem <= 5.0, rad)
+        elseif M.SyncAuraSlotExpireGlow then
+            M.SyncAuraSlotExpireGlow(slot, false, rad)
+        end
+    elseif M.SyncAuraSlotExpireGlow then
+        M.SyncAuraSlotExpireGlow(slot, false, rad)
+    end
 end
 
 local function UpdateTargetAurasFallback()
@@ -1323,7 +1389,20 @@ local function UpdateTargetAurasFallback()
     end
 
     for i = used + 1, #tgtAuraState.fallbackSlots do
-        tgtAuraState.fallbackSlots[i]:Hide()
+        local sl = tgtAuraState.fallbackSlots[i]
+        sl._auraFeelKey = nil
+        sl._plainExpTime = nil
+        if M.SyncAuraSlotExpireGlow then M.SyncAuraSlotExpireGlow(sl, false, 0) end
+        sl:Hide()
+    end
+    if mod._active and ST.IsFXEnabled("fx_auraFeel") and M.RegisterTextTick then
+        if TickTargetExpiringAuras(GetTime()) then
+            M.RegisterTextTick(TARGET_AURA_EXPIRE_TICK_KEY, 0.25, TickTargetExpiringAuras)
+        else
+            M.UnregisterTextTick(TARGET_AURA_EXPIRE_TICK_KEY)
+        end
+    elseif M.UnregisterTextTick then
+        M.UnregisterTextTick(TARGET_AURA_EXPIRE_TICK_KEY)
     end
 end
 

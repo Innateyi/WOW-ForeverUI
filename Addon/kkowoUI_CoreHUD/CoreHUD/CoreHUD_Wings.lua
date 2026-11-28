@@ -100,8 +100,12 @@ local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius, fxOverride
         if fillTex then ST.MaskTexture(holder, fillTex, rad) end
         if holder._sheen then ST.MaskTexture(holder, holder._sheen, rad) end
         if holder._aimZone then ST.MaskTexture(holder, holder._aimZone, rad) end
-        if holder._spark and holder._spark._spark then
-            ST.MaskTexture(holder, holder._spark._spark, rad)
+        if holder._spark then
+            if holder._spark.SyncMask then
+                holder._spark:SyncMask(holder, rad)
+            elseif holder._spark._spark then
+                ST.MaskTexture(holder, holder._spark._spark, rad)
+            end
         end
         if holder._manaRegenSparkTex then
             ST.MaskTexture(holder, holder._manaRegenSparkTex, rad)
@@ -112,12 +116,18 @@ local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius, fxOverride
         end
         ST.ApplyRoundedBorder(holder, rad, 0.05, 0.06, 0.09, 0.86, 6)
     else
+        if holder._spark and holder._spark.SyncMask then
+            holder._spark:SyncMask(holder, 0)
+        end
         F.Theme.StylePanel(holder, 0, 0.80)
         if holder._fuiBorders then
             for _, ln in ipairs(holder._fuiBorders) do ln:Show() end
         end
     end
-    -- 重建圆角遮罩后，同步把治疗预估/吸收盾/超量线与受击闪光叠层重挂到外层 holder 遮罩（或圆角归零时卸载）
+    -- 重建圆角遮罩后，同步把治疗预估/吸收盾/超量线、条内轻流光与受击闪光叠层重挂到外层 holder 遮罩（或圆角归零时卸载）
+    if holder._flow and holder._flow.Refresh then
+        holder._flow:Refresh(rad)
+    end
     if holder._healPred and holder._healPred.SyncLayout then
         holder._healPred:SyncLayout(true)
     end
@@ -747,7 +757,61 @@ local function StyleCooldownTimerFont(cd, slot)
     end
 end
 
+local WING_AURA_EXPIRE_TICK_KEY = "kkowoUI_CoreHUD_AuraExpire"
+
+local function ResolveAuraIdentityKey(data)
+    if not data then return nil end
+    if not F.IsSecret(data.auraInstanceID) and type(data.auraInstanceID) ~= "nil" then
+        return "id:" .. tostring(data.auraInstanceID)
+    end
+    if data.spellID then
+        return "sp:" .. tostring(data.spellID)
+    end
+    if not F.IsSecret(data.icon) and type(data.icon) ~= "nil" then
+        return "ic:" .. tostring(data.icon)
+    end
+    return nil
+end
+
+local function TickWingExpiringAuras(now)
+    if not (mod._active and CH.coreFrame and ST.IsFXEnabled("fx_auraFeel")) then
+        if CH.coreFrame then
+            for _, pool in ipairs({ CH.coreFrame._buffSlots, CH.coreFrame._debuffSlots }) do
+                if pool then
+                    for _, sl in ipairs(pool) do
+                        if M.SyncAuraSlotExpireGlow then M.SyncAuraSlotExpireGlow(sl, false, 0) end
+                    end
+                end
+            end
+        end
+        return false
+    end
+    local anyTimed = false
+    for _, pool in ipairs({ CH.coreFrame._buffSlots, CH.coreFrame._debuffSlots }) do
+        if pool then
+            for _, sl in ipairs(pool) do
+                if sl:IsShown() and sl._plainExpTime then
+                    anyTimed = true
+                    local rem = sl._plainExpTime - now
+                    local expNow = (rem > 0 and rem <= 5.0)
+                    if M.SyncAuraSlotExpireGlow then
+                        M.SyncAuraSlotExpireGlow(sl, expNow, sl._lastRad or 0)
+                    end
+                elseif M.SyncAuraSlotExpireGlow then
+                    M.SyncAuraSlotExpireGlow(sl, false, sl._lastRad or 0)
+                end
+            end
+        end
+    end
+    return anyTimed
+end
+
 local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
+    local wasShown = slot:IsShown()
+    local prevKey = slot._auraFeelKey
+    local newKey = ResolveAuraIdentityKey(data)
+    slot._auraFeelKey = newKey
+
     slot:SetSize(size, size)
     slot._auraIndex = data.index
     slot._auraInstanceID = data.auraInstanceID
@@ -760,7 +824,13 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
 
     local cd = slot._cd
     local appliedCD = false
+    local plainExp = nil
     if not isPerm then
+        local dPlain = F.PlainNumber(data.duration, nil)
+        local ePlain = F.PlainNumber(data.expirationTime, nil)
+        if dPlain and ePlain and dPlain > 0 and ePlain > 0 then
+            plainExp = ePlain
+        end
         if type(data.auraInstanceID) ~= "nil" and _G.C_UnitAuras and _G.C_UnitAuras.GetAuraDuration and cd.SetCooldownFromDurationObject then
             local okD, durObj = pcall(_G.C_UnitAuras.GetAuraDuration, "player", data.auraInstanceID)
             if okD and type(durObj) ~= "nil" then
@@ -768,14 +838,13 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
             end
         end
         if not appliedCD then
-            local d = F.PlainNumber(data.duration, nil)
-            local e = F.PlainNumber(data.expirationTime, nil)
-            if d and e and d > 0 then
-                pcall(cd.SetCooldown, cd, e - d, d)
+            if dPlain and ePlain and dPlain > 0 then
+                pcall(cd.SetCooldown, cd, ePlain - dPlain, dPlain)
                 appliedCD = true
             end
         end
     end
+    slot._plainExpTime = plainExp
     cd:SetShown(appliedCD)
     if slot._timerShade then slot._timerShade:SetShown(appliedCD) end
     if appliedCD then
@@ -829,6 +898,21 @@ local function ApplyAuraSlotData(slot, data, isDebuff, size, isPerm)
         end
     end
     slot:Show()
+    if ST.IsFXEnabled("fx_auraFeel") then
+        if (not wasShown) or (newKey ~= nil and prevKey ~= nil and newKey ~= prevKey) then
+            if M.PlayAuraSlotSlideIn then
+                M.PlayAuraSlotSlideIn(slot, isPerm and 0 or 5, isPerm and -4 or 4)
+            end
+        end
+        if (not isPerm) and slot._plainExpTime and M.SyncAuraSlotExpireGlow then
+            local rem = slot._plainExpTime - GetTime()
+            M.SyncAuraSlotExpireGlow(slot, rem > 0 and rem <= 5.0, rad)
+        elseif M.SyncAuraSlotExpireGlow then
+            M.SyncAuraSlotExpireGlow(slot, false, rad)
+        end
+    elseif M.SyncAuraSlotExpireGlow then
+        M.SyncAuraSlotExpireGlow(slot, false, rad)
+    end
 end
 
 local function IsSafeBlizzFrame(f)
@@ -1330,6 +1414,9 @@ local function LayoutAuraRowWithOverflow(slots, overflowBadge, list, maxSlots, s
             slot:SetPoint(anchorPoint, anchorTarget, relPoint, startX + (i - 1) * (sz + gap), yOff)
             ApplyAuraSlotData(slot, data, isDebuff, sz, isPerm)
         else
+            slot._auraFeelKey = nil
+            slot._plainExpTime = nil
+            if M.SyncAuraSlotExpireGlow then M.SyncAuraSlotExpireGlow(slot, false, 0) end
             slot:Hide()
         end
     end
@@ -1444,6 +1531,17 @@ local function UpdateCombatAuras()
         sz, gap, anchorTarget, "TOP", "BOTTOM", debuffY,
         true, false, false
     )
+
+    if mod._active and ST.IsFXEnabled("fx_auraFeel") and M.RegisterTextTick then
+        if TickWingExpiringAuras(GetTime()) then
+            M.RegisterTextTick(WING_AURA_EXPIRE_TICK_KEY, 0.25, TickWingExpiringAuras)
+        else
+            M.UnregisterTextTick(WING_AURA_EXPIRE_TICK_KEY)
+        end
+    elseif M.UnregisterTextTick then
+        M.UnregisterTextTick(WING_AURA_EXPIRE_TICK_KEY)
+        TickWingExpiringAuras(GetTime())
+    end
 
     SyncTopRightAuraDedupe()
     UpdateIdleFade(false)
@@ -1647,9 +1745,12 @@ local function BuildCoreHUD()
         color = ST.COLORS.trail,
     })
     hpWing._spark = M.AttachEdgeSpark(hpWing._bar, {
-        reverse = true, width = 10, extraHeight = 2, a = 0.55,
+        reverse = true, width = 18, extraHeight = 4, a = 0.72, maskHost = hpWing,
     })
     hpWing._spark:SetShown(false)
+    hpWing._flow = M.AttachBarLivingFlow(hpWing, hpWing._bar, {
+        reverse = true, period = 6.5, peakAlpha = 0.18, softAlpha = 0.10,
+    })
     f._hpWing = hpWing
 
     -- 2) 右翼正向主资源条
@@ -1661,9 +1762,12 @@ local function BuildCoreHUD()
         color = { 0.14, 0.24, 0.42, 0.75 },
     })
     ppWing._spark = M.AttachEdgeSpark(ppWing._bar, {
-        reverse = false, width = 10, extraHeight = 2, a = 0.48,
+        reverse = false, width = 18, extraHeight = 4, a = 0.72, maskHost = ppWing,
     })
     ppWing._spark:SetShown(false)
+    ppWing._flow = M.AttachBarLivingFlow(ppWing, ppWing._bar, {
+        reverse = false, period = 6.5, peakAlpha = 0.18, softAlpha = 0.10,
+    })
     f._ppWing = ppWing
 
     -- 3) 上方左翼极细挥砍/自动射击条（初始值 0，静默暗槽不抢眼）

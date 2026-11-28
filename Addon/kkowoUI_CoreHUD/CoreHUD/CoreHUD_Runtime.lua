@@ -36,13 +36,17 @@ local BuildCoreHUD, BuildPetHUD, BuildTopTargetHUD, HidePetFeedMenu = CH.BuildCo
 ----------------------------------------------------------------------
 --  4) 数据刷新（核心血蓝、宠物、顶部目标、EUI 原框体残影）
 ----------------------------------------------------------------------
-local function UpdateBarSparkVis(wing, cur, mx)
+local function UpdateBarSparkVis(wing, cur, mx, doPulse)
     if not (wing and wing._spark) then return end
     local pCur = F.PlainNumber(cur, nil)
     local pMx = F.PlainNumber(mx, nil)
     if pCur and pMx and pMx > 0 then
         local frac = pCur / pMx
-        wing._spark:SetShown(frac > 0.02 and frac < 0.985)
+        local show = (frac > 0.01 and frac < 0.995)
+        wing._spark:SetShown(show)
+        if show and doPulse and wing._spark.Pulse then
+            wing._spark:Pulse(1.0)
+        end
     else
         wing._spark:SetShown(false)
     end
@@ -107,9 +111,13 @@ local function HandleUnitCombatFlash(unit, action, flags, amount)
     local plainMx = (not F.IsSecret(rawMx)) and F.PlainNumber(rawMx, nil) or nil
 
     if plainAmt and plainMx and plainMx > 0 then
-        local thresh = (act == "HEAL") and 0.10 or 0.08
-        if (plainAmt / plainMx) < thresh then
+        local ratio = plainAmt / plainMx
+        local lightThresh = (act == "HEAL") and 0.04 or 0.03
+        if ratio < lightThresh then
             return
+        end
+        if ratio < 0.10 then
+            alphaMul = 0.72
         end
     else
         -- 数值或血量上限为机密值：若标志字段明文可用则仅暴击触发；标志也不可读时退化为 0.35s 限流半透轻闪
@@ -134,6 +142,7 @@ local function HandleUnitCombatFlash(unit, action, flags, amount)
         alphaMul = alphaMul,
         radius = GetBarRadius(h),
         maskHost = holder,
+        reverse = holder._reverse == true,
     })
 end
 
@@ -144,7 +153,7 @@ local function UpdatePlayerHealth(instant)
         local mx = _G.UnitHealthMax and _G.UnitHealthMax("player")
         if type(mx) == "nil" then mx = 1 end
         SetHUDMainBar(CH.coreFrame._hpWing._bar, hp, mx, "player", instant)
-        UpdateBarSparkVis(CH.coreFrame._hpWing, hp, mx)
+        UpdateBarSparkVis(CH.coreFrame._hpWing, hp, mx, not instant)
         if CH.coreFrame._hpWing._trail then
             CH.coreFrame._hpWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
             CH.coreFrame._hpWing._trail:SetValue(hp, mx, instant)
@@ -526,7 +535,7 @@ local function UpdatePlayerPower(instant)
     local ptChanged = (bar._kkLastPowerType ~= nil and bar._kkLastPowerType ~= pType)
     bar._kkLastPowerType = pType
     SetHUDMainBar(bar, cur, mx, "player", instant, ptChanged)
-    UpdateBarSparkVis(CH.coreFrame._ppWing, cur, mx)
+    UpdateBarSparkVis(CH.coreFrame._ppWing, cur, mx, not instant)
     if CH.coreFrame._ppWing._trail then
         CH.coreFrame._ppWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
         CH.coreFrame._ppWing._trail:SetValue(cur, mx, instant or ptChanged)
@@ -674,7 +683,16 @@ local function UpdateTopTargetHUD(instant, isTargetSwitch)
             end
             CH.topTargetFrame:Hide()
         else
-            if instant and not CH.topTargetFrame:IsShown() then
+            local wasShown = CH.topTargetFrame:IsShown()
+            if isTargetSwitch == true and ST.IsFXEnabled("fx_targetArrive") and M.PlayFrameArriveSlide then
+                CH.topTargetFrame:Show()
+                M.PlayFrameArriveSlide(CH.topTargetFrame, {
+                    dx = 8,
+                    startAlpha = wasShown and 0.72 or 0.35,
+                    duration = 0.14,
+                    fadeDuration = 0.08,
+                })
+            elseif instant and not wasShown then
                 CH.topTargetFrame:SetAlpha(0)
                 CH.topTargetFrame:Show()
                 F.Theme.FadeTo(CH.topTargetFrame, 1.0, 0.10, false)
@@ -698,7 +716,7 @@ local function UpdateTopTargetHUD(instant, isTargetSwitch)
                     trail:SetValue(hp, mx, instant)
                 end
             end
-            UpdateBarSparkVis(CH.topTargetFrame._hpBar, hp, mx)
+            UpdateBarSparkVis(CH.topTargetFrame._hpBar, hp, mx, not instant)
             if CH.topTargetFrame._hpBar._healPred then
                 CH.topTargetFrame._hpBar._healPred:QueueUpdate("target", instant)
             end
@@ -1233,6 +1251,8 @@ local function ApplyLayoutAndTheme()
             local rad = GetBarRadius(barH)
             CH.coreFrame._hpWing._bar._kkGradCache = nil
             CH.coreFrame._ppWing._bar._kkGradCache = nil
+            if CH.coreFrame._hpWing._flow then CH.coreFrame._hpWing._flow._enabled = true end
+            if CH.coreFrame._ppWing._flow then CH.coreFrame._ppWing._flow._enabled = true end
             ApplyWingStyle(CH.coreFrame._hpWing, r1, g1, b1, r2, g2, b2, rad)
             if CH.coreFrame._hpWing._trail then
                 CH.coreFrame._hpWing._trail:SetDelay(db.trailDelay or 0.16)
@@ -1332,6 +1352,7 @@ local function ApplyLayoutAndTheme()
             CH.topTargetFrame._nameText:SetWidth(168)
         end
         local tr1, tg1, tb1, tr2, tg2, tb2 = ST.GetUnitGradient("target")
+        if CH.topTargetFrame._hpBar._flow then CH.topTargetFrame._hpBar._flow._enabled = true end
         ApplyWingStyle(CH.topTargetFrame._hpBar, tr1, tg1, tb1, tr2, tg2, tb2, GetBarRadius(tHpH))
         local tpt = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("target"), 0) or 0
         local tpr1, tpg1, tpb1, tpr2, tpg2, tpb2 = ST.GetPowerGradient(tpt)
@@ -1766,6 +1787,8 @@ function mod:OnDisable()
     CH.permState.hasCleanScan = false
     CH.permState.RebuildIcons()
     if CH.coreFrame then
+        if CH.coreFrame._hpWing and CH.coreFrame._hpWing._flow then CH.coreFrame._hpWing._flow:SetEnabled(false) end
+        if CH.coreFrame._ppWing and CH.coreFrame._ppWing._flow then CH.coreFrame._ppWing._flow:SetEnabled(false) end
         if CH.coreFrame._orb then
             if CH.coreFrame._orb._haloAG then CH.coreFrame._orb._haloAG:Stop() end
             if CH.coreFrame._orb._spinAG then CH.coreFrame._orb._spinAG:Stop() end
@@ -1773,10 +1796,16 @@ function mod:OnDisable()
         end
         CH.coreFrame:Hide()
     end
+    if M.UnregisterTextTick then
+        M.UnregisterTextTick("kkowoUI_CoreHUD_AuraExpire")
+    end
     HidePetFeedMenu()
     if CH.ReleaseTargetAuras then CH.ReleaseTargetAuras() end
     if CH.petFrame then CH.petFrame:Hide() end
-    if CH.topTargetFrame then CH.topTargetFrame:Hide() end
+    if CH.topTargetFrame then
+        if CH.topTargetFrame._hpBar and CH.topTargetFrame._hpBar._flow then CH.topTargetFrame._hpBar._flow:SetEnabled(false) end
+        CH.topTargetFrame:Hide()
+    end
     if CH.euiTrailPlayer then CH.euiTrailPlayer:SetEnabled(false) end
     if CH.euiTrailTarget then CH.euiTrailTarget:SetEnabled(false) end
     SyncManaRegenSpark()

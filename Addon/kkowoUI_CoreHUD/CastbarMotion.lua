@@ -424,8 +424,12 @@ local function RefreshOverlayChrome()
         local fillTex = overlay._bar:GetStatusBarTexture()
         if fillTex then ST.MaskTexture(overlay._barHost, fillTex, rad) end
         ST.MaskTexture(overlay._barHost, overlay._latency, rad)
-        if overlay._spark and overlay._spark._spark then
-            ST.MaskTexture(overlay._barHost, overlay._spark._spark, rad)
+        if overlay._spark then
+            if overlay._spark.SyncMask then
+                overlay._spark:SyncMask(overlay._barHost, rad)
+            elseif overlay._spark._spark then
+                ST.MaskTexture(overlay._barHost, overlay._spark._spark, rad)
+            end
         end
         if overlay._lockTex then
             ST.MaskTexture(overlay._barHost, overlay._lockTex, rad)
@@ -433,8 +437,14 @@ local function RefreshOverlayChrome()
         ST.ApplyRoundedBorder(overlay._barHost, rad, 0.02, 0.02, 0.03, 0.96, 6)
         overlay._lastBarRad = rad
     elseif overlay._lastBarRad and overlay._lastBarRad > 0 then
+        if overlay._spark and overlay._spark.SyncMask then
+            overlay._spark:SyncMask(overlay._barHost, 0)
+        end
         ST.ClearRoundedMask(overlay._barHost)
         overlay._lastBarRad = 0
+    end
+    if overlay._flow and overlay._flow.Refresh then
+        overlay._flow:Refresh(rad)
     end
 
     overlay._nameFS:ClearAllPoints()
@@ -525,12 +535,15 @@ local function BuildCastbarOverlay()
         if sbFillTex.SetSnapToPixelGrid then pcall(sbFillTex.SetSnapToPixelGrid, sbFillTex, false) end
         if sbFillTex.SetTexelSnappingBias then pcall(sbFillTex.SetTexelSnappingBias, sbFillTex, 0) end
     end
-    f._spark = M.AttachEdgeSpark(sb, { width = 22, extraHeight = 6, a = 0.96, levelOffset = 4 })
+    f._spark = M.AttachEdgeSpark(sb, { width = 22, extraHeight = 6, a = 0.96, levelOffset = 4, maskHost = barHost })
     if f._spark and f._spark._spark then
         local sp = f._spark._spark
         if sp.SetSnapToPixelGrid then pcall(sp.SetSnapToPixelGrid, sp, false) end
         if sp.SetTexelSnappingBias then pcall(sp.SetTexelSnappingBias, sp, 0) end
     end
+    f._flow = M.AttachBarLivingFlow(barHost, sb, {
+        reverse = false, period = 2.2, sweepRatio = 0.72, peakAlpha = 0.22, softAlpha = 0.12, enabled = false,
+    })
 
     -- 文字宿置于高于 StatusBar 与圆角边框的子框体，避免“条内显示”时被血条/圆角遮挡
     local textHost = CreateFrame("Frame", nil, f)
@@ -623,10 +636,13 @@ function F._BuildDemoCastbar(parent, w, h, fxOverride)
     if sbFill and M.DisablePixelSnap then M.DisablePixelSnap(sbFill) end
     f._bar = sb
 
-    f._spark = M.AttachEdgeSpark(sb, { width = 18, extraHeight = 4, a = 0.94, levelOffset = 4, fxOverride = fxOverride })
+    f._spark = M.AttachEdgeSpark(sb, { width = 18, extraHeight = 4, a = 0.94, levelOffset = 4, maskHost = barHost, fxOverride = fxOverride })
     if f._spark and f._spark._spark and M.DisablePixelSnap then
         M.DisablePixelSnap(f._spark._spark)
     end
+    f._flow = M.AttachBarLivingFlow(barHost, sb, {
+        reverse = false, period = 2.2, sweepRatio = 0.72, peakAlpha = 0.22, softAlpha = 0.12, fxOverride = fxOverride, enabled = false,
+    })
 
     local textHost = CreateFrame("Frame", nil, f)
     textHost:SetAllPoints(f)
@@ -667,7 +683,7 @@ function F._BuildDemoCastbar(parent, w, h, fxOverride)
     if rad > 0 then
         ST.MaskTexture(barHost, bg, rad)
         if sbFill then ST.MaskTexture(barHost, sbFill, rad) end
-        if f._spark and f._spark._spark then ST.MaskTexture(barHost, f._spark._spark, rad) end
+        if f._spark and f._spark.SyncMask then f._spark:SyncMask(barHost, rad) end
         ST.ApplyRoundedBorder(barHost, rad, 0.02, 0.02, 0.03, 0.94, 5)
     end
     ST.ApplyBarGradient(sb, r1, g1, b1, r2, g2, b2, 0.96, false)
@@ -684,6 +700,11 @@ function F._BuildDemoCastbar(parent, w, h, fxOverride)
         if f._spark then
             f._spark._fxOverride = ov
             f._spark:RefreshTexture()
+            if f._spark.SyncMask then f._spark:SyncMask(barHost, rad) end
+        end
+        if f._flow then
+            f._flow._fxOverride = ov
+            f._flow:Refresh(rad)
         end
         ST.ApplyBarGradient(sb, r1, g1, b1, r2, g2, b2, 0.96, false)
     end
@@ -1058,6 +1079,9 @@ local function StartCast(isChannel, isEmpower)
     end
 
     overlay:Show()
+    if overlay._flow then
+        overlay._flow:SetEnabled(true, overlay._lastBarRad or 0)
+    end
     if useNative then
         overlay:SetScript("OnUpdate", nil)
         if overlay._spark then
@@ -1089,6 +1113,7 @@ local function StopCast(feedbackKind, eventCastGUID)
     M.UnregisterTextTick(CAST_TICK_KEY)
     if overlay then
         overlay:SetScript("OnUpdate", nil)
+        if overlay._flow then overlay._flow:SetEnabled(false) end
         if overlay._lockTex then overlay._lockTex:Hide() end
         overlay:Hide()
     end
@@ -1224,6 +1249,7 @@ function mod:OnDisable()
     M.UnregisterTextTick(CAST_TICK_KEY)
     if overlay then
         overlay:SetScript("OnUpdate", nil)
+        if overlay._flow then overlay._flow:SetEnabled(false) end
         if overlay._lockTex then overlay._lockTex:Hide() end
         overlay:Hide()
     end

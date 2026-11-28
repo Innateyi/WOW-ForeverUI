@@ -409,7 +409,7 @@ local function ApplyIconPoints(icon, pts, dy)
     return okAny
 end
 
-local function PlayIconReleaseSpring(icon, st, px)
+local function PlayIconReleaseSpring(icon, st, dip)
     if not (icon and icon.CreateAnimationGroup) then return end
     local ag = st.releaseAG
     if not ag then
@@ -417,18 +417,78 @@ local function PlayIconReleaseSpring(icon, st, px)
         local jump = ag:CreateAnimation("Translation")
         jump:SetOrder(1)
         jump:SetDuration(0)
-        local back = ag:CreateAnimation("Translation")
-        back:SetOrder(2)
-        back:SetDuration(0.08)
-        back:SetSmoothing("OUT")
+        local bounce = ag:CreateAnimation("Translation")
+        bounce:SetOrder(2)
+        bounce:SetDuration(0.06)
+        bounce:SetSmoothing("OUT")
+        local settle = ag:CreateAnimation("Translation")
+        settle:SetOrder(3)
+        settle:SetDuration(0.04)
+        settle:SetSmoothing("IN")
         ag._jump = jump
-        ag._back = back
+        ag._bounce = bounce
+        ag._settle = settle
         st.releaseAG = ag
     end
+    local over = math_min(0.6, dip * 0.25)
     ag:Stop()
-    ag._jump:SetOffset(0, -px)
-    ag._back:SetOffset(0, px)
+    ag._jump:SetOffset(0, -dip)
+    ag._bounce:SetOffset(0, dip + over)
+    ag._settle:SetOffset(0, -over)
     ag:Play()
+end
+
+-- 按下瞬时极轻柔光内边反馈（独立挂在非受保护 flashOverlay.host 下，绝不写入暴雪按钮字段，战斗 100% 安全）
+local function SetPressSheenActive(btn, st, active, fadeOut)
+    if not active then
+        if st.sheenFadeAG and st.sheenFadeAG:IsPlaying() then
+            st.sheenFadeAG:Stop()
+        end
+        if st.pressSheen then
+            if fadeOut and st.pressSheen:IsShown() and st.sheenFadeAG then
+                st.sheenFadeAG:Play()
+            else
+                st.pressSheen:SetAlpha(0)
+                st.pressSheen:Hide()
+            end
+        end
+        return
+    end
+    local fl = EnsureFlashOverlay(btn)
+    if not (fl and fl.host) then return end
+    if not st.pressSheen then
+        local sh = fl.host:CreateTexture(nil, "OVERLAY", nil, 5)
+        sh:SetAllPoints(fl.host)
+        sh:SetTexture(ST.TEX.FLAT)
+        sh:SetBlendMode("ADD")
+        sh:SetVertexColor(0.96, 0.98, 1.00, 1)
+        sh:SetAlpha(0)
+        sh:Hide()
+
+        local sag = sh:CreateAnimationGroup()
+        local al = sag:CreateAnimation("Alpha")
+        al:SetOrder(1); al:SetFromAlpha(0.22); al:SetToAlpha(0); al:SetDuration(0.10); al:SetSmoothing("OUT")
+        sag._al = al
+        sag:SetScript("OnFinished", function() sh:SetAlpha(0); sh:Hide() end)
+        sag:SetScript("OnStop", function() sh:SetAlpha(0); sh:Hide() end)
+        st.pressSheen = sh
+        st.sheenFadeAG = sag
+    end
+    local db = mod:GetDB()
+    local rad = math_max(0, math_min(10, F.PlainNumber(db.iconRadius, ST.GetCornerRadius(6)) or 6))
+    if rad > 0 then
+        ST.MaskTexture(fl.host, st.pressSheen, rad)
+    elseif ST.UnmaskTexture then
+        ST.UnmaskTexture(fl.host, st.pressSheen)
+    end
+    local isSoft = ST.GetFXIntensity() == "soft"
+    local peak = isSoft and 0.13 or 0.22
+    if st.sheenFadeAG then
+        st.sheenFadeAG:Stop()
+        st.sheenFadeAG._al:SetFromAlpha(peak)
+    end
+    st.pressSheen:SetAlpha(peak)
+    st.pressSheen:Show()
 end
 
 local function SetActionIconPressed(btn, pressed, noSpring, source)
@@ -448,31 +508,40 @@ local function SetActionIconPressed(btn, pressed, noSpring, source)
         if not icon then return end
         local pts = CaptureIconPoints(icon)
         if #pts == 0 then return end
-        local px = ST.GetPixel(btn)
-        if not px or px <= 0 then px = 1 end
+        local isSoft = ST.GetFXIntensity() == "soft"
+        local dip = isSoft and 1.2 or 2.0
         if st.releaseAG then st.releaseAG:Stop() end
         -- 仅在 SetPoint 实际成功后标记 pressed，防止失败导致状态失配（战斗安全 + 怪癖 6 不用 Scale）
-        if ApplyIconPoints(icon, pts, -px) then
+        if ApplyIconPoints(icon, pts, -dip) then
             st.icon = icon
             st.origPoints = pts
-            st.shiftPx = px
+            st.shiftPx = dip
             st.pressSource = source or "key"
             st.pressed = true
+            SetPressSheenActive(btn, st, true, false)
         end
     else
-        if not st.pressed then return end
+        if not st.pressed then
+            SetPressSheenActive(btn, st, false, false)
+            return
+        end
         st.pressed = false
         st.pressSource = nil
         local icon = st.icon or FindButtonIcon(btn)
         local pts = st.origPoints
-        local px = st.shiftPx or ST.GetPixel(btn) or 1
+        local dip = st.shiftPx or 2.0
         st.origPoints = nil
         if st.releaseAG then st.releaseAG:Stop() end
         if icon and pts then
             ApplyIconPoints(icon, pts, 0)
             if (not noSpring) and mod._active and ST.IsFXEnabled("fx_buttonPress") and btn:IsVisible() then
-                PlayIconReleaseSpring(icon, st, px)
+                PlayIconReleaseSpring(icon, st, dip)
+                SetPressSheenActive(btn, st, false, true)
+            else
+                SetPressSheenActive(btn, st, false, false)
             end
+        else
+            SetPressSheenActive(btn, st, false, false)
         end
     end
 end
