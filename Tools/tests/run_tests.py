@@ -4798,6 +4798,440 @@ def run_all():
 
     check('综合回归-14：页脚防隔行、连续液态流与全条类质感统一', t_reg_14_footer_liquid_flow_and_unified_bars)
 
+    # 44. 综合回归-15：全 EUI 框体活跃态 + 黑暗深渊 1200 事件副本实机录像回放 + 战斗机密值/大小写路径/引擎按钮零钩子压力测试
+    def t_reg_15_dungeon_full_frames_stress():
+        rec_path = pathlib.Path(r'D:\code\wow\review\recordings\20261128_211255\recording.json')
+        assert rec_path.is_file(), f'缺失黑暗深渊实机录像文件: {rec_path}'
+        rec_data = json.loads(rec_path.read_text(encoding='utf-8'))
+        sessions = rec_data.get('sessions') if isinstance(rec_data.get('sessions'), list) else [rec_data]
+
+        setup_eui_lua = '''
+            _G._reg15Counts = {
+                stFillSetTex = 0, stZoneSetTex = 0, stSetSB = 0,
+                tbbFillSetTex = 0, tbbSetSB = 0, tbbSparkSetTex = 0,
+                dmFillSetTex = 0, dmSetSB = 0,
+            }
+            _G._reg15EngineBtns = {}
+
+            -- 模拟 WoW 实机 GetTexture() 返回小写无 .tga 后缀路径
+            local function WrapRealisticTex(tex, counterKey)
+                local origGet = tex.GetTexture
+                local origSet = tex.SetTexture
+                function tex:GetTexture()
+                    local v = origGet(self)
+                    if type(v) == "string" then
+                        return v:lower():gsub("%.tga$", "")
+                    end
+                    return v
+                end
+                function tex:SetTexture(p, ...)
+                    if counterKey then
+                        _G._reg15Counts[counterKey] = (_G._reg15Counts[counterKey] or 0) + 1
+                    end
+                    return origSet(self, p, ...)
+                end
+            end
+
+            -- 1) EUI 挥砍计时条（ERB_SwingTimerFrame，含延迟/瞄准分区与 SetStatusBarTexture 计数）
+            local erbST = CreateFrame("Frame", "ERB_SwingTimerFrame", UIParent)
+            erbST:SetSize(220, 14); erbST:SetPoint("CENTER", UIParent, "CENTER", 0, -140); erbST:Show()
+            local sRow = CreateFrame("Frame", nil, erbST)
+            sRow:SetSize(220, 14); sRow:SetAllPoints(erbST); sRow:Show()
+            sRow._bg = sRow:CreateTexture(nil, "BACKGROUND"); sRow._bg:SetAllPoints()
+            sRow._bg:SetColorTexture(0.05, 0.05, 0.05, 0.8)
+            sRow._clip = CreateFrame("Frame", nil, sRow); sRow._clip:SetAllPoints()
+            sRow._bar = CreateFrame("StatusBar", nil, sRow._clip); sRow._bar:SetAllPoints()
+            sRow._bar:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            sRow._bar:GetStatusBarTexture():SetVertexColor(0.85, 0.72, 0.28, 1)
+            WrapRealisticTex(sRow._bar:GetStatusBarTexture(), "stFillSetTex")
+            local origStSB = sRow._bar.SetStatusBarTexture
+            function sRow._bar:SetStatusBarTexture(p, ...)
+                _G._reg15Counts.stSetSB = _G._reg15Counts.stSetSB + 1
+                local r = origStSB(self, p, ...)
+                WrapRealisticTex(self:GetStatusBarTexture(), "stFillSetTex")
+                return r
+            end
+            sRow._border = CreateFrame("Frame", nil, sRow); sRow._border:SetAllPoints()
+            sRow._sparkFrame = CreateFrame("Frame", nil, sRow._clip); sRow._sparkFrame:SetAllPoints()
+            sRow._spark = sRow._sparkFrame:CreateTexture(nil, "OVERLAY")
+            sRow._spark:SetTexture("Interface\\\\AddOns\\\\EllesmereUI\\\\media\\\\cast_spark.tga")
+            sRow._textFrame = CreateFrame("Frame", nil, sRow); sRow._textFrame:SetAllPoints()
+            sRow._zones = {
+                lat = { back = sRow._clip:CreateTexture(nil, "ARTWORK"), front = sRow._bar:CreateTexture(nil, "OVERLAY") },
+                aim = { back = sRow._clip:CreateTexture(nil, "ARTWORK"), front = sRow._bar:CreateTexture(nil, "OVERLAY") },
+            }
+            sRow._zones.lat.back:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            sRow._zones.lat.front:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            sRow._zones.aim.back:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            sRow._zones.aim.front:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            WrapRealisticTex(sRow._zones.lat.front, "stZoneSetTex")
+            WrapRealisticTex(sRow._zones.aim.front, "stZoneSetTex")
+            sRow._live = true
+            _G._reg15SwingRow = sRow
+            _G._reg15SwingFillRef = sRow._bar:GetStatusBarTexture()
+            EllesmereUI._ModuleNS.EllesmereUIResourceBars = {
+                ERB = { db = { profile = { swingTimer = { enabled = true, gradientEnabled = false } } } },
+                ST_Apply = function() end,
+            }
+
+            -- 2) EUI CDM 追踪冷却条（普通条 ECME_TBBWrap1 + 多充能条 ECME_TBBWrap2）
+            local function MakeTBB(name, withCharge)
+                local wrap = CreateFrame("Frame", name, UIParent)
+                wrap:SetSize(220, 20); wrap:SetPoint("CENTER", UIParent, "CENTER", 0, -90); wrap:Show()
+                wrap._bar = CreateFrame("StatusBar", nil, wrap)
+                wrap._bar:SetSize(196, 20); wrap._bar:SetPoint("RIGHT", wrap, "RIGHT", 0, 0)
+                wrap._bar:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+                wrap._bar:GetStatusBarTexture():SetVertexColor(0.55, 0.85, 0.42, 1)
+                WrapRealisticTex(wrap._bar:GetStatusBarTexture(), "tbbFillSetTex")
+                local origTbbSB = wrap._bar.SetStatusBarTexture
+                function wrap._bar:SetStatusBarTexture(p, ...)
+                    _G._reg15Counts.tbbSetSB = _G._reg15Counts.tbbSetSB + 1
+                    local r = origTbbSB(self, p, ...)
+                    WrapRealisticTex(self:GetStatusBarTexture(), "tbbFillSetTex")
+                    return r
+                end
+                wrap._bg = wrap._bar:CreateTexture(nil, "BACKGROUND"); wrap._bg:SetAllPoints()
+                wrap._spark = wrap._bar:CreateTexture(nil, "OVERLAY")
+                wrap._spark:SetTexture("Interface\\\\AddOns\\\\EllesmereUI\\\\media\\\\cast_spark.tga")
+                wrap._spark:SetSize(8, 20); wrap._spark:Show()
+                WrapRealisticTex(wrap._spark, "tbbSparkSetTex")
+                wrap._barBorder = CreateFrame("Frame", nil, wrap._bar); wrap._barBorder:SetAllPoints()
+                wrap._textOverlay = CreateFrame("Frame", nil, wrap._bar); wrap._textOverlay:SetAllPoints()
+                wrap._icon = CreateFrame("Frame", nil, wrap); wrap._icon:SetSize(20, 20)
+                wrap._icon._tex = wrap._icon:CreateTexture(nil, "ARTWORK"); wrap._icon._tex:SetAllPoints()
+                wrap._icon._tex:SetTexture("Interface\\\\Icons\\\\INV_Spear_07")
+                if withCharge then
+                    wrap._chargeHashFillActive = true
+                    wrap._chargeHashFillClip = CreateFrame("Frame", nil, wrap._bar)
+                    wrap._chargeHashFillClip:SetSize(110, 20); wrap._chargeHashFillClip:SetPoint("LEFT", wrap._bar, "LEFT", 0, 0)
+                    wrap._chargeHashFillTexture = wrap._chargeHashFillClip:CreateTexture(nil, "ARTWORK")
+                    wrap._chargeHashFillTexture:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+                end
+                return wrap
+            end
+            local tbb1 = MakeTBB("ECME_TBBWrap1", false)
+            local tbb2 = MakeTBB("ECME_TBBWrap2", true)
+            _G._reg15Tbb1 = tbb1
+            _G._reg15Tbb2 = tbb2
+            _G._reg15Tbb1FillRef = tbb1._bar:GetStatusBarTexture()
+            EllesmereUI._ModuleNS.EllesmereUICooldownManager = {
+                _buffBarInternals = { tbbFrames = { tbb1, tbb2 } },
+                GetTrackedBuffBars = function() return { bars = { { borderSize = 1, borderR = 0, borderG = 0, borderB = 0 } } } end,
+                CdmBlizzBars = function() return false end,
+            }
+
+            -- 3) EUI 伤害统计主条（EllesmereUIDamageMeters，含 rowPool + stickyPlayer）
+            local dmWin = CreateFrame("Frame", "MockDMWindow_Reg15", UIParent)
+            dmWin:SetSize(240, 120); dmWin:Show()
+            local function MakeDMBar()
+                local r = CreateFrame("Frame", nil, dmWin); r:SetSize(230, 18); r:Show()
+                local sb = CreateFrame("StatusBar", nil, r); sb:SetAllPoints()
+                sb:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+                WrapRealisticTex(sb:GetStatusBarTexture(), "dmFillSetTex")
+                local origDmSB = sb.SetStatusBarTexture
+                function sb:SetStatusBarTexture(p, ...)
+                    _G._reg15Counts.dmSetSB = _G._reg15Counts.dmSetSB + 1
+                    return origDmSB(self, p, ...)
+                end
+                local bg = r:CreateTexture(nil, "BACKGROUND"); bg:SetAllPoints()
+                local ic = r:CreateTexture(nil, "ARTWORK"); ic:SetSize(18, 18)
+                return { row = r, fill = sb, bg = bg, classIcon = ic }
+            end
+            local dmRow1 = MakeDMBar()
+            local dmSticky = MakeDMBar()
+            _G._reg15DMWin = dmWin
+            _G._reg15DMRow1 = dmRow1
+            EllesmereUI._ModuleNS.EllesmereUIDamageMeters = {
+                _dmInternals = {
+                    _windows = { { frame = dmWin, rowPool = { dmRow1 }, stickyPlayer = dmSticky } },
+                    ttFrameSetters = {},
+                },
+            }
+
+            -- 4) AuraKit 引擎模拟（严格复现 WoW 12.1 C++ AuraContainer：存在脚本处理器时 SetShown(secret) 必抛错！）
+            EllesmereUI.AuraKit = {
+                DECIMAL_UPDATE_INTERVAL = 0.1,
+                styles = {},
+                AurasRestricted = function() return _G.C_Secrets and _G.C_Secrets.ShouldAurasBeSecret() or false end,
+                GetDurationFormatter = function() return nil end,
+                BuildDurationTextOpts = function(fmt, iv) return { textFormatter = fmt, updateInterval = iv } end,
+                SetDurationTextSafe = function() return true, true end,
+                SetContainerAxis = function() end,
+                ApplyContainerLayout = function() end,
+                ReleaseContainer = function(c) c:Hide() end,
+                CreateContainerShell = function(parent)
+                    local c = CreateFrame("Frame", nil, parent)
+                    function c:SetFlowLayoutAxis() end
+                    function c:SetAuraGroupLayout() end
+                    function c:SetEnabled() end
+                    function c:UpdateAllAuras() end
+                    return c
+                end,
+                AddGroupToContainer = function(c, g)
+                    local st = EllesmereUI.AuraKit.styles[g.style] or {}
+                    local btn = CreateFrame("Button", nil, c)
+                    btn:SetSize(st.width or 190, st.height or 16)
+                    local origSetShown = btn.SetShown
+                    function btn:SetShown(v)
+                        if _G.issecretvalue and _G.issecretvalue(v) then
+                            for _, sName in ipairs({ "OnShow", "OnHide", "OnSizeChanged", "OnUpdate" }) do
+                                if self:GetScript(sName) ~= nil then
+                                    error("Action[SetShown] failed because[Cannot be called with secrets due to existing script handlers: " .. sName .. "]")
+                                end
+                            end
+                            return
+                        end
+                        return origSetShown(self, v)
+                    end
+                    function btn:SetIcon() end
+                    function btn:SetDurationCooldown() end
+                    function btn:SetDurationBar() end
+                    function btn:SetDurationText() end
+                    function btn:SetApplicationCount() end
+                    local d = {}
+                    if g.extraInit then g.extraInit(btn, d, st) end
+                    _G._reg15EngineBtns[#_G._reg15EngineBtns + 1] = { btn = btn, d = d, key = st.kkEntryKey }
+                end,
+                FinishContainer = function() end,
+            }
+        '''
+
+        # Part A: Replay the ENTIRE 1,200-event real Blackfathom Deeps dungeon recording WITH all EUI frames alive!
+        def create_dungeon_env():
+            l_env, m_env, load_fn = create_env()
+            m_env.SetAddonLoaded('EllesmereUIDamageMeters', True)
+            l_env.execute(setup_eui_lua)
+            return l_env, m_env, load_fn
+
+        from replay import replay_session
+        total_events = 0
+        for sess in sessions:
+            total_events += len(sess.get('entries') or sess.get('events') or [])
+            rep = replay_session(sess, create_dungeon_env, LOAD_ORDER, check_disable_restore=True)
+            assert rep.get('passed') is True and not rep.get('luaErrors') and not rep.get('protectedViolations'), (
+                f'全 EUI 框体活跃态黑暗深渊 1200 事件回放失败: {rep}'
+            )
+
+        # Part B: Combat + Secret + Zoning + Lowercase GetTexture() + WeaponProcs Engine Stress Verification
+        l_env, m_env, load_fn = create_dungeon_env()
+        l_env.execute('''
+            -- Load PrettyTooltip mock for combat secret footer stress
+            _G._reg15PtNS = {
+                TooltipTypes = { [0] = { extension = {} } },
+                option = function() return true end,
+                ui = {
+                    COLUMN_GAP = 14,
+                    pad = function() return 12 end,
+                    measureStyled = function(_, txt) return #(tostring(txt or "")) * 6 end,
+                    styledAt = function() return 15 end,
+                    acquireTexture = function(panel) return panel:CreateTexture(nil, "OVERLAY") end,
+                },
+            }
+            _G.UnitClass = function() return "猎人", "HUNTER", 3 end
+        ''')
+        for name in LOAD_ORDER:
+            if name != 'kkowoUI_Tooltip':
+                load_fn(name)
+        ts_src = (ADDON_BASE / 'kkowoUI_Tooltip' / 'Bridge' / 'TooltipStyle.lua').read_text(encoding='utf-8')
+        l_env.eval('function(src, ns) local fn, err = loadstring(src, "@TooltipStyle"); assert(fn, err); fn("kkowoUI_Tooltip", ns) end')(ts_src, l_env.globals()._reg15PtNS)
+        m_env.SetAddonLoaded('kkowoUI_Tooltip', True)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(1.5, 4)
+
+        # Snapshot texture-swap counters right after initial steady-state skinning
+        l_env.execute('''
+            _G._reg15BaseCounts = {}
+            for k, v in pairs(_G._reg15Counts) do _G._reg15BaseCounts[k] = v end
+        ''')
+
+        # Enter Dungeon + Combat + Secrets active!
+        m_env.SetInstanceMode(True, 'party', '黑暗深渊')
+        m_env.SetAurasSecret(True)
+        m_env.SetInCombat(True)
+        m_env.FireEvent('PLAYER_REGEN_DISABLED')
+        # Simulate zoning screen while engine buttons are hidden (Quirk 5 survival check!)
+        l_env.execute('''
+            for _, rec in ipairs(_G._reg15EngineBtns) do rec.btn:Hide() end
+        ''')
+        m_env.FireEvent('LOADING_SCREEN_DISABLED')
+
+        # Expose mock helpers for the stress closure
+        g15 = l_env.globals()
+        g15._reg15SecBool = m_env.NewSecret('combat_bool')
+        g15._reg15SecNum = m_env.NewSecret('combat_num')
+        g15._reg15SecStr = m_env.NewSecret('combat_str')
+        g15._reg15FireEvent = m_env.FireEvent
+
+        # Fire 20x dungeon combat cycles: SwingTimer swings + CDM Hide/Show + secrets + DM secrets + WeaponProcs engine SetShown(secret) + Tooltip secret footer
+        stress = l_env.eval('''(function()
+            local M = kkowoUI.Motion
+            local ST = kkowoUI.StyleTokens
+            local sRow = _G._reg15SwingRow
+            local tbb1 = _G._reg15Tbb1
+            local tbb2 = _G._reg15Tbb2
+            local dmWin = _G._reg15DMWin
+            local dmRow1 = _G._reg15DMRow1
+            local secBool = _G._reg15SecBool
+            local secNum  = _G._reg15SecNum
+            local secStr  = _G._reg15SecStr
+            local secDur  = {
+                GetTotalDuration = function() return secNum end,
+                GetRemainingDuration = function() return secNum end,
+            }
+
+            local errs = {}
+            local function tryRun(tag, fn)
+                local ok, e = pcall(fn)
+                if not ok then errs[#errs + 1] = tag .. ": " .. tostring(e) end
+            end
+
+            for i = 1, 20 do
+                -- SwingTimer: SetTimerDuration + Hide/Show in combat
+                tryRun("swing_" .. i, function()
+                    sRow._bar:SetTimerDuration(secDur)
+                    sRow:Hide(); sRow:Show()
+                    _G._reg15FireEvent("PLAYER_SWING", 2.4, 2)
+                end)
+                -- CDM Tracked Bars: Hide/Show + secret vertex color + secret spark SetShown + secret SetValue
+                tryRun("tbb_" .. i, function()
+                    tbb1:Hide(); tbb1:Show()
+                    tbb2:Hide(); tbb2:Show()
+                    tbb1._bar:GetStatusBarTexture():SetVertexColor(secNum, secNum, secNum, 1)
+                    tbb1._bar:SetTimerDuration(secDur)
+                    tbb1._bar:SetValue(secNum)
+                    tbb1._spark:SetShown(secBool)
+                    tbb2._spark:SetShown(secBool)
+                end)
+                -- DamageMeterSkin: secret bar value + window Hide/Show + Refresh
+                if i <= 10 then
+                    tryRun("dm_" .. i, function()
+                        dmRow1.fill:SetValue(secNum)
+                        dmWin:Hide(); dmWin:Show()
+                        kkowoUI.Modules.Get("damageMeterSkin"):OnRefresh()
+                    end)
+                end
+                -- WeaponProcs engine button: WoW 12.1 C++ SetShown(secret) must NOT throw!
+                if i <= 10 then
+                    tryRun("wp_secret_" .. i, function()
+                        for _, rec in ipairs(_G._reg15EngineBtns) do
+                            rec.btn:SetShown(secBool)
+                        end
+                    end)
+                end
+                -- PrettyTooltip footer with secret fields in combat
+                if i <= 10 then
+                    tryRun("tt_secret_" .. i, function()
+                        local ext = _G._reg15PtNS.TooltipTypes[0].extension
+                        local model = {
+                            footerLeft = { { left = secStr, durability = { secNum, secNum } } },
+                            footerRight = { { left = secStr, met = secBool } },
+                        }
+                        local view = { sections = {}, footer = { measure = function() return 0 end, draw = function(_, y) return y end } }
+                        ext.extendView(view, model, { styles = { footer = { size = 13 } } })
+                        local panel = CreateFrame("Frame", nil, UIParent)
+                        panel.width = secNum
+                        view.footer.measure(panel)
+                        view.footer.draw(panel, 60)
+                    end)
+                end
+            end
+
+            -- Verify WeaponProcs engine bar unification (快速射击 / 十字军)
+            local wpRec = nil
+            for _, rec in ipairs(_G._reg15EngineBtns) do
+                if rec.key == "quickshots" then wpRec = rec; break end
+            end
+            wpRec = wpRec or _G._reg15EngineBtns[1]
+            local wpOk = false
+            local wpInfo = "none"
+            if wpRec and wpRec.d and wpRec.d.kkRow then
+                local btn = wpRec.btn
+                local row = wpRec.d.kkRow
+                local btnHooks = 0
+                local barHooks = 0
+                for _, sn in ipairs({ "OnShow", "OnHide", "OnSizeChanged", "OnUpdate" }) do
+                    if btn:GetScript(sn) ~= nil then btnHooks = btnHooks + 1 end
+                    if row.bar:GetScript(sn) ~= nil then barHooks = barHooks + 1 end
+                end
+                local fl = row.flow
+                local flowLive = (fl ~= nil) and fl._ag:IsPlaying() and fl._agDepth:IsPlaying()
+                    and M.IsLoopAnimRegistered(fl._ag) and M.IsLoopAnimRegistered(fl._agDepth)
+                    and (#fl._tiles1 >= 2) and (#fl._tiles2 >= 2)
+                    and (fl._tiles1[1]:GetNumMaskTextures() == 1) and (fl._tiles2[1]:GetNumMaskTextures() == 1)
+                local fillTexOk = ST.SameTexturePath(row.bar:GetStatusBarTexture():GetTexture(), ST.TEX.BAR_FILL_SHADED)
+                local sparkOk = row.spark and ST.SameTexturePath(row.spark:GetTexture(), ST.TEX.SPARK_SOFT)
+                local bloomOk = row.bloom and ST.SameTexturePath(row.bloom:GetTexture(), ST.TEX.BAR_EDGE_BLOOM)
+                local sheenOk = row.sheen and row.sheen:IsShown() and row.sheen:GetNumMaskTextures() == 1
+                wpOk = (btnHooks == 0) and (barHooks == 0) and flowLive and fillTexOk and sparkOk and bloomOk and sheenOk
+                wpInfo = string.format("key=%s btnHooks=%d barHooks=%d flow=%s fill=%s spark=%s bloom=%s sheen=%s",
+                    tostring(wpRec.key), btnHooks, barHooks, tostring(flowLive), tostring(fillTexOk),
+                    tostring(sparkOk), tostring(bloomOk), tostring(sheenOk))
+            end
+
+            -- Check delta texture swaps during all 20 combat cycles (MUST BE 0!)
+            local dStFill = _G._reg15Counts.stFillSetTex - _G._reg15BaseCounts.stFillSetTex
+            local dStZone = _G._reg15Counts.stZoneSetTex - _G._reg15BaseCounts.stZoneSetTex
+            local dStSB   = _G._reg15Counts.stSetSB      - _G._reg15BaseCounts.stSetSB
+            local dTbbFill = _G._reg15Counts.tbbFillSetTex - _G._reg15BaseCounts.tbbFillSetTex
+            local dTbbSB   = _G._reg15Counts.tbbSetSB      - _G._reg15BaseCounts.tbbSetSB
+            local dTbbSp   = _G._reg15Counts.tbbSparkSetTex - _G._reg15BaseCounts.tbbSparkSetTex
+            local dDmFill  = _G._reg15Counts.dmFillSetTex  - _G._reg15BaseCounts.dmFillSetTex
+            local dDmSB    = _G._reg15Counts.dmSetSB       - _G._reg15BaseCounts.dmSetSB
+
+            -- Verify fill userdata identity preserved (no SetStatusBarTexture reset!) + charge clip target
+            local stFillSame = (sRow._bar:GetStatusBarTexture() == _G._reg15SwingFillRef)
+            local tbbFillSame = (tbb1._bar:GetStatusBarTexture() == _G._reg15Tbb1FillRef)
+            local dmSingleMask = (dmRow1.fill:GetStatusBarTexture():GetNumMaskTextures() == 1)
+            local chargeClipOk = false
+            for _, ch in ipairs({ tbb2._bar:GetChildren() }) do
+                if ch:DoesClipChildren() then
+                    local _, rel = ch:GetPoint(1)
+                    if rel == tbb2._chargeHashFillClip then chargeClipOk = true end
+                end
+            end
+
+            return {
+                errCount = #errs,
+                firstErr = errs[1] or "",
+                dStFill = dStFill, dStZone = dStZone, dStSB = dStSB,
+                dTbbFill = dTbbFill, dTbbSB = dTbbSB, dTbbSp = dTbbSp,
+                dDmFill = dDmFill, dDmSB = dDmSB,
+                stFillSame = stFillSame, tbbFillSame = tbbFillSame,
+                dmSingleMask = dmSingleMask, chargeClipOk = chargeClipOk,
+                wpOk = wpOk, wpInfo = wpInfo,
+            }
+        end)()''')
+        stress_dict = dict(stress.items())
+        assert int(stress.errCount) == 0, f'副本战斗机密值压力测试报错: {stress.firstErr}'
+        assert (
+            int(stress.dStFill) == 0 and int(stress.dStZone) == 0 and int(stress.dStSB) == 0
+            and int(stress.dTbbFill) == 0 and int(stress.dTbbSB) == 0 and int(stress.dTbbSp) == 0
+            and int(stress.dDmFill) == 0 and int(stress.dDmSB) == 0
+        ), f'副本战斗中出现冗余换图/SetStatusBarTexture（会触发脱罩或清计时器）: {stress_dict}'
+        assert stress.stFillSame and stress.tbbFillSame and stress.dmSingleMask and stress.chargeClipOk, (
+            f'副本中填充贴图引用/单遮罩/充能裁切校验失败: {stress_dict}'
+        )
+        assert stress.wpOk, f'WeaponProcs 引擎行统一质感/零钩子/液态流校验失败: {stress.wpInfo}'
+
+        # Verify WeaponProcs disable cleanly stops engine flow animations
+        l_env.execute('kkowoUI.Modules.Get("weaponProcs"):Disable()')
+        wp_clean = l_env.eval('''(function()
+            for _, rec in ipairs(_G._reg15EngineBtns) do
+                local fl = rec.d and rec.d.kkRow and rec.d.kkRow.flow
+                if fl and (fl._ag:IsPlaying() or fl._agDepth:IsPlaying()) then return false end
+            end
+            return true
+        end)()''')
+        assert wp_clean is True, '停用 WeaponProcs 后引擎行流动动画未停止'
+        l_env.eval('C_AddOns.LoadAddOn("kkowoUI_Options")')
+        bad_clicks = _kkowo_click_blockers(l_env)
+        assert not bad_clicks, f'副本压力测试后发现隐形挡点击框体: {bad_clicks}'
+
+        return f'全EUI框体黑暗深渊({total_events}事件)0报错回放 + 20轮战斗机密值/大小写路径0冗余换图 + WeaponProcs引擎行({stress.wpInfo})全部通过'
+
+    check('综合回归-15：全框体副本 1200 事件回放与战斗机密值/武器特效引擎压力测试', t_reg_15_dungeon_full_frames_stress)
+
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0
 

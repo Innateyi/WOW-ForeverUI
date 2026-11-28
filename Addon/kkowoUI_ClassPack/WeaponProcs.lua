@@ -88,6 +88,7 @@ local entries, entryByKey, idIndex, nameIndex = {}, {}, {}, {}
 local layout = nil
 local layoutGen = 0
 local procRows, enchRows = {}, {}
+local engineRows = setmetatable({}, { __mode = "k" }) -- 追踪 AuraKit 引擎按钮构建出的 row（弱引用，不污染引擎按钮）
 local scanItems = {}        -- 兼容扫描模式下当前显示的特效 { entry, exp, dur, icon, stacks }
 local previewItems = nil    -- 预览中的示例条
 local previewOn, previewByUnlock = false, false
@@ -323,7 +324,7 @@ local function ComputeLayout()
     local h = math_floor(Clamp(F.PlainNumber(db.height, 16) or 16, 10, 30) + 0.5)
     local sp = math_floor(Clamp(F.PlainNumber(db.spacing, 3) or 3, 0, 12) + 0.5)
     local showIcon = db.showIcon ~= false
-    local radius = math_min(ST.GetCornerRadius(4), math_floor(h * 0.5))
+    local radius = math_min(ST.GetCornerRadius(6), math_floor(h * 0.5))
     if radius < 0 then radius = 0 end
     local px = ST.GetPixel(_G.UIParent)
     if not px or px <= 0 or px > 2 then px = 1 end
@@ -471,57 +472,93 @@ local function BuildRowRegions(host, L, isEngine)
     if bar.EnableMouse then bar:EnableMouse(false) end
     DisablePixelSnap(bar)
     local fill = bar:GetStatusBarTexture()
+    local innerRad = (r > 0) and inner or 0
+    local barMask = nil
+    local sheen = nil
     local spark = nil
     local bloom = nil
     local flow = nil
     local barLvl = F.PlainNumber(bar:GetFrameLevel(), 1) or 1
+    local barW = math_max(20, L.rowW - barLeft - 2 * px)
+    local barH = math_max(6, L.h - 2 * px)
+    local texOn = ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture")
+    local fxScale = (ST.GetFXScale and ST.GetFXScale()) or 1.0
+    local function AttachRowBarMask(tex)
+        if not (tex and barMask) then return end
+        if not isEngine and ST and ST.AttachCustomMask then
+            ST.AttachCustomMask(bar, tex, barMask)
+        elseif tex.AddMaskTexture then
+            pcall(tex.AddMaskTexture, tex, barMask)
+        end
+    end
     if fill then
         if fill.SetBlockingLoadsRequested then pcall(fill.SetBlockingLoadsRequested, fill, true) end
         -- 关掉像素吸附：否则慢速缩短的填充边缘按整像素跳格（15 秒的条每秒才缩约 10 像素），看起来一顿一顿的
         DisablePixelSnap(fill)
-        AddRoundMask(bar, fill, bar, (r > 0) and inner or 0, isEngine)
+        barMask = AddRoundMask(bar, fill, bar, innerRad, isEngine)
 
-        -- 前沿柔和羽化光刃 + Bloom（与施法条同源，纯锚定 fill 右沿，零 OnUpdate，引擎行零脚本钩子）
+        -- 顶部 1px 玻璃高光线（与施法条 / 挥砍条 / 冷却追踪条完全同源）
+        sheen = bar:CreateTexture(nil, "OVERLAY", nil, 2)
+        if ST.Hairline then ST.Hairline(sheen) else sheen:SetHeight(1) end
+        sheen:SetPoint("TOPLEFT", bar, "TOPLEFT", 2, -1)
+        sheen:SetPoint("TOPRIGHT", bar, "TOPRIGHT", -2, -1)
+        sheen:SetColorTexture(1, 1, 1, 0.14)
+        sheen:SetShown(texOn == true)
+        AttachRowBarMask(sheen)
+
+        -- 双层连续液态流动（引擎按钮与自绘条完全统一；引擎按钮通过 noHooks+rawMask+ignoreVisibility 保持零脚本钩子，12.1 100% 安全）
+        if F.Motion and F.Motion.AttachBarLivingFlow then
+            flow = F.Motion.AttachBarLivingFlow(bar, bar, {
+                reverse = false,
+                period = 2.2,
+                peakAlpha = 0.28,
+                softAlpha = 0.15,
+                depthAlpha = 0.22,
+                levelOffset = 1,
+                noHooks = isEngine == true,
+                rawMask = isEngine and barMask or nil,
+                customMask = (not isEngine) and barMask or nil,
+                ignoreVisibility = isEngine == true,
+                widthHint = barW,
+                heightHint = barH,
+            })
+            if flow and innerRad > 0 then flow:Refresh(innerRad) end
+        end
+
+        -- 前沿柔和羽化光刃 + Bloom（与施法条同源，柔化克制亮度避免在浅色条上过曝泛白，纯锚定 fill 右沿零 OnUpdate）
         local sparkHost = CreateFrame("Frame", nil, bar)
         sparkHost:SetAllPoints(bar)
         sparkHost:SetClipsChildren(true)
-        sparkHost:SetFrameLevel(barLvl + 1)
+        sparkHost:SetFrameLevel(barLvl + 3)
         if sparkHost.EnableMouse then sparkHost:EnableMouse(false) end
-        if ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture") then
-            bloom = sparkHost:CreateTexture(nil, "OVERLAY", nil, 4)
-            if bloom.SetBlockingLoadsRequested then pcall(bloom.SetBlockingLoadsRequested, bloom, true) end
-            bloom:SetTexture(ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture() or ST.TEX.BAR_EDGE_BLOOM)
-            bloom:SetBlendMode("ADD")
-            bloom:SetSize(22, L.h + 8)
-            bloom:SetPoint("CENTER", fill, "RIGHT", -2, 0)
-            bloom:SetVertexColor(1, 1, 1, 0.72)
-            DisablePixelSnap(bloom)
-            AddRoundMask(sparkHost, bloom, bar, (r > 0) and inner or 0, isEngine)
-        end
+
+        bloom = sparkHost:CreateTexture(nil, "OVERLAY", nil, 4)
+        if bloom.SetBlockingLoadsRequested then pcall(bloom.SetBlockingLoadsRequested, bloom, true) end
+        bloom:SetTexture(ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture() or ST.TEX.BAR_EDGE_BLOOM)
+        bloom:SetBlendMode("ADD")
+        bloom:SetSize(20, L.h + 6)
+        bloom:SetPoint("CENTER", fill, "RIGHT", -3, 0)
+        bloom:SetVertexColor(1, 1, 1, 0.42 * fxScale)
+        DisablePixelSnap(bloom)
+        AttachRowBarMask(bloom)
+        bloom:SetShown(texOn == true and fxScale > 0)
+
         spark = sparkHost:CreateTexture(nil, "OVERLAY", nil, 5)
         if spark.SetBlockingLoadsRequested then pcall(spark.SetBlockingLoadsRequested, spark, true) end
-        spark:SetTexture((ST.GetSparkTexture and ST.GetSparkTexture()) or ST.TEX.SPARK_BLADE)
+        spark:SetTexture((ST.GetSparkTexture and ST.GetSparkTexture()) or ST.TEX.SPARK_SOFT)
         spark:SetBlendMode("ADD")
-        spark:SetSize(18, L.h + 4)
-        spark:SetPoint("CENTER", fill, "RIGHT", -1, 0)
-        spark:SetVertexColor(1, 1, 1, 0.88)
+        spark:SetSize(16, L.h + 4)
+        spark:SetPoint("CENTER", fill, "RIGHT", -2, 0)
+        spark:SetVertexColor(1, 1, 1, 0.78 * math_max(0.55, fxScale))
         DisablePixelSnap(spark)
-        AddRoundMask(sparkHost, spark, bar, (r > 0) and inner or 0, isEngine)
-
-        -- 非引擎自绘条叠加双层连续液态流动（引擎按钮严禁挂任何脚本钩子，保持纯静态明暗+柔光刃）
-        if not isEngine and F.Motion and F.Motion.AttachBarLivingFlow then
-            flow = F.Motion.AttachBarLivingFlow(bar, bar, {
-                reverse = false, period = 2.4, peakAlpha = 0.26, softAlpha = 0.14, depthAlpha = 0.20, levelOffset = 1,
-            })
-            if flow and r > 0 then flow:Refresh(inner) end
-        end
+        AttachRowBarMask(spark)
     end
 
-    -- 文字载体放在填充条与光刃之上（直接锚定 Frame bar，避免锚定到 Texture region bd 导致布局尺寸为 0）
+    -- 文字载体放在填充条、液态流与光刃之上（直接锚定 Frame bar，避免锚定到 Texture region bd 导致布局尺寸为 0）
     local carrier = CreateFrame("Frame", nil, host)
     carrier:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
     carrier:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, 0)
-    carrier:SetFrameLevel(barLvl + 4)
+    carrier:SetFrameLevel(barLvl + 5)
     if carrier.EnableMouse then carrier:EnableMouse(false) end
 
     local timeFS = carrier:CreateFontString(nil, "OVERLAY")
@@ -547,13 +584,19 @@ local function BuildRowRegions(host, L, isEngine)
     countFS:SetJustifyH("RIGHT")
     countFS:SetText("")
 
-    row.border, row.track, row.bar, row.spark, row.bloom, row.flow, row.carrier = bd, track, bar, spark, bloom, flow, carrier
+    row.border, row.track, row.bar, row.sheen, row.spark, row.bloom, row.flow, row.carrier =
+        bd, track, bar, sheen, spark, bloom, flow, carrier
+    row._barMask, row._innerRad, row._isEngine = barMask, innerRad, isEngine == true
+    row._appliedFillTex = fillTexPath
+    row._appliedSparkTex = (ST.GetSparkTexture and ST.GetSparkTexture()) or ST.TEX.SPARK_SOFT
+    row._appliedBloomTex = (ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture()) or ST.TEX.BAR_EDGE_BLOOM
     row.time, row.name, row.count = timeFS, nameFS, countFS
     return row
 end
 
 local function PaintRow(row, r, g, b)
     if not row then return end
+    row._lastRGB = { r, g, b }
     if not row._snapOff and row.bar then
         row._snapOff = true
         if row.bar.SetSnapToPixelGrid then pcall(row.bar.SetSnapToPixelGrid, row.bar, false) end
@@ -567,28 +610,80 @@ local function PaintRow(row, r, g, b)
             if row.spark.SetSnapToPixelGrid then pcall(row.spark.SetSnapToPixelGrid, row.spark, false) end
             if row.spark.SetTexelSnappingBias then pcall(row.spark.SetTexelSnappingBias, row.spark, 0) end
         end
+        if row.bloom then
+            if row.bloom.SetSnapToPixelGrid then pcall(row.bloom.SetSnapToPixelGrid, row.bloom, false) end
+            if row.bloom.SetTexelSnappingBias then pcall(row.bloom.SetTexelSnappingBias, row.bloom, 0) end
+        end
     end
-    local lr, lg, lb = r * 0.70, g * 0.70, b * 0.70
+    local lr, lg, lb = r * 0.74, g * 0.74, b * 0.74
+    local rr, rg, rb = math_min(1, r * 0.84 + 0.20), math_min(1, g * 0.84 + 0.20), math_min(1, b * 0.84 + 0.20)
     local ft = row.bar and row.bar.GetStatusBarTexture and row.bar:GetStatusBarTexture() or nil
     if ft and ft.SetVertexColor then pcall(ft.SetVertexColor, ft, 1, 1, 1, 1) end
-    ST.ApplyBarGradient(row.bar, lr, lg, lb, math_min(1, r * 1.04), math_min(1, g * 1.04), math_min(1, b * 1.04), 0.96, false)
+    ST.ApplyBarGradient(row.bar, lr, lg, lb, rr, rg, rb, 0.96, false)
+    local fxScale = (ST.GetFXScale and ST.GetFXScale()) or 1.0
     if row.spark then
         row.spark:SetVertexColor(
-            math_min(1, r * 0.30 + 0.70),
-            math_min(1, g * 0.30 + 0.70),
-            math_min(1, b * 0.30 + 0.70),
-            0.88)
+            math_min(1, r * 0.45 + 0.55),
+            math_min(1, g * 0.45 + 0.55),
+            math_min(1, b * 0.45 + 0.55),
+            0.78 * math_max(0.55, fxScale))
     end
     if row.bloom then
         row.bloom:SetVertexColor(
-            math_min(1, r * 0.35 + 0.65),
-            math_min(1, g * 0.35 + 0.65),
-            math_min(1, b * 0.35 + 0.65),
-            0.72)
+            math_min(1, r * 0.65 + 0.35),
+            math_min(1, g * 0.65 + 0.35),
+            math_min(1, b * 0.65 + 0.35),
+            0.42 * fxScale)
     end
     -- 底槽 = 核心双翼血条的掉血底色：按条色轻染的半透明玻璃（深色条稍透一些），不是统一的近黑色块
     local a = (lr + lg + lb < 0.25) and 0.34 or 0.42
     row.track:SetVertexColor(lr * 0.16 + 0.06, lg * 0.16 + 0.06, lb * 0.16 + 0.08, a)
+end
+
+local function RefreshRowFX(row)
+    if not row then return end
+    if row._isEngine and AurasRestricted() then return end
+    local texOn = ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture")
+    local fxScale = (ST.GetFXScale and ST.GetFXScale()) or 1.0
+    local wantFill = (ST.GetBarFillTexture and ST.GetBarFillTexture(false)) or ST.TEX.FLAT
+    if row.bar and row._appliedFillTex ~= wantFill then
+        local ft = row.bar.GetStatusBarTexture and row.bar:GetStatusBarTexture() or nil
+        if ft and ft.SetTexture then
+            pcall(ft.SetTexture, ft, wantFill)
+        else
+            pcall(row.bar.SetStatusBarTexture, row.bar, wantFill)
+        end
+        row._appliedFillTex = wantFill
+    end
+    if row.sheen then
+        pcall(row.sheen.SetShown, row.sheen, texOn == true)
+    end
+    local wantSpark = (ST.GetSparkTexture and ST.GetSparkTexture()) or ST.TEX.SPARK_SOFT
+    if row.spark and row._appliedSparkTex ~= wantSpark then
+        pcall(row.spark.SetTexture, row.spark, wantSpark)
+        row._appliedSparkTex = wantSpark
+    end
+    local wantBloom = (ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture()) or ST.TEX.BAR_EDGE_BLOOM
+    if row.bloom then
+        if row._appliedBloomTex ~= wantBloom then
+            pcall(row.bloom.SetTexture, row.bloom, wantBloom)
+            row._appliedBloomTex = wantBloom
+        end
+        local showBloom = texOn == true and fxScale > 0
+        if not row._isEngine and row.spark and row.spark.IsShown then
+            local okS, spVis = pcall(row.spark.IsShown, row.spark)
+            if okS and not F.IsSecret(spVis) then
+                showBloom = showBloom and (spVis == true)
+            end
+        end
+        pcall(row.bloom.SetShown, row.bloom, showBloom)
+    end
+    if row._lastRGB then
+        PaintRow(row, row._lastRGB[1], row._lastRGB[2], row._lastRGB[3])
+    end
+    if row.flow and row.flow.Refresh then
+        pcall(row.flow.Refresh, row.flow, row._innerRad)
+    end
 end
 
 ----------------------------------------------------------------------
@@ -609,7 +704,8 @@ local function AcquireRow(pool, parent, i)
         row._gen = layoutGen
         if row.flow then
             local fl = row.flow
-            f:HookScript("OnShow", function() fl:SetEnabled(true) end)
+            local ir = row._innerRad
+            f:HookScript("OnShow", function() fl:SetEnabled(true, ir) end)
             f:HookScript("OnHide", function() fl:SetEnabled(false) end)
         end
         pool[i] = row
@@ -670,9 +766,14 @@ local function FillRow(row, it, now, useNative)
         end
         row.bar:SetValue(val)
     end
+    local edgeOn = (val / dur) > 0.005 and (val / dur) < 0.995
     if row.spark then
-        local frac = val / dur
-        row.spark:SetShown(frac > 0.005 and frac < 0.995)
+        row.spark:SetShown(edgeOn)
+    end
+    if row.bloom then
+        local fxOn = (ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture")) == true
+            and ((ST.GetFXScale and ST.GetFXScale()) or 1) > 0
+        row.bloom:SetShown(edgeOn and fxOn)
     end
     -- < 10s 按 0.1s 刷新（与施法条 / 追踪条同节奏）；>= 10s 每整秒最多刷新一次
     local key = (rem < 10) and math_floor(rem * 10 + 0.5) or (1000 + math_ceil(rem))
@@ -1069,6 +1170,10 @@ local function ReleaseEngine()
     local c = engine.container
     engine.container = nil
     engine.hiddenForPreview = false
+    for row in pairs(engineRows) do
+        if row.flow and row.flow.SetEnabled then pcall(row.flow.SetEnabled, row.flow, false) end
+        engineRows[row] = nil
+    end
     local AK = GetAK()
     for k, styleKey in pairs(engine.styleKeys) do
         if AK and type(AK.styles) == "table" then AK.styles[styleKey] = nil end
@@ -1092,6 +1197,7 @@ local function EngineInitButton(button, d, style)
         if button.SetMouseMotionEnabled then button:SetMouseMotionEnabled(false) end
         local row = BuildRowRegions(button, L, true)
         d.kkRow = row
+        engineRows[row] = true
         PaintRow(row, GetColor(style.kkEntryKey))
         row.name:SetText(style.kkLabel or "")
         if row.icon then
@@ -1157,10 +1263,11 @@ local function EngineInitButton(button, d, style)
     if not ok then engine.initErr = tostring(err) end
 end
 
--- AuraKit 重新套用样式时（只在光环未受限时执行；受限时它自己推迟到解除后）只改颜色
+-- AuraKit 重新套用样式时（只在光环未受限时执行；受限时它自己推迟到解除后）同步颜色与流光材质
 local function EngineApplyExtra(button, d, style)
     if d and d.kkRow and style and style.kkEntryKey then
         PaintRow(d.kkRow, GetColor(style.kkEntryKey))
+        RefreshRowFX(d.kkRow)
     end
 end
 
@@ -1451,6 +1558,9 @@ local function FullRefresh(immediate)
     ScanAuras()
     -- 登录 / 过图立即建；设置页改动走尾随防抖（指纹没变时 BuildEngine 直接返回，不会重建）
     if immediate then BuildEngine() else mod:ScheduleEngineBuild() end
+    for _, row in ipairs(procRows) do RefreshRowFX(row) end
+    for _, row in ipairs(enchRows) do RefreshRowFX(row) end
+    for row in pairs(engineRows) do RefreshRowFX(row) end
     Wake()
 end
 
@@ -1779,6 +1889,12 @@ function mod:OnDisable()
     if driver then driver:SetScript("OnUpdate", nil) end
     if F.Motion and F.Motion.UnregisterTextTick then
         F.Motion.UnregisterTextTick(WP_TICK_KEY)
+    end
+    for _, row in ipairs(procRows) do
+        if row.flow and row.flow.SetEnabled then pcall(row.flow.SetEnabled, row.flow, false) end
+    end
+    for _, row in ipairs(enchRows) do
+        if row.flow and row.flow.SetEnabled then pcall(row.flow.SetEnabled, row.flow, false) end
     end
     HideRows(procRows)
     HideRows(enchRows)
