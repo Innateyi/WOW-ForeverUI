@@ -103,6 +103,9 @@ local function ApplyWingStyle(holder, r1, g1, b1, r2, g2, b2, radius, fxOverride
         if holder._spark and holder._spark._spark then
             ST.MaskTexture(holder, holder._spark._spark, rad)
         end
+        if holder._manaRegenSparkTex then
+            ST.MaskTexture(holder, holder._manaRegenSparkTex, rad)
+        end
         if holder._trail and holder._trail._bar then
             local tTex = holder._trail._bar:GetStatusBarTexture()
             if tTex then ST.MaskTexture(holder, tTex, rad) end

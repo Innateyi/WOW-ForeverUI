@@ -3550,17 +3550,21 @@ def run_all():
         end)()''')
         assert off_ok and on_ok, f'自身增益一键开关切换双翼/小地图左侧校验失败: off={off_ok}, on={on_ok}'
 
-        # (5) ManaRegenSpark attach / mode switch / off detach
+        # (5) Built-in ManaRegenSpark attach / mode switch / off / EUI legacy detach
         spark_chk = l_env.eval('''(function()
+            local ch = kkowoUI._CoreHUD
+            local mr = ch and ch.manaRegenState
+            local ppWing = ch and ch.coreFrame and ch.coreFrame._ppWing
             local log = _G._testSparkLog
-            local attachedInit = (log.attachedKey == "kkowo_corehud") and (log.ticks == true) and (log.isMana == true)
+            local attachedInit = (mr ~= nil) and (mr.active == true) and (mr.mode == "ticks") and (mr.isMana == true)
+                and (ppWing and ppWing._manaRegenSparkTex ~= nil) and (log.attaches == 0) and (log.detaches >= 1)
             local chMod = kkowoUI.Modules.Get("coreHUD")
             chMod:GetDB().manaRegenSpark = "fsr"
             chMod:OnRefresh()
-            local fsrOk = (log.attachedKey == "kkowo_corehud") and (log.ticks == false)
+            local fsrOk = (mr.active == true) and (mr.mode == "fsr")
             chMod:GetDB().manaRegenSpark = "off"
             chMod:OnRefresh()
-            local offOk = (log.attachedKey == nil) and (log.detaches >= 1)
+            local offOk = (mr.active == false) and (mr.mode == "off") and (not mr.overlay:IsShown())
             return { attachedInit = attachedInit, fsrOk = fsrOk, offOk = offOk }
         end)()''')
         assert spark_chk.attachedInit and spark_chk.fsrOk and spark_chk.offOk, f'蓝条回蓝节拍提示校验失败: {spark_chk}'

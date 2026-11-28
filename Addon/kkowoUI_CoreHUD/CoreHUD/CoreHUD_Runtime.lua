@@ -161,33 +161,357 @@ local function UpdatePlayerHealth(instant)
     end
 end
 
--- 无限服蓝条 5 秒规则 + 2 秒回蓝节拍火花（托管给 EUI 原生 ManaRegenSpark，12.x 机密值安全，0 Lua OnUpdate）
-local manaSparkAttached = false
+-- 无限服蓝条 5 秒规则 + 2 秒回蓝节拍火花（自建轻量 0-OnUpdate、12.x 机密安全控制器）
+-- • 火花建在 ppWing 外层圆角宿主下并共用 1px 内缩圆角遮罩（不改 ppWing._bar 的 SetClipsChildren），零溢出
+-- • 脱战明文满蓝瞬间立即 Idle() 隐藏，零 2 秒空扫；副本战斗机密态用 C_CurveUtil 阶跃曲线在 GPU 侧满蓝瞬间透明
+local MANA_POWER_TYPE = (_G.Enum and _G.Enum.PowerType and _G.Enum.PowerType.Mana) or 0
+local MANA_FSR_SEC = 5
+local MANA_TICK_SEC = 2
+local euiLegacySparkDetached = false
 
-local function SyncManaRegenSpark(forcePowerType)
-    local EUI = _G.EllesmereUI
-    local MRS = EUI and EUI.ManaRegenSpark
-    if not (MRS and type(MRS.Attach) == "function" and type(MRS.Detach) == "function") then
+local mrState = {
+    active = false,
+    mode = "off",
+    isMana = false,
+    inWindow = false,
+    regenSeen = false,
+    sweepEnd = nil,
+    evFrame = nil,
+    timerAG = nil,
+    timerAnim = nil,
+    durObj = nil,
+    fullCurve = nil,
+    gateFrame = nil,
+    clipFrame = nil,
+    overlay = nil,
+    spark = nil,
+    ppWing = nil,
+}
+CH.manaRegenState = mrState
+
+local function IsNoManaClass()
+    if type(_G.UnitClass) ~= "function" then return false end
+    local ok, _, cls = pcall(_G.UnitClass, "player")
+    if ok and not F.IsSecret(cls) then
+        return cls == "WARRIOR" or cls == "ROGUE"
+    end
+    return false
+end
+
+local function SpellCostsMana(spellID)
+    if F.IsSecret(spellID) or type(spellID) == "nil" then return false end
+    local getter = (_G.C_Spell and _G.C_Spell.GetSpellPowerCost) or _G.GetSpellPowerCost
+    if type(getter) ~= "function" then return false end
+    local ok, costs = pcall(getter, spellID)
+    if not (ok and not F.IsSecret(costs) and type(costs) == "table") then return false end
+    for i = 1, #costs do
+        local c = costs[i]
+        if type(c) == "table" and not F.IsSecret(c.type) and c.type == MANA_POWER_TYPE then
+            local amt = c.cost
+            if F.IsSecret(amt) then return true end
+            if type(amt) == "number" and amt > 0 then return true end
+        end
+    end
+    return false
+end
+
+local function IsPlainManaFull()
+    if type(_G.UnitPower) ~= "function" or type(_G.UnitPowerMax) ~= "function" then
+        return false, false
+    end
+    local okC, rawCur = pcall(_G.UnitPower, "player", MANA_POWER_TYPE)
+    local okM, rawMx = pcall(_G.UnitPowerMax, "player", MANA_POWER_TYPE)
+    if not (okC and okM) then return false, false end
+    if F.IsSecret(rawCur) or F.IsSecret(rawMx) then
+        return false, false
+    end
+    local cur = F.PlainNumber(rawCur, nil)
+    local mx = F.PlainNumber(rawMx, nil)
+    if cur ~= nil and mx ~= nil and mx > 0 then
+        return (cur >= mx), true
+    end
+    return false, false
+end
+
+local function EnsureFullManaHideCurve()
+    if mrState.fullCurve ~= nil then
+        return mrState.fullCurve or nil
+    end
+    mrState.fullCurve = false
+    local CU = _G.C_CurveUtil
+    if CU and type(CU.CreateCurve) == "function" then
+        local okC, curve = pcall(CU.CreateCurve)
+        if okC and curve then
+            local stepType = _G.Enum and _G.Enum.LuaCurveType and _G.Enum.LuaCurveType.Step
+            if stepType ~= nil and type(curve.SetType) == "function" then
+                pcall(curve.SetType, curve, stepType)
+            end
+            if type(curve.AddPoint) == "function" then
+                pcall(curve.AddPoint, curve, 0, 1)
+                pcall(curve.AddPoint, curve, 0.999, 0)
+                pcall(curve.AddPoint, curve, 1, 0)
+            end
+            mrState.fullCurve = curve
+            return curve
+        end
+    end
+    return nil
+end
+
+local function ManaRegenIdle()
+    if mrState.timerAG and mrState.timerAG.Stop then
+        pcall(mrState.timerAG.Stop, mrState.timerAG)
+    end
+    mrState.sweepEnd = nil
+    mrState.inWindow = false
+    mrState.regenSeen = false
+    if mrState.overlay then
+        mrState.overlay:Hide()
+    end
+end
+
+local function UpdateManaRegenFullGate()
+    local gate = mrState.gateFrame
+    local isFull, isPlain = IsPlainManaFull()
+    if isPlain then
+        if gate then pcall(gate.SetAlpha, gate, 1) end
+        if isFull then
+            ManaRegenIdle()
+            return true
+        end
+        return false
+    end
+    -- 副本战斗机密蓝量：交由 GPU 阶跃曲线控制 gateFrame 透明度，满蓝当帧归零、零 Lua 读取机密值
+    if gate then
+        local curve = EnsureFullManaHideCurve()
+        if curve and type(_G.UnitPowerPercent) == "function" then
+            local okP, alpha = pcall(_G.UnitPowerPercent, "player", MANA_POWER_TYPE, false, curve)
+            if okP and type(alpha) ~= "nil" then
+                pcall(gate.SetAlpha, gate, alpha)
+            else
+                pcall(gate.SetAlpha, gate, 1)
+            end
+        else
+            pcall(gate.SetAlpha, gate, 1)
+        end
+    end
+    return false
+end
+
+local function ApplyManaRegenSparkTint()
+    local sp = mrState.spark
+    if not sp then return end
+    if mrState.inWindow then
+        -- 5 秒规则期：冷白浅蓝光
+        sp:SetVertexColor(0.78, 0.92, 1.00, 0.85)
+    else
+        -- 2 秒精神/喝水快速回蓝期：明快淡青白脉冲光
+        sp:SetVertexColor(0.55, 0.98, 1.00, 0.95)
+    end
+end
+
+local function ArmManaRegenOverlay()
+    local ov = mrState.overlay
+    local wing = mrState.ppWing
+    if not (ov and wing and wing._bar) then return end
+    local wantDraw = mrState.active and mrState.isMana and mrState.sweepEnd ~= nil
+        and (mrState.inWindow or mrState.mode == "ticks")
+        and wing:IsVisible()
+    if not wantDraw then
+        ov:Hide()
         return
     end
+    ApplyManaRegenSparkTint()
+    ov:Show()
+    if mrState.durObj and type(ov.SetTimerDuration) == "function" then
+        local imm = _G.Enum and _G.Enum.StatusBarInterpolation and _G.Enum.StatusBarInterpolation.Immediate or nil
+        local elapsedDir = _G.Enum and _G.Enum.StatusBarTimerDirection and _G.Enum.StatusBarTimerDirection.ElapsedTime or nil
+        pcall(ov.SetTimerDuration, ov, mrState.durObj, imm, elapsedDir)
+    end
+end
+
+local function StartManaRegenSweep(len, startAt)
+    if not (mrState.active and mrState.isMana) then return end
+    if UpdateManaRegenFullGate() then return end
+    local now = GetTime()
+    local s = startAt
+    if not s or (s + len) <= now then s = now end
+    mrState.sweepEnd = s + len
+
+    if not mrState.durObj and _G.C_DurationUtil and type(_G.C_DurationUtil.CreateDuration) == "function" then
+        local okD, d = pcall(_G.C_DurationUtil.CreateDuration)
+        if okD and d then mrState.durObj = d end
+    end
+    if mrState.durObj then
+        if type(mrState.durObj.SetTimeFromStart) == "function" then
+            pcall(mrState.durObj.SetTimeFromStart, mrState.durObj, s, len)
+        elseif type(mrState.durObj.SetTimeSpan) == "function" then
+            pcall(mrState.durObj.SetTimeSpan, mrState.durObj, s, s + len)
+        end
+    end
+
+    ArmManaRegenOverlay()
+    if mrState.timerAG and mrState.timerAnim then
+        pcall(mrState.timerAG.Stop, mrState.timerAG)
+        pcall(mrState.timerAnim.SetDuration, mrState.timerAnim, math_max(0.05, mrState.sweepEnd - now))
+        pcall(mrState.timerAG.Play, mrState.timerAG)
+    end
+end
+
+local function EnsureManaRegenController(ppWing)
+    if not (ppWing and ppWing._bar) then return false end
+    if not mrState.evFrame then
+        local ev = CreateFrame("Frame")
+        local ag = ev:CreateAnimationGroup()
+        local anim = ag:CreateAnimation("Animation")
+        ag:SetScript("OnFinished", function()
+            if not (mrState.active and mrState.isMana) then
+                ManaRegenIdle()
+                return
+            end
+            if UpdateManaRegenFullGate() then return end
+            if mrState.mode == "ticks" and (mrState.inWindow or mrState.regenSeen) then
+                mrState.inWindow = false
+                mrState.regenSeen = false
+                StartManaRegenSweep(MANA_TICK_SEC, mrState.sweepEnd)
+            else
+                ManaRegenIdle()
+            end
+        end)
+        ev:SetScript("OnEvent", function(_, event, _, arg2, arg3)
+            if not mrState.active then return end
+            if event == "UNIT_SPELLCAST_SUCCEEDED" then
+                if SpellCostsMana(arg3) then
+                    mrState.inWindow = true
+                    mrState.regenSeen = false
+                    StartManaRegenSweep(MANA_FSR_SEC)
+                end
+            elseif event == "UNIT_POWER_UPDATE" then
+                if not F.IsSecret(arg2) and arg2 == "MANA" then
+                    if UpdateManaRegenFullGate() then return end
+                    if mrState.mode == "ticks" and mrState.isMana and not mrState.inWindow then
+                        if mrState.sweepEnd then
+                            mrState.regenSeen = true
+                        else
+                            StartManaRegenSweep(MANA_TICK_SEC)
+                        end
+                    end
+                end
+            end
+        end)
+        mrState.evFrame = ev
+        mrState.timerAG = ag
+        mrState.timerAnim = anim
+    end
+
+    if mrState.ppWing ~= ppWing or not mrState.overlay then
+        local bar = ppWing._bar
+        local barLvl = F.PlainNumber(bar.GetFrameLevel and bar:GetFrameLevel(), 12) or 12
+
+        -- 3 层极简非鼠子结构，挂在 ppWing 外层圆角宿主下，不改 ppWing / bar 任何尺寸与 SetClipsChildren
+        local gate = CreateFrame("Frame", nil, ppWing)
+        gate:SetAllPoints(bar)
+        gate:SetFrameLevel(barLvl + 2)
+        gate:EnableMouse(false)
+
+        local clip = CreateFrame("Frame", nil, gate)
+        clip:SetPoint("TOPLEFT", gate, "TOPLEFT", 1, -1)
+        clip:SetPoint("BOTTOMRIGHT", gate, "BOTTOMRIGHT", -1, 1)
+        clip:SetClipsChildren(true)
+        clip:EnableMouse(false)
+
+        local ov = CreateFrame("StatusBar", nil, clip)
+        ov:SetPoint("TOPLEFT", clip, "TOPLEFT", 2, 0)
+        ov:SetPoint("BOTTOMRIGHT", clip, "BOTTOMRIGHT", -2, 0)
+        ov:SetStatusBarTexture(ST.TEX.FLAT)
+        local ovFill = ov:GetStatusBarTexture()
+        if ovFill then ovFill:SetAlpha(0) end
+        ov:SetMinMaxValues(0, 1)
+        ov:SetValue(0)
+        ov:EnableMouse(false)
+        if M.DisablePixelSnap then
+            M.DisablePixelSnap(ov)
+            if ovFill then M.DisablePixelSnap(ovFill) end
+        end
+        ov:Hide()
+
+        local sp = ov:CreateTexture(nil, "OVERLAY", nil, 3)
+        sp:SetTexture(ST.TEX.SPARK_SOFT or "Interface\\AddOns\\EllesmereUI\\media\\cast_spark.tga")
+        sp:SetBlendMode("ADD")
+        sp:SetWidth(5)
+        if ovFill then
+            sp:SetPoint("TOP", ovFill, "TOPRIGHT", 0, -1)
+            sp:SetPoint("BOTTOM", ovFill, "BOTTOMRIGHT", 0, 1)
+        else
+            sp:SetPoint("TOP", ov, "TOPLEFT", 0, -1)
+            sp:SetPoint("BOTTOM", ov, "BOTTOMLEFT", 0, 1)
+        end
+        if M.DisablePixelSnap then M.DisablePixelSnap(sp) end
+
+        ppWing._manaRegenGate = gate
+        ppWing._manaRegenClip = clip
+        ppWing._manaRegenOverlay = ov
+        ppWing._manaRegenSparkTex = sp
+
+        local h = F.PlainNumber(ppWing.GetHeight and ppWing:GetHeight(), 16) or 16
+        local rad = GetBarRadius(h)
+        if rad > 0 then
+            ST.MaskTexture(ppWing, sp, rad)
+        end
+
+        mrState.ppWing = ppWing
+        mrState.gateFrame = gate
+        mrState.clipFrame = clip
+        mrState.overlay = ov
+        mrState.spark = sp
+    end
+    return true
+end
+
+local function SyncManaRegenSpark(forcePowerType)
+    -- 彻底解绑旧版 EUI 托管（若存在）
+    if not euiLegacySparkDetached then
+        local EUI = _G.EllesmereUI
+        local MRS = EUI and EUI.ManaRegenSpark
+        if MRS and type(MRS.Detach) == "function" then
+            pcall(MRS.Detach, "kkowo_corehud")
+            euiLegacySparkDetached = true
+        end
+    end
+
     local db = mod:GetDB()
     local mode = db.manaRegenSpark or "ticks"
-    local bar = CH.coreFrame and CH.coreFrame._ppWing and CH.coreFrame._ppWing._bar or nil
-    local want = mod._active == true and db.showCoreHUD ~= false and mode ~= "off" and bar ~= nil
+    local ppWing = CH.coreFrame and CH.coreFrame._ppWing or nil
+    local pType = forcePowerType
+    if pType == nil then
+        pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("player"), 0) or 0
+    end
+    local want = mod._active == true and db.showCoreHUD ~= false and mode ~= "off"
+        and ppWing ~= nil and (not IsNoManaClass())
+
+    mrState.mode = want and mode or "off"
+    mrState.isMana = (pType == MANA_POWER_TYPE)
+
     if want then
-        local pType = forcePowerType
-        if pType == nil then
-            pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("player"), 0) or 0
+        EnsureManaRegenController(ppWing)
+        mrState.active = true
+        if mrState.evFrame then
+            pcall(mrState.evFrame.RegisterUnitEvent, mrState.evFrame, "UNIT_SPELLCAST_SUCCEEDED", "player")
+            pcall(mrState.evFrame.RegisterUnitEvent, mrState.evFrame, "UNIT_POWER_UPDATE", "player")
         end
-        if type(MRS.SetMana) == "function" then
-            pcall(MRS.SetMana, "kkowo_corehud", pType == 0)
+        if not mrState.isMana then
+            ManaRegenIdle()
+        else
+            if not UpdateManaRegenFullGate() then
+                ArmManaRegenOverlay()
+            end
         end
-        if bar.SetClipsChildren then pcall(bar.SetClipsChildren, bar, true) end
-        pcall(MRS.Attach, "kkowo_corehud", bar, mode == "ticks")
-        manaSparkAttached = true
-    elseif manaSparkAttached then
-        manaSparkAttached = false
-        pcall(MRS.Detach, "kkowo_corehud")
+    else
+        mrState.active = false
+        ManaRegenIdle()
+        if mrState.evFrame then
+            pcall(mrState.evFrame.UnregisterAllEvents, mrState.evFrame)
+        end
     end
 end
 
@@ -207,10 +531,19 @@ local function UpdatePlayerPower(instant)
         CH.coreFrame._ppWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
         CH.coreFrame._ppWing._trail:SetValue(cur, mx, instant or ptChanged)
     end
-    if manaSparkAttached and (ptChanged or instant) then
-        local MRS = _G.EllesmereUI and _G.EllesmereUI.ManaRegenSpark
-        if MRS and type(MRS.SetMana) == "function" then
-            pcall(MRS.SetMana, "kkowo_corehud", pType == 0)
+    if mrState.active then
+        local isNowMana = (pType == MANA_POWER_TYPE)
+        if mrState.isMana ~= isNowMana then
+            mrState.isMana = isNowMana
+            if not isNowMana then
+                ManaRegenIdle()
+            else
+                if not UpdateManaRegenFullGate() then
+                    ArmManaRegenOverlay()
+                end
+            end
+        elseif isNowMana then
+            UpdateManaRegenFullGate()
         end
     end
     local r1, g1, b1, r2, g2, b2 = ST.GetPowerGradient(pType)
