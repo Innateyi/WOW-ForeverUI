@@ -383,6 +383,8 @@ local function ShouldShowLeftIcon()
     return true
 end
 
+local PaintCastFillColor -- 前向声明
+
 local function RefreshOverlayChrome()
     if not overlay then return end
     SyncOverlayAnchor()
@@ -412,9 +414,11 @@ local function RefreshOverlayChrome()
     overlay._barHost:SetPoint("BOTTOMRIGHT", overlay, "BOTTOMRIGHT", 0, 0)
 
     local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
+    local fillChanged = false
     if overlay._bar and overlay._bar._kkFillPath ~= wantFill then
         overlay._bar:SetStatusBarTexture(wantFill)
         overlay._bar._kkFillPath = wantFill
+        fillChanged = true
         local ft = overlay._bar:GetStatusBarTexture()
         if ft and M.DisablePixelSnap then M.DisablePixelSnap(ft) end
     end
@@ -445,6 +449,9 @@ local function RefreshOverlayChrome()
     end
     if overlay._flow and overlay._flow.Refresh then
         overlay._flow:Refresh(rad)
+    end
+    if fillChanged and overlay:IsShown() and PaintCastFillColor then
+        PaintCastFillColor()
     end
 
     overlay._nameFS:ClearAllPoints()
@@ -542,7 +549,7 @@ local function BuildCastbarOverlay()
         if sp.SetTexelSnappingBias then pcall(sp.SetTexelSnappingBias, sp, 0) end
     end
     f._flow = M.AttachBarLivingFlow(barHost, sb, {
-        reverse = false, period = 2.2, sweepRatio = 0.72, peakAlpha = 0.22, softAlpha = 0.12, enabled = false,
+        reverse = false, period = 1.65, peakAlpha = 0.32, softAlpha = 0.18, depthAlpha = 0.24, depthSoftAlpha = 0.13, enabled = false,
     })
 
     -- 文字宿置于高于 StatusBar 与圆角边框的子框体，避免“条内显示”时被血条/圆角遮挡
@@ -641,7 +648,7 @@ function F._BuildDemoCastbar(parent, w, h, fxOverride)
         M.DisablePixelSnap(f._spark._spark)
     end
     f._flow = M.AttachBarLivingFlow(barHost, sb, {
-        reverse = false, period = 2.2, sweepRatio = 0.72, peakAlpha = 0.22, softAlpha = 0.12, fxOverride = fxOverride, enabled = false,
+        reverse = false, period = 1.65, peakAlpha = 0.32, softAlpha = 0.18, depthAlpha = 0.24, depthSoftAlpha = 0.13, fxOverride = fxOverride, enabled = false,
     })
 
     local textHost = CreateFrame("Frame", nil, f)
@@ -777,7 +784,7 @@ local function GetEUICastBarProfile()
     return nil
 end
 
-local function PaintCastFillColor()
+PaintCastFillColor = function()
     if not overlay then return end
     local cb = GetEUICastBarProfile()
     -- 玩家自己的读条不看「不可打断」标记（无限服对自身施法常返回 true，整条会变成灰色）

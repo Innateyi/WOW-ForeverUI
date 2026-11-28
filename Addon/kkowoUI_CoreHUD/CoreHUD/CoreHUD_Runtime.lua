@@ -557,6 +557,10 @@ local function UpdatePlayerPower(instant)
     end
     local r1, g1, b1, r2, g2, b2 = ST.GetPowerGradient(pType)
     ApplyCachedBarGradient(bar, r1, g1, b1, r2, g2, b2, 0.98, false)
+    if ptChanged and CH.coreFrame._ppWing._bg then
+        local bgA = (r1 + g1 + b1 < 0.25) and 0.34 or 0.42
+        CH.coreFrame._ppWing._bg:SetVertexColor(r1 * 0.16 + 0.06, g1 * 0.16 + 0.06, b1 * 0.16 + 0.08, bgA)
+    end
     local _, ppMode = ResolveWingTextModes()
     SetPowerText(CH.coreFrame._ppText, "player", pType, ppMode)
 end
@@ -1322,9 +1326,11 @@ local function ApplyLayoutAndTheme()
             CH.petFrame._hpText:SetPoint("BOTTOMRIGHT", CH.petFrame._hpBar, "TOPRIGHT", -2, 2)
         end
         local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
+        if CH.petFrame._hpBar._flow then CH.petFrame._hpBar._flow._enabled = true end
         ApplyWingStyle(CH.petFrame._hpBar, r1, g1, b1, r2, g2, b2, GetBarRadius(pHpH))
         local pt = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("pet"), 2) or 2
         local pr1, pg1, pb1, pr2, pg2, pb2 = ST.GetPowerGradient(pt)
+        if CH.petFrame._ppBar._flow then CH.petFrame._ppBar._flow._enabled = true end
         ApplyWingStyle(CH.petFrame._ppBar, pr1, pg1, pb1, pr2, pg2, pb2, GetBarRadius(pPpH))
         if CH.petFrame._hpBar._trail then CH.petFrame._hpBar._trail:SetDelay(db.trailDelay or 0.16) end
         CH.petFrame._hpBar._bar._kkGradCache = nil
@@ -1356,8 +1362,10 @@ local function ApplyLayoutAndTheme()
         ApplyWingStyle(CH.topTargetFrame._hpBar, tr1, tg1, tb1, tr2, tg2, tb2, GetBarRadius(tHpH))
         local tpt = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("target"), 0) or 0
         local tpr1, tpg1, tpb1, tpr2, tpg2, tpb2 = ST.GetPowerGradient(tpt)
+        if CH.topTargetFrame._ppBar._flow then CH.topTargetFrame._ppBar._flow._enabled = true end
         ApplyWingStyle(CH.topTargetFrame._ppBar, tpr1, tpg1, tpb1, tpr2, tpg2, tpb2, GetBarRadius(4))
         local totr1, totg1, totb1, totr2, totg2, totb2 = ST.GetUnitGradient("targettarget")
+        if CH.topTargetFrame._totBar._flow then CH.topTargetFrame._totBar._flow._enabled = true end
         ApplyWingStyle(CH.topTargetFrame._totBar, totr1, totg1, totb1, totr2, totg2, totb2, GetBarRadius(10))
         if CH.topTargetFrame._hpBar._trail then CH.topTargetFrame._hpBar._trail:SetDelay(db.trailDelay or 0.16) end
         if CH.topTargetFrame._hpBar._spark then CH.topTargetFrame._hpBar._spark:SyncAnchor() end
@@ -1789,6 +1797,8 @@ function mod:OnDisable()
     if CH.coreFrame then
         if CH.coreFrame._hpWing and CH.coreFrame._hpWing._flow then CH.coreFrame._hpWing._flow:SetEnabled(false) end
         if CH.coreFrame._ppWing and CH.coreFrame._ppWing._flow then CH.coreFrame._ppWing._flow:SetEnabled(false) end
+        if CH.coreFrame._swingWing and CH.coreFrame._swingWing._flow then CH.coreFrame._swingWing._flow:SetEnabled(false) end
+        if CH.coreFrame._ohWing and CH.coreFrame._ohWing._flow then CH.coreFrame._ohWing._flow:SetEnabled(false) end
         if CH.coreFrame._orb then
             if CH.coreFrame._orb._haloAG then CH.coreFrame._orb._haloAG:Stop() end
             if CH.coreFrame._orb._spinAG then CH.coreFrame._orb._spinAG:Stop() end
@@ -1801,9 +1811,15 @@ function mod:OnDisable()
     end
     HidePetFeedMenu()
     if CH.ReleaseTargetAuras then CH.ReleaseTargetAuras() end
-    if CH.petFrame then CH.petFrame:Hide() end
+    if CH.petFrame then
+        if CH.petFrame._hpBar and CH.petFrame._hpBar._flow then CH.petFrame._hpBar._flow:SetEnabled(false) end
+        if CH.petFrame._ppBar and CH.petFrame._ppBar._flow then CH.petFrame._ppBar._flow:SetEnabled(false) end
+        CH.petFrame:Hide()
+    end
     if CH.topTargetFrame then
         if CH.topTargetFrame._hpBar and CH.topTargetFrame._hpBar._flow then CH.topTargetFrame._hpBar._flow:SetEnabled(false) end
+        if CH.topTargetFrame._ppBar and CH.topTargetFrame._ppBar._flow then CH.topTargetFrame._ppBar._flow:SetEnabled(false) end
+        if CH.topTargetFrame._totBar and CH.topTargetFrame._totBar._flow then CH.topTargetFrame._totBar._flow:SetEnabled(false) end
         CH.topTargetFrame:Hide()
     end
     if CH.euiTrailPlayer then CH.euiTrailPlayer:SetEnabled(false) end

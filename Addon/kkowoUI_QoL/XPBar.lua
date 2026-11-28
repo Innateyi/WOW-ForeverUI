@@ -710,6 +710,9 @@ local function ApplyVisuals()
         ApplyHorizBarColor(restedBar, nil,        restedCol, 0.30)
         ApplyHorizBarColor(questBar,  questStart, questEnd,  0.86)
         ApplyHorizBarColor(xpBar,     fillStart,  fillEnd,   1.00)
+        if xpFrame._flow and xpFrame._flow.SetEnabled then
+            xpFrame._flow:SetEnabled(mod._active == true)
+        end
 
         -- 刻度线默认关闭（可在设置中开启）
         if xpFrame._ticks then
@@ -843,6 +846,9 @@ local function ApplyVisuals()
     if repFrame then
         local repH = math_max(6, h)
         repFrame:SetSize(w, repH)
+        if repFrame._flow and repFrame._flow.SetEnabled then
+            repFrame._flow:SetEnabled(mod._active == true)
+        end
         repLeft:ClearAllPoints()
         repLeft:SetPoint("BOTTOMLEFT", repFrame, "TOPLEFT", 1, 5)
         repRight:ClearAllPoints()
@@ -1275,6 +1281,12 @@ local function CreateFrames()
     xpBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     xpBar._texBound = true
     AttachMask(xpBar.GetStatusBarTexture and xpBar:GetStatusBarTexture(), xpFrame._pillMask, xpFrame)
+    if F.Motion and F.Motion.AttachBarLivingFlow then
+        xpFrame._flow = F.Motion.AttachBarLivingFlow(xpFrame, xpBar, {
+            reverse = false, period = 3.8, peakAlpha = 0.24, softAlpha = 0.13, depthAlpha = 0.16,
+            levelOffset = 1, customMask = xpFrame._pillMask,
+        })
+    end
 
     -- 慢速经验条关闭像素网格吸附（怪癖 10），消除逐像素顿挫
     if F.Motion and F.Motion.DisablePixelSnap then
@@ -1481,6 +1493,12 @@ local function CreateFrames()
     repBar:SetStatusBarTexture(F.Theme.FLAT_TEX)
     repBar._texBound = true
     AttachMask(repBar.GetStatusBarTexture and repBar:GetStatusBarTexture(), repFrame._pillMask, repFrame)
+    if F.Motion and F.Motion.AttachBarLivingFlow then
+        repFrame._flow = F.Motion.AttachBarLivingFlow(repFrame, repBar, {
+            reverse = false, period = 3.8, peakAlpha = 0.24, softAlpha = 0.13, depthAlpha = 0.16,
+            levelOffset = 1, customMask = repFrame._pillMask,
+        })
+    end
     if F.Motion and F.Motion.DisablePixelSnap then
         F.Motion.DisablePixelSnap(repBar)
         if repBar.GetStatusBarTexture then F.Motion.DisablePixelSnap(repBar:GetStatusBarTexture()) end
@@ -1605,6 +1623,8 @@ end
 
 function mod:OnDisable()
     if liveTicker then liveTicker:Cancel(); liveTicker = nil end
+    if xpFrame and xpFrame._flow then xpFrame._flow:SetEnabled(false) end
+    if repFrame and repFrame._flow then repFrame._flow:SetEnabled(false) end
     if xpFrame then xpFrame:Hide() end
     if repFrame then repFrame:Hide() end
 end

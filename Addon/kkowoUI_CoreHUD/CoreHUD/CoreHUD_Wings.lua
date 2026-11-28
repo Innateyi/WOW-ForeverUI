@@ -1579,12 +1579,15 @@ local function SyncUpperSwingVisual()
         end
         if CH.coreFrame._ohWing and CH.coreFrame._ohWing._isOHMode then
             CH.coreFrame._ohWing._bar:SetValue(0)
+            if CH.coreFrame._ohWing._flow then CH.coreFrame._ohWing._flow:SetEnabled(false) end
         end
+        if sw._flow then sw._flow:SetEnabled(false) end
         CH.swingTicker:Hide()
         return
     end
 
     sw:SetAlpha(1.0)
+    if sw._flow and not sw._flow._enabled then sw._flow:SetEnabled(true) end
     if s and d and d > 0.01 then
         local prog = math_max(0, math_min(1, (now - s) / d))
         local rem = e - now
@@ -1635,6 +1638,11 @@ local function SyncUpperSwingVisual()
         local ohProg = math_max(0, math_min(1, (now - swingState.ohStart) / swingState.ohDur))
         CH.coreFrame._ohWing._bar:SetMinMaxValues(0, 1)
         CH.coreFrame._ohWing._bar:SetValue(ohProg)
+        if CH.coreFrame._ohWing._flow and not CH.coreFrame._ohWing._flow._enabled then
+            CH.coreFrame._ohWing._flow:SetEnabled(true)
+        end
+    elseif CH.coreFrame._ohWing and CH.coreFrame._ohWing._flow and CH.coreFrame._ohWing._flow._enabled then
+        CH.coreFrame._ohWing._flow:SetEnabled(false)
     end
 end
 
@@ -1749,7 +1757,7 @@ local function BuildCoreHUD()
     })
     hpWing._spark:SetShown(false)
     hpWing._flow = M.AttachBarLivingFlow(hpWing, hpWing._bar, {
-        reverse = true, period = 6.5, peakAlpha = 0.18, softAlpha = 0.10,
+        reverse = true, period = 3.2, peakAlpha = 0.30, softAlpha = 0.16, depthAlpha = 0.24, depthSoftAlpha = 0.13,
     })
     f._hpWing = hpWing
 
@@ -1766,7 +1774,7 @@ local function BuildCoreHUD()
     })
     ppWing._spark:SetShown(false)
     ppWing._flow = M.AttachBarLivingFlow(ppWing, ppWing._bar, {
-        reverse = false, period = 6.5, peakAlpha = 0.18, softAlpha = 0.10,
+        reverse = false, period = 3.2, peakAlpha = 0.30, softAlpha = 0.16, depthAlpha = 0.24, depthSoftAlpha = 0.13,
     })
     f._ppWing = ppWing
 
@@ -1782,9 +1790,12 @@ local function BuildCoreHUD()
     aimZone:Hide()
     swingWing._aimZone = aimZone
     swingWing._spark = M.AttachEdgeSpark(swingWing._bar, {
-        reverse = false, width = 10, extraHeight = 3, a = 0.85,
+        reverse = false, width = 10, extraHeight = 3, a = 0.85, maskHost = swingWing,
     })
     swingWing._spark:SetShown(false)
+    swingWing._flow = M.AttachBarLivingFlow(swingWing, swingWing._bar, {
+        reverse = false, period = 1.8, peakAlpha = 0.28, softAlpha = 0.15, depthAlpha = 0.20, enabled = false,
+    })
     f._swingWing = swingWing
 
     -- 4) 上方右翼副资源分格 / 副手挥砍条 / 对称暗色空槽
@@ -1818,6 +1829,9 @@ local function BuildCoreHUD()
     local ohWing = CreateWingBar(f, wingW - 4, 5, false)
     ohWing:SetPoint("BOTTOMLEFT", ppWing, "TOPLEFT", 0, 2)
     ohWing._bar:SetValue(0)
+    ohWing._flow = M.AttachBarLivingFlow(ohWing, ohWing._bar, {
+        reverse = false, period = 1.8, peakAlpha = 0.26, softAlpha = 0.14, depthAlpha = 0.18, enabled = false,
+    })
     ohWing:Hide()
     f._ohWing = ohWing
 

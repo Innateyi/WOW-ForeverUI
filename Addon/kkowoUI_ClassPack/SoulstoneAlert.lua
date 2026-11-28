@@ -1476,7 +1476,8 @@ local function CreateCard()
     sb:SetHeight(2)
     sb:SetPoint("BOTTOMLEFT", card, "BOTTOMLEFT", 1, 1)
     sb:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", -1, 1)
-    sb:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    local ST = F.StyleTokens
+    sb:SetStatusBarTexture((ST and ST.GetBarFillTexture) and ST.GetBarFillTexture(false) or F.Theme.FLAT_TEX)
     sb:SetMinMaxValues(0, 1)
     sb:SetValue(1)
     card._bar = sb

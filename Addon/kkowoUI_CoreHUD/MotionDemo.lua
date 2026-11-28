@@ -234,7 +234,7 @@ local function BuildComparisonRow(parent, titleText, isNew, yTop)
         reverse = false, levelOffset = 2, maskHost = hpHolder, fxOverride = ov,
     })
     hpHolder._flow = M.AttachBarLivingFlow(hpHolder, hpHolder._bar, {
-        reverse = false, period = 3.6, sweepRatio = 0.56, peakAlpha = 0.22, softAlpha = 0.12, fxOverride = ov,
+        reverse = false, period = 2.8, peakAlpha = 0.30, softAlpha = 0.16, depthAlpha = 0.24, fxOverride = ov,
     })
     if CH and CH.ApplyWingStyle then
         local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
@@ -284,6 +284,9 @@ local function BuildComparisonRow(parent, titleText, isNew, yTop)
         xpHolder._bar:EnableMouse(false)
     end
     xpHolder:SetPoint("TOPLEFT", box, "TOPLEFT", 424, -46)
+    xpHolder._flow = M.AttachBarLivingFlow(xpHolder, xpHolder._bar, {
+        reverse = false, period = 3.2, peakAlpha = 0.26, softAlpha = 0.14, depthAlpha = 0.20, fxOverride = ov,
+    })
     if CH and CH.ApplyWingStyle then
         CH.ApplyWingStyle(xpHolder, 0.36, 0.44, 0.86, 0.62, 0.72, 1.00, 4, ov)
     end
@@ -317,6 +320,9 @@ local function BuildComparisonRow(parent, titleText, isNew, yTop)
         timerHolder._bar:EnableMouse(false)
     end
     timerHolder:SetPoint("TOPLEFT", box, "TOPLEFT", 588, -46)
+    timerHolder._flow = M.AttachBarLivingFlow(timerHolder, timerHolder._bar, {
+        reverse = false, period = 2.0, peakAlpha = 0.28, softAlpha = 0.15, depthAlpha = 0.22, fxOverride = ov,
+    })
     if CH and CH.ApplyWingStyle then
         CH.ApplyWingStyle(timerHolder, 0.86, 0.56, 0.20, 1.00, 0.84, 0.44, 4, ov)
     end

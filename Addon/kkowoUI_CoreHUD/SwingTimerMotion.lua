@@ -8,8 +8,10 @@
 local _G = _G
 local F = _G.kkowoUI
 if not F then return end
-local math_floor, math_max, math_min, pcall = math.floor, math.max, math.min, pcall
+local ipairs, math_floor, math_max, math_min, pairs, pcall, setmetatable, type =
+    ipairs, math.floor, math.max, math.min, pairs, pcall, setmetatable, type
 local CreateFrame = CreateFrame
+local C_Timer = C_Timer
 local GetTime = GetTime
 
 local ST = F.StyleTokens
@@ -66,17 +68,22 @@ local function MakeThinBar(parent, w, h)
 
     local sb = CreateFrame("StatusBar", nil, f)
     sb:SetAllPoints()
-    sb:SetStatusBarTexture(ST.TEX.FLAT)
+    local fillPath = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
+    sb:SetStatusBarTexture(fillPath)
+    sb._kkFillPath = fillPath
     sb:SetMinMaxValues(0, 1)
     sb:SetValue(0)
-    if sb.SetSnapToPixelGrid then pcall(sb.SetSnapToPixelGrid, sb, false) end
-    if sb.SetTexelSnappingBias then pcall(sb.SetTexelSnappingBias, sb, 0) end
+    if M.DisablePixelSnap then M.DisablePixelSnap(sb) end
     local sbFill = sb:GetStatusBarTexture()
-    if sbFill then
-        if sbFill.SetSnapToPixelGrid then pcall(sbFill.SetSnapToPixelGrid, sbFill, false) end
-        if sbFill.SetTexelSnappingBias then pcall(sbFill.SetTexelSnappingBias, sbFill, 0) end
-    end
+    if sbFill and M.DisablePixelSnap then M.DisablePixelSnap(sbFill) end
     f._bar = sb
+
+    local sheen = sb:CreateTexture(nil, "OVERLAY", nil, 2)
+    ST.Hairline(sheen)
+    sheen:SetPoint("TOPLEFT", sb, "TOPLEFT", 2, -1)
+    sheen:SetPoint("TOPRIGHT", sb, "TOPRIGHT", -2, -1)
+    sheen:SetColorTexture(1, 1, 1, 0.14)
+    f._sheen = sheen
 
     local aim = sb:CreateTexture(nil, "ARTWORK", nil, 2)
     aim:SetPoint("TOPRIGHT", sb, "TOPRIGHT", 0, 0)
@@ -85,28 +92,44 @@ local function MakeThinBar(parent, w, h)
     aim:Hide()
     f._aim = aim
 
-    f._spark = M.AttachEdgeSpark(sb, { width = 14, extraHeight = 4, a = 0.90 })
+    f._spark = M.AttachEdgeSpark(sb, { width = 14, extraHeight = 4, a = 0.90, maskHost = f })
     f._spark:SetShown(false)
+    f._flow = M.AttachBarLivingFlow(f, sb, {
+        reverse = false, period = 1.8, peakAlpha = 0.28, softAlpha = 0.15, depthAlpha = 0.22, enabled = false,
+    })
     return f
 end
 
 local function StyleThinBar(f, h)
     if not f then return end
-    local rad = math_min(ST.GetCornerRadius(3), math_max(2, math_floor(h * 0.5)))
+    local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
+    if f._bar and f._bar._kkFillPath ~= wantFill then
+        f._bar:SetStatusBarTexture(wantFill)
+        f._bar._kkFillPath = wantFill
+        local ft = f._bar:GetStatusBarTexture()
+        if ft and M.DisablePixelSnap then M.DisablePixelSnap(ft) end
+    end
+    local rad = math_min(ST.GetCornerRadius(6), math_max(2, math_floor(h * 0.48)))
     ST.ClearRoundedMask(f)
     if rad > 0 then
         ST.MaskTexture(f, f._bg, rad)
         local t = f._bar:GetStatusBarTexture()
         if t then ST.MaskTexture(f, t, rad) end
+        if f._sheen then ST.MaskTexture(f, f._sheen, rad) end
         if f._aim then ST.MaskTexture(f, f._aim, rad) end
-        if f._spark and f._spark._spark then
+        if f._spark and f._spark.SyncMask then
+            f._spark:SyncMask(f, rad)
+        elseif f._spark and f._spark._spark then
             ST.MaskTexture(f, f._spark._spark, rad)
         end
         if f == mhBar and flashTex then
             ST.MaskTexture(f, flashTex, rad)
         end
         ST.ApplyRoundedBorder(f, rad, 0.02, 0.02, 0.03, 0.94, 5)
+    else
+        if f._spark and f._spark.SyncMask then f._spark:SyncMask(f, 0) end
     end
+    if f._flow and f._flow.Refresh then f._flow:Refresh(rad) end
     if f._spark then f._spark:SyncAnchor() end
 end
 
@@ -158,24 +181,21 @@ local function BuildStandalone()
     container = f
 end
 
-local function TriggerSwingFlash()
-    if mod:GetDB().flashOnSwing == false then return end
-    if mod:GetDB().mode == "standalone" and flashAG then
-        flashAG:Stop()
-        flashAG:Play()
-    else
-        local erb = _G.ERB_SwingTimerFrame
-        if erb and erb:IsShown() then
-            M.PlayScalePop(erb, 1.03, 0.14)
-        end
-    end
-end
-
-local mutedSwingBorders = _G.setmetatable({}, { __mode = "k" })
-local hookedSwingBorder = _G.setmetatable({}, { __mode = "k" })
-local hookedSwingShell = _G.setmetatable({}, { __mode = "k" })
-local seenSwingRows = _G.setmetatable({}, { __mode = "k" })
+local mutedSwingBorders = setmetatable({}, { __mode = "k" })
+local hookedSwingBorder = setmetatable({}, { __mode = "k" })
+local hookedSwingShell = setmetatable({}, { __mode = "k" })
+local euiRowState = setmetatable({}, { __mode = "k" })
+local euiHookedRow = setmetatable({}, { __mode = "k" })
+local euiHookedBar = setmetatable({}, { __mode = "k" })
+local euiHookedFillVC = setmetatable({}, { __mode = "k" })
+local euiHookedSpark = setmetatable({}, { __mode = "k" })
+local euiTrackedRows = {}
+local euiTrackedSet = setmetatable({}, { __mode = "k" })
+local hookedSTApply = false
 local swingBorderBusy = false
+local swingBarTexBusy = false
+local swingFillVCBusy = false
+local swingSparkAlphaBusy = false
 
 local function IsSafeObj(obj)
     if not obj then return false end
@@ -186,72 +206,452 @@ local function IsSafeObj(obj)
     return true
 end
 
-local function EnhanceEUISwingFrame()
-    local erb = _G.ERB_SwingTimerFrame
-    if not IsSafeObj(erb) then return end
-    -- 外壳 ERB_SwingTimerFrame 仅是多行排布容器，绝不能在外壳上套圆角框（会包住多行空隙并与行内直角框打架）
-    ST.ClearRoundedMask(erb)
-    if not hookedSwingShell[erb] and erb.HookScript then
-        hookedSwingShell[erb] = true
-        erb:HookScript("OnShow", function()
-            if mod._active and mod:GetDB().mode == "enhance_eui" then
-                EnhanceEUISwingFrame()
-            end
-        end)
-    end
-    local want = mod._active and mod:GetDB().mode == "enhance_eui"
-    local rad = math_min(ST.GetCornerRadius(4), 4)
-    if not erb.GetChildren then return end
-    for _, row in _G.ipairs({ erb:GetChildren() }) do
-        if IsSafeObj(row) and row._bar and row._bg then
-            seenSwingRows[row] = true
-            if row._merged == true then
-                ST.ClearRoundedMask(row)
-                if row._border then mutedSwingBorders[row._border] = nil end
-            elseif want and rad > 0 then
-                ST.MaskTexture(row, row._bg, rad)
-                local ft = row._bar.GetStatusBarTexture and row._bar:GetStatusBarTexture() or nil
-                if ft then ST.MaskTexture(row, ft, rad) end
-                if row._border and row._border.SetAlpha then
-                    local bd = row._border
-                    mutedSwingBorders[bd] = true
-                    if not hookedSwingBorder[bd] then
-                        hookedSwingBorder[bd] = true
-                        _G.hooksecurefunc(bd, "SetAlpha", function(self, a)
-                            if not swingBorderBusy and mutedSwingBorders[self] and F.PlainNumber(a, 1) ~= 0 then
-                                swingBorderBusy = true
-                                pcall(self.SetAlpha, self, 0)
-                                swingBorderBusy = false
+local function GetERBSwingCfg()
+    local EUI = _G.EllesmereUI
+    local rb = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIResourceBars
+    local erbObj = rb and rb.ERB
+    local prof = erbObj and erbObj.db and erbObj.db.profile
+    return prof and prof.swingTimer or nil
+end
+
+local function ComputeEUIRowRadius(row)
+    local h = F.PlainNumber(row and row.GetHeight and row:GetHeight(), 14) or 14
+    local gRad = ST.GetCornerRadius(6)
+    if gRad <= 0 then return 0 end
+    return math_min(gRad, math_max(2, math_floor(h * 0.48)))
+end
+
+local function SyncEUISwingRowZonesAndPhase(row)
+    if not (IsSafeObj(row) and row._bar and row._bg) then return end
+    local want = mod._active and mod:GetDB().mode == "enhance_eui" and row._merged ~= true
+    local st = euiRowState[row]
+    if not want then return end
+
+    local euiOwnRound = type(row._roundRadius) == "number" and row._roundRadius > 0
+    local rad = euiOwnRound and 0 or ComputeEUIRowRadius(row)
+    local texOn = ST.IsFXEnabled("fx_barTexture")
+    local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
+
+    -- 补挂延迟/瞄准分区贴图圆角遮罩与立体明暗材质（根治挥砍末端进入瞄准/延迟阶段变成方角矩形的顽疾）
+    local zones = row._zones
+    if type(zones) == "table" then
+        for _, key in ipairs({ "lat", "aim" }) do
+            local z = zones[key]
+            if type(z) == "table" then
+                for _, part in ipairs({ "back", "front" }) do
+                    local tex = z[part]
+                    if IsSafeObj(tex) then
+                        if texOn and tex.SetTexture then
+                            if st and st.origZoneTex then
+                                if st.origZoneTex[tex] == nil and tex.GetTexture then
+                                    local okT, curT = pcall(tex.GetTexture, tex)
+                                    if okT and not F.IsSecret(curT) and curT and curT ~= wantFill then
+                                        st.origZoneTex[tex] = curT
+                                    end
+                                end
                             end
-                        end)
-                    end
-                    swingBorderBusy = true
-                    pcall(bd.SetAlpha, bd, 0)
-                    swingBorderBusy = false
-                end
-                ST.ApplyRoundedBorder(row, rad, 0.02, 0.02, 0.03, 0.92, 6)
-            else
-                ST.ClearRoundedMask(row)
-                if row._border and mutedSwingBorders[row._border] and row._border.SetAlpha then
-                    mutedSwingBorders[row._border] = nil
-                    if not row._merged then
-                        swingBorderBusy = true
-                        pcall(row._border.SetAlpha, row._border, 1)
-                        swingBorderBusy = false
+                            pcall(tex.SetTexture, tex, wantFill)
+                        end
+                        if M.DisablePixelSnap then M.DisablePixelSnap(tex) end
+                        if rad > 0 then
+                            ST.MaskTexture(row, tex, rad)
+                        end
                     end
                 end
             end
         end
     end
+
+    if rad > 0 then
+        local ft = row._bar.GetStatusBarTexture and row._bar:GetStatusBarTexture() or nil
+        if ft then ST.MaskTexture(row, ft, rad) end
+        ST.MaskTexture(row, row._bg, rad)
+        if row._spark then ST.MaskTexture(row, row._spark, rad) end
+    end
+
+    -- 同步施法条同款柔和光刃与连续液态流：仅在挥砍活跃期点亮，空闲/停泊时克制收起
+    if st then
+        local isLive = row._live == true and row._waiting ~= true and row:IsShown()
+        local isShownRow = row:IsShown() == true
+        if st.edgeSpark then
+            local showSpark = isLive and texOn
+            st.edgeSpark:SyncAnchor()
+            st.edgeSpark:SetShown(showSpark)
+            if rad > 0 then st.edgeSpark:SyncMask(row, rad) end
+        end
+        if st.flow then
+            st.flow:SetEnabled(isShownRow and (row._live == true or row._waiting == true), rad > 0 and rad or nil)
+        end
+    end
 end
 
-local function CheckUnseenEUISwingRows()
+local function PlayEUIRowSwingFlash()
+    local erb = _G.ERB_SwingTimerFrame
+    if not (IsSafeObj(erb) and erb:IsShown() and erb.GetChildren) then return end
+    for _, row in ipairs({ erb:GetChildren() }) do
+        if IsSafeObj(row) and row:IsShown() and row._merged ~= true then
+            local st = euiRowState[row]
+            if st and st.flashAG and st.flashTex then
+                st.flashAG:Stop()
+                st.flashTex:SetAlpha(0)
+                st.flashTex:Show()
+                st.flashAG:Play()
+            end
+        end
+    end
+end
+
+local function TriggerSwingFlash()
+    if mod:GetDB().flashOnSwing == false then return end
+    if mod:GetDB().mode == "standalone" and flashAG then
+        flashAG:Stop()
+        flashAG:Play()
+    else
+        -- 严禁对父容器 ERB_SwingTimerFrame 播放 Scale 动画（会与 SetIgnoreParentScale 圆角描边错位变成矩形）；
+        -- 改用行内圆角遮罩叠加白闪，与施法条收尾质感保持一致
+        PlayEUIRowSwingFlash()
+    end
+end
+
+local StyleEUISwingRow -- 前向声明
+
+local function HookEUIFillVertexColor(row, ft)
+    if not (IsSafeObj(ft) and ft.SetVertexColor) or euiHookedFillVC[ft] then return end
+    euiHookedFillVC[ft] = true
+    _G.hooksecurefunc(ft, "SetVertexColor", function(self, r, g, b, a)
+        if swingFillVCBusy then return end
+        if not (mod._active and mod:GetDB().mode == "enhance_eui" and row._merged ~= true) then return end
+        if not ST.IsFXEnabled("fx_barTexture") then return end
+        local cfg = GetERBSwingCfg()
+        if cfg and cfg.gradientEnabled then return end
+        swingFillVCBusy = true
+        ST.ApplySoftFlatGradient(self, r, g, b, a, false)
+        swingFillVCBusy = false
+    end)
+end
+
+StyleEUISwingRow = function(row, forceDisable)
+    if not (IsSafeObj(row) and row._bar and row._bg) then return end
+    if not euiTrackedSet[row] then
+        euiTrackedSet[row] = true
+        euiTrackedRows[#euiTrackedRows + 1] = row
+    end
+
+    local want = (not forceDisable) and mod._active and mod:GetDB().mode == "enhance_eui" and row._merged ~= true
+    local st = euiRowState[row]
+    local bar = row._bar
+    local ft = bar.GetStatusBarTexture and bar:GetStatusBarTexture() or nil
+
+    if not want then
+        if st then
+            if st.flow then st.flow:SetEnabled(false) end
+            if st.edgeSpark then st.edgeSpark:SetShown(false) end
+            if st.sheen then st.sheen:Hide() end
+            if st.flashAG then st.flashAG:Stop() end
+            if st.flashTex then st.flashTex:Hide() end
+            if st.origFillTex and bar.SetStatusBarTexture then
+                swingBarTexBusy = true
+                pcall(bar.SetStatusBarTexture, bar, st.origFillTex)
+                swingBarTexBusy = false
+                st.origFillTex = nil
+            end
+            if st.origZoneTex then
+                for tex, origPath in pairs(st.origZoneTex) do
+                    if IsSafeObj(tex) and tex.SetTexture and origPath then
+                        pcall(tex.SetTexture, tex, origPath)
+                    end
+                    st.origZoneTex[tex] = nil
+                end
+            end
+            if st.mutedRawSpark and row._spark and row._spark.SetAlpha then
+                st.mutedRawSpark = false
+                swingSparkAlphaBusy = true
+                pcall(row._spark.SetAlpha, row._spark, 1)
+                swingSparkAlphaBusy = false
+            end
+        end
+        ST.ClearRoundedMask(row)
+        if row._border and mutedSwingBorders[row._border] and row._border.SetAlpha then
+            mutedSwingBorders[row._border] = nil
+            if not row._merged then
+                swingBorderBusy = true
+                pcall(row._border.SetAlpha, row._border, 1)
+                swingBorderBusy = false
+            end
+        end
+        return
+    end
+
+    if not st then
+        st = { origZoneTex = setmetatable({}, { __mode = "k" }) }
+        euiRowState[row] = st
+    end
+
+    if not euiHookedRow[row] and row.HookScript then
+        euiHookedRow[row] = true
+        row:HookScript("OnShow", function(self)
+            if mod._active and mod:GetDB().mode == "enhance_eui" then
+                StyleEUISwingRow(self)
+            end
+        end)
+        row:HookScript("OnHide", function(self)
+            local rSt = euiRowState[self]
+            if rSt then
+                if rSt.flow then rSt.flow:SetEnabled(false) end
+                if rSt.edgeSpark then rSt.edgeSpark:SetShown(false) end
+            end
+        end)
+    end
+
+    if not euiHookedBar[bar] then
+        euiHookedBar[bar] = true
+        if bar.SetStatusBarTexture then
+            _G.hooksecurefunc(bar, "SetStatusBarTexture", function()
+                if swingBarTexBusy then return end
+                if mod._active and mod:GetDB().mode == "enhance_eui" and row._merged ~= true then
+                    C_Timer.After(0, function()
+                        if mod._active and mod:GetDB().mode == "enhance_eui" then
+                            StyleEUISwingRow(row)
+                        end
+                    end)
+                end
+            end)
+        end
+        if bar.SetTimerDuration then
+            _G.hooksecurefunc(bar, "SetTimerDuration", function()
+                if mod._active and mod:GetDB().mode == "enhance_eui" and row._merged ~= true then
+                    SyncEUISwingRowZonesAndPhase(row)
+                    C_Timer.After(0, function()
+                        if mod._active and mod:GetDB().mode == "enhance_eui" then
+                            SyncEUISwingRowZonesAndPhase(row)
+                        end
+                    end)
+                end
+            end)
+        end
+    end
+
+    local euiOwnRound = type(row._roundRadius) == "number" and row._roundRadius > 0
+    local rad = euiOwnRound and 0 or ComputeEUIRowRadius(row)
+    local texOn = ST.IsFXEnabled("fx_barTexture")
+
+    -- 1) 统一为施法条同款液态玻璃明暗填充 + 柔和横向渐变（保留停用还原）
+    if texOn then
+        local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or ST.TEX.FLAT
+        local curPath = ft and ft.GetTexture and F.PlainString(ft:GetTexture(), nil) or nil
+        if curPath ~= wantFill then
+            if st.origFillTex == nil and curPath then
+                st.origFillTex = curPath
+            end
+            swingBarTexBusy = true
+            pcall(bar.SetStatusBarTexture, bar, wantFill)
+            swingBarTexBusy = false
+            ft = bar.GetStatusBarTexture and bar:GetStatusBarTexture() or nil
+        end
+    elseif st.origFillTex and bar.SetStatusBarTexture then
+        swingBarTexBusy = true
+        pcall(bar.SetStatusBarTexture, bar, st.origFillTex)
+        swingBarTexBusy = false
+        st.origFillTex = nil
+        ft = bar.GetStatusBarTexture and bar:GetStatusBarTexture() or nil
+    end
+
+    if M.DisablePixelSnap then
+        M.DisablePixelSnap(bar)
+        if ft then M.DisablePixelSnap(ft) end
+    end
+
+    if ft then
+        HookEUIFillVertexColor(row, ft)
+        local cfg = GetERBSwingCfg()
+        if texOn and not (cfg and cfg.gradientEnabled) and ft.GetVertexColor then
+            local okC, cr, cg, cb, ca = pcall(ft.GetVertexColor, ft)
+            if okC then
+                swingFillVCBusy = true
+                ST.ApplySoftFlatGradient(ft, cr, cg, cb, ca, false)
+                swingFillVCBusy = false
+            end
+        end
+    end
+
+    -- 2) 统一柔和前沿光刃 + 羽化光晕（替代 EUI 硬白细条，停用即还原）
+    if not st.edgeSpark then
+        st.edgeSpark = M.AttachEdgeSpark(bar, {
+            width = 18, extraHeight = 4, a = 0.88, levelOffset = 3, maskHost = row,
+        })
+        st.edgeSpark:SetShown(false)
+    end
+    if row._spark and row._spark.SetAlpha then
+        if not euiHookedSpark[row._spark] then
+            euiHookedSpark[row._spark] = true
+            _G.hooksecurefunc(row._spark, "SetAlpha", function(self, a)
+                local rSt = euiRowState[row]
+                if not swingSparkAlphaBusy and rSt and rSt.mutedRawSpark and F.PlainNumber(a, 1) ~= 0 then
+                    swingSparkAlphaBusy = true
+                    pcall(self.SetAlpha, self, 0)
+                    swingSparkAlphaBusy = false
+                end
+            end)
+        end
+        if texOn then
+            st.mutedRawSpark = true
+            swingSparkAlphaBusy = true
+            pcall(row._spark.SetAlpha, row._spark, 0)
+            swingSparkAlphaBusy = false
+        elseif st.mutedRawSpark then
+            st.mutedRawSpark = false
+            swingSparkAlphaBusy = true
+            pcall(row._spark.SetAlpha, row._spark, 1)
+            swingSparkAlphaBusy = false
+        end
+    end
+
+    -- 3) 统一 1px 顶部玻璃高光线 + 连续双层液态流动 + 出手瞬闪叠层
+    if not st.sheen then
+        local sheen = bar:CreateTexture(nil, "OVERLAY", nil, 1)
+        ST.Hairline(sheen)
+        sheen:SetPoint("TOPLEFT", bar, "TOPLEFT", 2, -1)
+        sheen:SetPoint("TOPRIGHT", bar, "TOPRIGHT", -2, -1)
+        sheen:SetColorTexture(1, 1, 1, 0.14)
+        st.sheen = sheen
+    end
+    st.sheen:SetShown(texOn)
+
+    if not st.flashTex then
+        local fl = bar:CreateTexture(nil, "OVERLAY", nil, 6)
+        fl:SetAllPoints(bar)
+        fl:SetTexture(ST.TEX.FLAT)
+        fl:SetBlendMode("ADD")
+        fl:SetVertexColor(1, 1, 1, 1)
+        fl:SetAlpha(0)
+        fl:Hide()
+        local ag = fl:CreateAnimationGroup()
+        local a1 = ag:CreateAnimation("Alpha")
+        a1:SetOrder(1); a1:SetFromAlpha(0); a1:SetToAlpha(0.42); a1:SetDuration(0.03); a1:SetSmoothing("OUT")
+        local a2 = ag:CreateAnimation("Alpha")
+        a2:SetOrder(2); a2:SetFromAlpha(0.42); a2:SetToAlpha(0); a2:SetDuration(0.16); a2:SetSmoothing("OUT")
+        ag:SetScript("OnFinished", function() fl:SetAlpha(0); fl:Hide() end)
+        ag:SetScript("OnStop", function() fl:SetAlpha(0); fl:Hide() end)
+        st.flashTex = fl
+        st.flashAG = ag
+    end
+
+    if not st.flow then
+        st.flow = M.AttachBarLivingFlow(row, bar, {
+            reverse = false, period = 1.8, peakAlpha = 0.28, softAlpha = 0.15, depthAlpha = 0.22, levelOffset = 2, enabled = false,
+        })
+    end
+
+    -- 4) 全纹理圆角遮罩 + 1px 抗锯齿描边（覆盖 bg / fill / spark / bloom / sheen / flash / zones / flow）
+    if rad > 0 then
+        ST.MaskTexture(row, row._bg, rad)
+        if ft then ST.MaskTexture(row, ft, rad) end
+        if row._spark then ST.MaskTexture(row, row._spark, rad) end
+        if st.sheen then ST.MaskTexture(row, st.sheen, rad) end
+        if st.flashTex then ST.MaskTexture(row, st.flashTex, rad) end
+        if st.edgeSpark then st.edgeSpark:SyncMask(row, rad) end
+        if row._border and row._border.SetAlpha then
+            local bd = row._border
+            mutedSwingBorders[bd] = true
+            if not hookedSwingBorder[bd] then
+                hookedSwingBorder[bd] = true
+                _G.hooksecurefunc(bd, "SetAlpha", function(self, a)
+                    if not swingBorderBusy and mutedSwingBorders[self] and F.PlainNumber(a, 1) ~= 0 then
+                        swingBorderBusy = true
+                        pcall(self.SetAlpha, self, 0)
+                        swingBorderBusy = false
+                    end
+                end)
+                if bd.Show then
+                    _G.hooksecurefunc(bd, "Show", function(self)
+                        if not swingBorderBusy and mutedSwingBorders[self] then
+                            swingBorderBusy = true
+                            pcall(self.SetAlpha, self, 0)
+                            swingBorderBusy = false
+                        end
+                    end)
+                end
+            end
+            swingBorderBusy = true
+            pcall(bd.SetAlpha, bd, 0)
+            swingBorderBusy = false
+        end
+        ST.ApplyRoundedBorder(row, rad, 0.02, 0.02, 0.03, 0.94, 6)
+    elseif not euiOwnRound then
+        ST.ClearRoundedMask(row)
+        if st.edgeSpark then st.edgeSpark:SyncMask(row, 0) end
+        if row._border and mutedSwingBorders[row._border] and row._border.SetAlpha then
+            mutedSwingBorders[row._border] = nil
+            swingBorderBusy = true
+            pcall(row._border.SetAlpha, row._border, 1)
+            swingBorderBusy = false
+        end
+    end
+
+    -- 确保文字层始终高于流光、高光线与圆角描边
+    if row._textFrame and row._textFrame.SetFrameLevel then
+        local barLvl = F.PlainNumber(bar.GetFrameLevel and bar:GetFrameLevel(), 10) or 10
+        local rowLvl = F.PlainNumber(row.GetFrameLevel and row:GetFrameLevel(), 10) or 10
+        local wantTxtLvl = math_max(barLvl + 8, rowLvl + 8)
+        local curTxtLvl = F.PlainNumber(row._textFrame.GetFrameLevel and row._textFrame:GetFrameLevel(), 0) or 0
+        if curTxtLvl < wantTxtLvl then
+            pcall(row._textFrame.SetFrameLevel, row._textFrame, wantTxtLvl)
+        end
+    end
+
+    if st.flow then st.flow:Refresh(rad > 0 and rad or nil) end
+    SyncEUISwingRowZonesAndPhase(row)
+end
+
+local function EnhanceEUISwingFrame(forceDisable)
+    local EUI = _G.EllesmereUI
+    local rbNS = EUI and EUI._ModuleNS and EUI._ModuleNS.EllesmereUIResourceBars
+    if rbNS and not hookedSTApply and type(rbNS.ST_Apply) == "function" then
+        hookedSTApply = true
+        _G.hooksecurefunc(rbNS, "ST_Apply", function()
+            if mod._active and mod:GetDB().mode == "enhance_eui" then
+                EnhanceEUISwingFrame(false)
+            end
+        end)
+    end
+
+    local erb = _G.ERB_SwingTimerFrame
+    if not IsSafeObj(erb) then
+        if forceDisable then
+            for _, row in ipairs(euiTrackedRows) do
+                StyleEUISwingRow(row, true)
+            end
+        end
+        return
+    end
+    -- 外壳 ERB_SwingTimerFrame 仅是多行排布容器，绝不能在外壳上套圆角框
+    ST.ClearRoundedMask(erb)
+    if not hookedSwingShell[erb] and erb.HookScript then
+        hookedSwingShell[erb] = true
+        erb:HookScript("OnShow", function()
+            if mod._active and mod:GetDB().mode == "enhance_eui" then
+                EnhanceEUISwingFrame(false)
+            end
+        end)
+    end
+    if not erb.GetChildren then return end
+    for _, row in ipairs({ erb:GetChildren() }) do
+        if IsSafeObj(row) and row._bar and row._bg then
+            StyleEUISwingRow(row, forceDisable)
+        end
+    end
+end
+
+local function SyncAllEUISwingRows()
     local erb = _G.ERB_SwingTimerFrame
     if not (IsSafeObj(erb) and erb.GetChildren) then return end
-    for _, row in _G.ipairs({ erb:GetChildren() }) do
-        if IsSafeObj(row) and row._bar and row._bg and not seenSwingRows[row] then
-            EnhanceEUISwingFrame()
-            return
+    for _, row in ipairs({ erb:GetChildren() }) do
+        if IsSafeObj(row) and row._bar and row._bg then
+            if not euiTrackedSet[row] then
+                StyleEUISwingRow(row, false)
+            else
+                SyncEUISwingRowZonesAndPhase(row)
+            end
         end
     end
 end
@@ -287,6 +687,8 @@ local function UpdateStandaloneTick(self)
     if not s and not ohLive then
         mhBar._bar:SetValue(0)
         mhBar._spark:SetShown(false)
+        if mhBar._flow then mhBar._flow:SetEnabled(false) end
+        if ohBar._flow then ohBar._flow:SetEnabled(false) end
         ohBar:Hide()
         self:SetScript("OnUpdate", nil)
         if db.hideOOC ~= false and not inCombat and not (_G.InCombatLockdown and _G.InCombatLockdown()) and not state.autoRepeat then
@@ -299,6 +701,7 @@ local function UpdateStandaloneTick(self)
         local prog = math_max(0, math_min(1, (now - s) / d))
         local rem = e - now
         mhBar._bar:SetValue(prog)
+        if mhBar._flow and not mhBar._flow._enabled then mhBar._flow:SetEnabled(true) end
         if kind == "ranged" and isAimClass then
             local w = F.PlainNumber(mhBar:GetWidth(), 249) or 249
             mhBar._aim:SetWidth(math_max(4, w * math_min(0.65, AIM_TIME / d)))
@@ -330,6 +733,7 @@ local function UpdateStandaloneTick(self)
         ohBar:Show()
         local ohProg = math_max(0, math_min(1, (now - state.ohS) / state.ohD))
         ohBar._bar:SetValue(ohProg)
+        if ohBar._flow and not ohBar._flow._enabled then ohBar._flow:SetEnabled(true) end
         if ohBar._lastColorKey ~= "class" then
             ohBar._lastColorKey = "class"
             local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
@@ -337,6 +741,7 @@ local function UpdateStandaloneTick(self)
         end
         ohBar._spark:SetShown(ohProg > 0.02 and ohProg < 0.99)
     else
+        if ohBar._flow then ohBar._flow:SetEnabled(false) end
         ohBar:Hide()
     end
 end
@@ -380,7 +785,13 @@ function mod:OnEnable()
             state.lastKind = "mh"
         end
         if mod:GetDB().mode == "enhance_eui" then
-            CheckUnseenEUISwingRows()
+            SyncAllEUISwingRows()
+            -- 同帧 EUI 的 PLAYER_SWING 处理若晚于我们创建/定位 _zones，下一帧补齐遮罩与阶段状态
+            C_Timer.After(0, function()
+                if mod._active and mod:GetDB().mode == "enhance_eui" then
+                    SyncAllEUISwingRows()
+                end
+            end)
         end
         TriggerSwingFlash()
         if mod:GetDB().mode == "standalone" then
@@ -409,11 +820,13 @@ end
 
 function mod:OnDisable()
     inCombat = false
+    if mhBar and mhBar._flow then mhBar._flow:SetEnabled(false) end
+    if ohBar and ohBar._flow then ohBar._flow:SetEnabled(false) end
     if container then
         container:SetScript("OnUpdate", nil)
         container:Hide()
     end
-    EnhanceEUISwingFrame()
+    EnhanceEUISwingFrame(true)
 end
 
 function mod:OnRefresh()

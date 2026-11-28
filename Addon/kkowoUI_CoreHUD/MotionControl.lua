@@ -27,6 +27,8 @@ local FX_CONSUMER_MODULES = {
     "xpBar",
     "soulstoneAlert",
     "immersiveHUD",
+    "damageMeterSkin",
+    "modernChrome",
 }
 
 local mod = F.RegisterModule("motionFX", {

@@ -85,6 +85,8 @@ local function SetupNineSliceMask(mask, rad)
     end
 end
 
+local dmBarTexBusy = false
+
 -- 为单个 StatusBar 的填充贴图附加独立圆角 MaskTexture：
 -- 锚点直接 SetAllPoints(fillTex)（纯 C++ 引擎锚定，零 Lua 宽度测量，100% 兼容 12.1 保密数值条）
 local function ApplyRoundedStatusBar(fillBar, enable, rad, addTrack)
@@ -99,6 +101,12 @@ local function ApplyRoundedStatusBar(fillBar, enable, rad, addTrack)
                 pcall(rec.attachedTex.RemoveMaskTexture, rec.attachedTex, rec.mask)
             end
             rec.attachedTex = nil
+            if rec.origFillTex and fillBar.SetStatusBarTexture then
+                dmBarTexBusy = true
+                pcall(fillBar.SetStatusBarTexture, fillBar, rec.origFillTex)
+                dmBarTexBusy = false
+                rec.origFillTex = nil
+            end
             if rec.track then rec.track:Hide() end
             if rec.trackMask and rec.track and rec.track.RemoveMaskTexture then
                 pcall(rec.track.RemoveMaskTexture, rec.track, rec.trackMask)
@@ -111,6 +119,26 @@ local function ApplyRoundedStatusBar(fillBar, enable, rad, addTrack)
     if not rec then
         rec = {}
         skinnedBars[fillBar] = rec
+    end
+
+    -- 统一主伤害条/明细条材质为自制立体液态玻璃条体（关闭 fx_barTexture 或停用时无损还原）
+    local texOn = ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture")
+    if texOn and fillBar.SetStatusBarTexture then
+        local wantFill = ST.GetBarFillTexture and ST.GetBarFillTexture(false) or nil
+        local curP = tex and tex.GetTexture and F.PlainString(tex:GetTexture(), nil) or nil
+        if wantFill and curP ~= wantFill then
+            if rec.origFillTex == nil and curP then rec.origFillTex = curP end
+            dmBarTexBusy = true
+            pcall(fillBar.SetStatusBarTexture, fillBar, wantFill)
+            dmBarTexBusy = false
+            tex = fillBar.GetStatusBarTexture and fillBar:GetStatusBarTexture() or tex
+        end
+    elseif rec.origFillTex and fillBar.SetStatusBarTexture then
+        dmBarTexBusy = true
+        pcall(fillBar.SetStatusBarTexture, fillBar, rec.origFillTex)
+        dmBarTexBusy = false
+        rec.origFillTex = nil
+        tex = fillBar.GetStatusBarTexture and fillBar:GetStatusBarTexture() or tex
     end
 
     if not rec.mask and fillBar.CreateMaskTexture then
@@ -160,6 +188,7 @@ local function ApplyRoundedStatusBar(fillBar, enable, rad, addTrack)
     if not hookedSetTex[fillBar] and type(fillBar.SetStatusBarTexture) == "function" then
         hookedSetTex[fillBar] = true
         _G.hooksecurefunc(fillBar, "SetStatusBarTexture", function(self)
+            if dmBarTexBusy then return end
             if mod._active then
                 local wantMain = mod:GetDB().roundMainBars ~= false
                 local isTT = rec.isTooltipBar == true

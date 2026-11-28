@@ -200,10 +200,20 @@ end
 local function SetFlatBar(host, val, maxVal, text, r, g, b, rightText, rowChild)
     local f = EnsureFlatOverlay(host, rowChild)
     HideNativeArt(host)
-    f.bar:SetStatusBarTexture(F.Theme.FLAT_TEX)
+    local ST = F.StyleTokens
+    local barTex = (ST and ST.GetBarFillTexture) and ST.GetBarFillTexture(false) or F.Theme.FLAT_TEX
+    f.bar:SetStatusBarTexture(barTex)
     f.bar:SetMinMaxValues(0, maxVal > 0 and maxVal or 1)
     f.bar:SetValue(maxVal > 0 and math_min(val, maxVal) or 1)
-    f.bar:SetStatusBarColor(r, g, b, 0.90)
+    local ft = f.bar.GetStatusBarTexture and f.bar:GetStatusBarTexture() or nil
+    if ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture") and ft and ST.ApplySoftFlatGradient then
+        f.bar:SetStatusBarColor(1, 1, 1, 1)
+        if not ST.ApplySoftFlatGradient(ft, r, g, b, 0.92, false) then
+            f.bar:SetStatusBarColor(r, g, b, 0.90)
+        end
+    else
+        f.bar:SetStatusBarColor(r, g, b, 0.90)
+    end
     if rightText then
         f.center:SetText("")
         f.left:SetText(text or "")

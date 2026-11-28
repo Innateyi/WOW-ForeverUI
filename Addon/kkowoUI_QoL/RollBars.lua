@@ -541,9 +541,20 @@ ApplyBarBorder = function(bar, r, g, b)
     if ST and rad > 0 then
         local ft = bar.status and bar.status:GetStatusBarTexture()
         if ft then ST.MaskTexture(bar, ft, rad) end
-        if bar._spark and bar._spark._spark then ST.MaskTexture(bar, bar._spark._spark, rad) end
+        if bar._spark then
+            if bar._spark.SyncMask then
+                bar._spark:SyncMask(bar, rad)
+            elseif bar._spark._spark then
+                ST.MaskTexture(bar, bar._spark._spark, rad)
+            end
+        end
+        if bar._flow and bar._flow.Refresh then
+            bar._flow:Refresh(rad)
+        end
     elseif ST then
+        if bar._spark and bar._spark.SyncMask then bar._spark:SyncMask(bar, 0) end
         ST.ClearRoundedMask(bar)
+        if bar._flow and bar._flow.Refresh then bar._flow:Refresh(0) end
     end
 end
 
@@ -596,7 +607,8 @@ local function AcquireBar(rollID)
     local sb = CreateFrame("StatusBar", nil, bar)
     sb:SetPoint("TOPLEFT", 32, -1)
     sb:SetPoint("BOTTOMRIGHT", -1, 1)
-    sb:SetStatusBarTexture(F.Theme.GetBarTexture())
+    local ST = F.StyleTokens
+    sb:SetStatusBarTexture((ST and ST.GetBarFillTexture) and ST.GetBarFillTexture(false) or F.Theme.GetBarTexture())
     sb:EnableMouse(false)
     if sb.SetSnapToPixelGrid then pcall(sb.SetSnapToPixelGrid, sb, false) end
     if sb.SetTexelSnappingBias then pcall(sb.SetTexelSnappingBias, sb, 0) end
@@ -607,8 +619,19 @@ local function AcquireBar(rollID)
     end
     bar.status = sb
     if F.Motion and F.Motion.AttachEdgeSpark then
-        bar._spark = F.Motion.AttachEdgeSpark(sb, { width = 18, extraHeight = 2, levelOffset = 2 })
+        bar._spark = F.Motion.AttachEdgeSpark(sb, { width = 18, extraHeight = 2, levelOffset = 2, maskHost = bar })
     end
+    if F.Motion and F.Motion.AttachBarLivingFlow then
+        bar._flow = F.Motion.AttachBarLivingFlow(bar, sb, {
+            reverse = false, period = 2.6, peakAlpha = 0.24, softAlpha = 0.13, depthAlpha = 0.18, levelOffset = 1, enabled = false,
+        })
+    end
+    bar:HookScript("OnShow", function(self)
+        if self._flow then self._flow:SetEnabled(true) end
+    end)
+    bar:HookScript("OnHide", function(self)
+        if self._flow then self._flow:SetEnabled(false) end
+    end)
 
     -- 与 EUI LootFeed 同款零闪烁入场：播放前 SetAlpha(0)，Order 2 位移与淡入等长并启用 SetToFinalAlpha(true)
     local animIn = bar:CreateAnimationGroup()
@@ -786,7 +809,8 @@ local function ArmRollBarTiming(bar, totalDur, remainSec)
     bar._lastSyncAt = now
     bar._checkAccum = 0
     bar._lastSec = nil
-    bar.status:SetStatusBarTexture(F.Theme.GetBarTexture())
+    local ST = F.StyleTokens
+    bar.status:SetStatusBarTexture((ST and ST.GetBarFillTexture) and ST.GetBarFillTexture(false) or F.Theme.GetBarTexture())
 
     local startAt = now - (dur - rem)
     local armed = F.Motion and F.Motion.ArmClientTimerBar and F.Motion.ArmClientTimerBar(bar.status, startAt, dur, false)
@@ -1014,7 +1038,13 @@ function mod:OnRefresh()
         if b:IsShown() and b.endTime then
             local rem = math_max(0.05, b.endTime - now)
             ArmRollBarTiming(b, b._totalDur or rem, rem)
+            if b._borderColor then
+                ApplyBarBorder(b, b._borderColor[1], b._borderColor[2], b._borderColor[3])
+            end
+            if b._spark then b._spark:SyncAnchor() end
             if b._nativeTimer then anyNative = true end
+        elseif b._flow then
+            b._flow:SetEnabled(false)
         end
     end
     if not anyNative and F.Motion and F.Motion.UnregisterTextTick then

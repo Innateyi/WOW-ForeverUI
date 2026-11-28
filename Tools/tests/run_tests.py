@@ -4126,9 +4126,9 @@ def run_all():
         assert '拍卖' in str(res.labels) and '来源' in str(res.labels) and 'Scales' in str(res.labels) and 'DPS' in str(res.labels), f'必要附加行丢失: {res}'
         assert str(res.dpsLeft) == 'DPS', f'Scales "   DPS" 前导空格未清理: {res.dpsLeft!r}'
         assert not str(res.auctionRight).endswith(' '), f'右侧尾随空格未清理: {res.auctionRight!r}'
-        assert ':0:1|t' in str(res.footerCoin) and '30 |T' in str(res.footerCoin), f'金币图标未规范为 :0:1 与数字间距: {res.footerCoin}'
+        assert ':1:1|t' in str(res.footerCoin) and '30|T' in str(res.footerCoin) and '|t 37|T' in str(res.footerCoin), f'金币图标未规范为 :1:1 紧凑贴合且币组间单空格: {res.footerCoin}'
         assert int(res.gap) == 3 and int(res.keptWhenOff) == 2 and int(res.szExtras) == 13 and int(res.szFooter) == 13, f'排版参数或 sellPrice=false 保留异常: {res}'
-        return '商人行去重/sellPrice关闭保留/DPS去空格/金币:0:1居中/13px字号与3px行距全部通过'
+        return '商人行去重/sellPrice关闭保留/DPS去空格/金币:1:1紧凑防折行/13px字号与3px行距全部通过'
 
     check('综合回归-09：Tooltip 商人行去重与金币排版对齐', t_reg_09_tooltip_dedupe_and_format)
 
@@ -4410,9 +4410,12 @@ def run_all():
     def t_reg_13_bar_flow_and_motion_upgrade():
         import struct
 
-        # (a) Validate all 5 generated TGA files: POT 32-bit + zero-alpha border edges for glow/sheen textures
+        # (a) Validate all 7 generated TGA files: POT 32-bit + zero-alpha border edges + seamless periodicity for liquid flow
         tex_dir = ADDON_BASE / 'kkowoUI_Media' / 'Media' / 'Textures'
-        for fname in ('BarFillShaded.tga', 'BarFillSeamless.tga', 'SparkSoft.tga', 'BarFlowSheen.tga', 'BarEdgeBloom.tga'):
+        for fname in (
+            'BarFillShaded.tga', 'BarFillSeamless.tga', 'SparkSoft.tga',
+            'BarFlowSheen.tga', 'BarEdgeBloom.tga', 'BarFlowLiquid.tga', 'BarFlowCurrent.tga',
+        ):
             p = tex_dir / fname
             assert p.is_file(), f'缺失贴图: {fname}'
             raw = p.read_bytes()
@@ -4422,15 +4425,35 @@ def run_all():
                 f'非合法 2 的幂 32 位 TGA: {fname} ({w}x{h}, {bpp}bpp)'
             )
             assert len(raw) == 18 + w * h * 4, f'TGA 字节长度不匹配: {fname}'
+            pixels = memoryview(raw)[18:]
             if fname in ('SparkSoft.tga', 'BarFlowSheen.tga', 'BarEdgeBloom.tga'):
                 # Check all 4 border edges have alpha == 0
-                pixels = memoryview(raw)[18:]
                 for x in range(w):
                     assert pixels[(0 * w + x) * 4 + 3] == 0, f'{fname} 顶边存在非零透明度'
                     assert pixels[((h - 1) * w + x) * 4 + 3] == 0, f'{fname} 底边存在非零透明度'
                 for y in range(h):
                     assert pixels[(y * w + 0) * 4 + 3] == 0, f'{fname} 左边存在非零透明度'
                     assert pixels[(y * w + (w - 1)) * 4 + 3] == 0, f'{fname} 右边存在非零透明度'
+            elif fname in ('BarFlowLiquid.tga', 'BarFlowCurrent.tga'):
+                # Top & bottom edges strictly 0 alpha; left/right wrap step <= max interior adjacent-pixel step (C1 seamless)
+                for x in range(w):
+                    assert pixels[(0 * w + x) * 4 + 3] == 0, f'{fname} 顶边存在非零透明度'
+                    assert pixels[((h - 1) * w + x) * 4 + 3] == 0, f'{fname} 底边存在非零透明度'
+                max_seam = 0
+                max_interior = 0
+                for y in range(h):
+                    row_off = y * w
+                    a_l = pixels[(row_off + 0) * 4 + 3]
+                    a_r = pixels[(row_off + (w - 1)) * 4 + 3]
+                    if abs(a_l - a_r) > max_seam:
+                        max_seam = abs(a_l - a_r)
+                    for x in range(w - 1):
+                        d = abs(pixels[(row_off + x + 1) * 4 + 3] - pixels[(row_off + x) * 4 + 3])
+                        if d > max_interior:
+                            max_interior = d
+                assert max_seam <= max_interior + 1, (
+                    f'{fname} 左右首尾接缝突变大于内部自然梯度: max_seam={max_seam}, max_interior={max_interior}'
+                )
 
         # (b) fx_barFlow loopAnim registration, 0 extra OnUpdate, instant off stop/hide, heal sweep, 55% + slide, 2px press, wing auraFeel
         l_env, m_env, load_fn = create_env()
@@ -4513,6 +4536,267 @@ def run_all():
         return f'5张POT贴图零硬边 + fx_barFlow注册/0OnUpdate/关即停 + 治疗扫光/机密滑入 + 黑暗深渊({total_events}事件)0报错回放通过'
 
     check('综合回归-13：任务 8 质感流光升级与黑暗深渊 1200 事件回放', t_reg_13_bar_flow_and_motion_upgrade)
+
+    # 43. 综合回归-14：页脚防隔行 + 双层连续液态流动 + 挥砍条防矩形/统一质感 + 冷却追踪条统一施法条效果 + 伤害统计单遮罩
+    def t_reg_14_footer_liquid_flow_and_unified_bars():
+        l_env, m_env, load_fn = create_env()
+        # Mock EUI SwingTimer (with lazy lat/aim zones & ST_Apply) + EUI CDM Tracked Buff Bar (ECME_TBBWrap1)
+        l_env.execute('''
+            -- 1) Mock EUI SwingTimer (ERB_SwingTimerFrame + ranged row with lat/aim zones)
+            local erbST = CreateFrame("Frame", "ERB_SwingTimerFrame", UIParent)
+            erbST:SetSize(220, 14); erbST:SetPoint("CENTER", UIParent, "CENTER", 0, -140); erbST:Show()
+            local sRow = CreateFrame("Frame", nil, erbST)
+            sRow:SetSize(220, 14); sRow:SetAllPoints(erbST); sRow:Show()
+            sRow._bg = sRow:CreateTexture(nil, "BACKGROUND"); sRow._bg:SetAllPoints()
+            sRow._bg:SetColorTexture(0.05, 0.05, 0.05, 0.8)
+            sRow._clip = CreateFrame("Frame", nil, sRow); sRow._clip:SetAllPoints()
+            sRow._bar = CreateFrame("StatusBar", nil, sRow._clip); sRow._bar:SetAllPoints()
+            sRow._bar:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            sRow._bar:GetStatusBarTexture():SetVertexColor(0.85, 0.72, 0.28, 1)
+            sRow._border = CreateFrame("Frame", nil, sRow); sRow._border:SetAllPoints()
+            sRow._sparkFrame = CreateFrame("Frame", nil, sRow._clip); sRow._sparkFrame:SetAllPoints()
+            sRow._spark = sRow._sparkFrame:CreateTexture(nil, "OVERLAY")
+            sRow._spark:SetTexture("Interface\\\\AddOns\\\\EllesmereUI\\\\media\\\\cast_spark.tga")
+            sRow._textFrame = CreateFrame("Frame", nil, sRow); sRow._textFrame:SetAllPoints()
+            sRow._textFrame:SetFrameLevel(sRow._bar:GetFrameLevel() + 2)
+            sRow._zones = {
+                lat = {
+                    back = sRow._clip:CreateTexture(nil, "ARTWORK"),
+                    front = sRow._bar:CreateTexture(nil, "OVERLAY"),
+                },
+                aim = {
+                    back = sRow._clip:CreateTexture(nil, "ARTWORK"),
+                    front = sRow._bar:CreateTexture(nil, "OVERLAY"),
+                },
+            }
+            sRow._zones.lat.front:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            sRow._zones.aim.front:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            sRow._live = true
+            _G._reg14SwingRow = sRow
+            EllesmereUI._ModuleNS.EllesmereUIResourceBars = {
+                ERB = { db = { profile = { swingTimer = { enabled = true, gradientEnabled = false } } } },
+                ST_Apply = function()
+                    -- Simulate EUI ApplyRowLook resetting bg/fill/border/zones at end of swing
+                    sRow._bg:SetTexture(nil)
+                    sRow._bg:SetColorTexture(0.05, 0.05, 0.05, 0.8)
+                    sRow._bar:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+                    sRow._border:SetAlpha(1)
+                    sRow._zones.lat.back:SetTexture("Interface\\\\Buttons\\\\WHITE8x8")
+                end,
+            }
+
+            -- 2) Mock EUI CDM Tracked Buff Bar (ECME_TBBWrap1)
+            local wrap = CreateFrame("Frame", "ECME_TBBWrap1", UIParent)
+            wrap:SetSize(220, 20); wrap:SetPoint("CENTER", UIParent, "CENTER", 0, -90); wrap:Show()
+            wrap._bar = CreateFrame("StatusBar", nil, wrap)
+            wrap._bar:SetSize(196, 20); wrap._bar:SetPoint("RIGHT", wrap, "RIGHT", 0, 0)
+            wrap._bar:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            wrap._bar:GetStatusBarTexture():SetVertexColor(0.55, 0.85, 0.42, 1)
+            wrap._bg = wrap._bar:CreateTexture(nil, "BACKGROUND"); wrap._bg:SetAllPoints()
+            wrap._spark = wrap._bar:CreateTexture(nil, "OVERLAY")
+            wrap._spark:SetTexture("Interface\\\\AddOns\\\\EllesmereUI\\\\media\\\\cast_spark.tga")
+            wrap._spark:SetSize(8, 20)
+            wrap._spark:Show()
+            wrap._barBorder = CreateFrame("Frame", nil, wrap._bar); wrap._barBorder:SetAllPoints()
+            wrap._textOverlay = CreateFrame("Frame", nil, wrap._bar); wrap._textOverlay:SetAllPoints()
+            wrap._icon = CreateFrame("Frame", nil, wrap); wrap._icon:SetSize(20, 20)
+            wrap._icon._tex = wrap._icon:CreateTexture(nil, "ARTWORK"); wrap._icon._tex:SetAllPoints()
+            wrap._icon._tex:SetTexture("Interface\\\\Icons\\\\INV_Spear_07")
+            _G._reg14TbbWrap = wrap
+            EllesmereUI._ModuleNS.EllesmereUICooldownManager = {
+                _buffBarInternals = { tbbFrames = { wrap } },
+                GetTrackedBuffBars = function() return { bars = { { borderSize = 1, borderR = 0, borderG = 0, borderB = 0 } } } end,
+                CdmBlizzBars = function() return false end,
+            }
+        ''')
+        for name in LOAD_ORDER:
+            if name != 'kkowoUI_Tooltip':
+                load_fn(name)
+        # Load TooltipStyle with a realistic PrettyTooltip UI mock to verify footer width allocation
+        l_env.execute('''
+            _G._reg14FooterDrawCalls = {}
+            _G._reg14PtNS = {
+                TooltipTypes = { [0] = { extension = {} } },
+                option = function() return true end,
+                ui = {
+                    COLUMN_GAP = 14,
+                    pad = function() return 12 end,
+                    measureStyled = function(_, txt)
+                        -- Strip WoW color/texture codes, count each icon as 13px and each char as 7px
+                        local plain = tostring(txt or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+                        local nIcons = 0
+                        plain = plain:gsub("|T[^|]*|t", function() nIcons = nIcons + 1; return "" end)
+                        return #plain * 7 + nIcons * 13
+                    end,
+                    styledAt = function(_, txt, x, y, w, style, color, justify)
+                        _G._reg14FooterDrawCalls[#_G._reg14FooterDrawCalls + 1] = {
+                            txt = txt, x = x, y = y, w = w, justify = justify,
+                        }
+                        return (style and style.size or 13) + 2
+                    end,
+                    acquireTexture = function(panel)
+                        return panel:CreateTexture(nil, "OVERLAY")
+                    end,
+                    formatMoney = function()
+                        return "99 |TInterface\\\\MoneyFrame\\\\UI-CopperIcon:12:12:0:0|t"
+                    end,
+                },
+            }
+        ''')
+        ts_src = (ADDON_BASE / 'kkowoUI_Tooltip' / 'Bridge' / 'TooltipStyle.lua').read_text(encoding='utf-8')
+        l_env.eval('function(src, ns) local fn, err = loadstring(src, "@TooltipStyle"); assert(fn, err); fn("kkowoUI_Tooltip", ns) end')(ts_src, l_env.globals()._reg14PtNS)
+        m_env.SetAddonLoaded('kkowoUI_Tooltip', True)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(1.5, 4)
+
+        # (1) Tooltip Footer smart width (empty footerLeft: 毛料 sell price gets full inner width, NOT capped at inner*0.6!)
+        tt_chk = l_env.eval('''(function()
+            local ptNS = _G._reg14PtNS
+            local ext = ptNS.TooltipTypes[0].extension
+            local fStyle = { size = 13 }
+            local model = {
+                footerLeft = {},
+                footerRight = {
+                    { sellPrice = true, left = "99 |TInterface\\\\MoneyFrame\\\\UI-CopperIcon:12:12:0:0|t  (3 x 33 |TInterface\\\\MoneyFrame\\\\UI-CopperIcon:12:12:0:0|t)" },
+                },
+            }
+            local view = { sections = {}, footer = { measure = function() return 0 end, draw = function(_, y) return y end } }
+            ext.extendView(view, model, { styles = { footer = fStyle } })
+            local panel = CreateFrame("Frame", nil, UIParent)
+            panel.width = 188
+            local measured = view.footer.measure(panel)
+            view.footer.draw(panel, 80)
+            local draw1 = _G._reg14FooterDrawCalls[1]
+            local inner = panel.width - 24 -- 164px; old inner*0.6 = 98.4px caused wrap!
+            local coinStr = model.footerRight[1].left
+            return {
+                measured = measured,
+                drawnW = draw1 and draw1.w or 0,
+                inner = inner,
+                noSpaceBeforeCoin = (coinStr:find("99|T", 1, true) ~= nil and coinStr:find("33|T", 1, true) ~= nil),
+                xoffOne = (coinStr:find(":1:1|t", 1, true) ~= nil),
+                notCapped60 = (draw1 and draw1.w > inner * 0.65) or false,
+            }
+        end)()''')
+        assert tt_chk.noSpaceBeforeCoin and tt_chk.xoffOne and tt_chk.notCapped60, (
+            f'Tooltip 页脚防隔行/宽分配校验失败: {tt_chk}'
+        )
+
+        # (2) Dual-layer continuous liquid flow on HP/MP/Pet/Target/ToT/XP bars
+        flow_chk = l_env.eval('''(function()
+            local M = kkowoUI.Motion
+            local ST = kkowoUI.StyleTokens
+            local hpF = _G.kkowoUI_CoreHUD._hpWing._flow
+            local ppF = _G.kkowoUI_CoreHUD._ppWing._flow
+            local petHpF = _G.kkowoUI_PetHUD._hpBar._flow
+            local tgtPpF = _G.kkowoUI_TopTargetHUD._ppBar._flow
+            local totF = _G.kkowoUI_TopTargetHUD._totBar._flow
+            local xpF = _G.kkowoUI_XPBar and _G.kkowoUI_XPBar._flow
+            local dualActive = hpF._ag:IsPlaying() and hpF._agDepth:IsPlaying()
+                and M.IsLoopAnimRegistered(hpF._ag) and M.IsLoopAnimRegistered(hpF._agDepth)
+                and hpF._tr1._smoothing == "NONE" and hpF._tr2._smoothing == "NONE"
+                and #hpF._tiles1 >= 2 and #hpF._tiles2 >= 2
+                and hpF._tiles2[1]:GetTexture() == ST.TEX.BAR_FLOW_LIQUID
+                and hpF._tiles1[1]:GetTexture() == ST.TEX.BAR_FLOW_CURRENT
+                and hpF._tr2._dx < 0 and ppF._tr2._dx > 0 -- reverse vs forward
+            return {
+                dualActive = dualActive,
+                hasAllBars = (petHpF ~= nil and tgtPpF ~= nil and totF ~= nil and xpF ~= nil),
+            }
+        end)()''')
+        assert flow_chk.dualActive and flow_chk.hasAllBars, f'双层连续液态流动引擎校验失败: {flow_chk}'
+
+        # (3) SwingTimer (enhance_eui): zones + bg + fill + spark masked, survives ST_Apply & SetTimerDuration, no Scale pop, clean OnDisable restore
+        m_env.FireEvent('PLAYER_SWING', 2.4, 2)
+        l_env.execute('EllesmereUI._ModuleNS.EllesmereUIResourceBars.ST_Apply()')
+        m_env.StepTime(0.05, 2)
+        st_chk = l_env.eval('''(function()
+            local ST = kkowoUI.StyleTokens
+            local row = _G._reg14SwingRow
+            local erb = _G.ERB_SwingTimerFrame
+            local ft = row._bar:GetStatusBarTexture()
+            local hasScalePop = (erb._kkAnims ~= nil)
+            local latFrontM = row._zones.lat.front:GetNumMaskTextures()
+            local latBackM = row._zones.lat.back:GetNumMaskTextures()
+            local aimFrontM = row._zones.aim.front:GetNumMaskTextures()
+            local bgM = row._bg:GetNumMaskTextures()
+            local fillM = ft:GetNumMaskTextures()
+            local fillTexOk = ft:GetTexture() == ST.TEX.BAR_FILL_SHADED
+            local borderMuted = row._border:GetAlpha() == 0
+            local rawSparkMuted = row._spark:GetAlpha() == 0
+            -- Zero pollution on EUI row
+            local polluted = false
+            for k in pairs(row) do if type(k) == "string" and k:find("^_kk") then polluted = true end end
+            -- Disable & verify full lossless restore
+            local stMod = kkowoUI.Modules.Get("swingTimerMotion")
+            stMod:Disable()
+            local restoredFill = row._bar:GetStatusBarTexture():GetTexture() == "Interface\\\\Buttons\\\\WHITE8x8"
+            local restoredBorder = row._border:GetAlpha() == 1
+            local restoredSpark = row._spark:GetAlpha() == 1
+            stMod:Enable()
+            return {
+                latFrontM = latFrontM, latBackM = latBackM, aimFrontM = aimFrontM,
+                bgM = bgM, fillM = fillM, fillTexOk = fillTexOk,
+                borderMuted = borderMuted, rawSparkMuted = rawSparkMuted,
+                polluted = polluted, hasScalePop = hasScalePop,
+                restoredFill = restoredFill, restoredBorder = restoredBorder, restoredSpark = restoredSpark,
+            }
+        end)()''')
+        assert (
+            int(st_chk.latFrontM) == 1 and int(st_chk.latBackM) == 1 and int(st_chk.aimFrontM) == 1
+            and int(st_chk.bgM) == 1 and int(st_chk.fillM) == 1
+            and st_chk.fillTexOk and st_chk.borderMuted and st_chk.rawSparkMuted
+            and (not st_chk.polluted) and (not st_chk.hasScalePop)
+            and st_chk.restoredFill and st_chk.restoredBorder and st_chk.restoredSpark
+        ), f'挥砍条防矩形/统一施法条质感/停用还原校验失败: {st_chk}'
+
+        # (4) CDM Tracked Buff Bar (ECME_TBBWrap1): unified BarFillShaded + soft SparkSoft + continuous flow + zero pollution + OnDisable restore
+        tbb_chk = l_env.eval('''(function()
+            local ST = kkowoUI.StyleTokens
+            local wrap = _G._reg14TbbWrap
+            local sb = wrap._bar
+            local ft = sb:GetStatusBarTexture()
+            local fillOk = ft:GetTexture() == ST.TEX.BAR_FILL_SHADED
+            local sparkOk = wrap._spark:GetTexture() == ST.TEX.SPARK_SOFT
+            local sparkW = wrap._spark:GetWidth()
+            local fillMasked = ft:GetNumMaskTextures() == 1
+            local sparkMasked = wrap._spark:GetNumMaskTextures() == 1
+            local hasFlowChild = false
+            for _, ch in ipairs({ sb:GetChildren() }) do
+                if ch:IsShown() and ch:DoesClipChildren() then
+                    for _, gch in ipairs({ ch:GetChildren() }) do
+                        for _, r in ipairs({ gch:GetRegions() }) do
+                            if r.GetTexture and r:GetTexture() == ST.TEX.BAR_FLOW_LIQUID and r:IsShown() then
+                                hasFlowChild = true
+                            end
+                        end
+                    end
+                end
+            end
+            local polluted = false
+            for k in pairs(wrap) do if type(k) == "string" and k:find("^_kk") then polluted = true end end
+            local abMod = kkowoUI.Modules.Get("actionBarMotion")
+            abMod:Disable()
+            local restFill = sb:GetStatusBarTexture():GetTexture() == "Interface\\\\Buttons\\\\WHITE8x8"
+            local restSpark = wrap._spark:GetTexture() == "Interface\\\\AddOns\\\\EllesmereUI\\\\media\\\\cast_spark.tga"
+            abMod:Enable()
+            return {
+                fillOk = fillOk, sparkOk = sparkOk, sparkW = sparkW,
+                fillMasked = fillMasked, sparkMasked = sparkMasked, hasFlowChild = hasFlowChild,
+                polluted = polluted, restFill = restFill, restSpark = restSpark,
+            }
+        end)()''')
+        assert (
+            tbb_chk.fillOk and tbb_chk.sparkOk and float(tbb_chk.sparkW) >= 16
+            and tbb_chk.fillMasked and tbb_chk.sparkMasked and tbb_chk.hasFlowChild
+            and (not tbb_chk.polluted)
+            and tbb_chk.restFill and tbb_chk.restSpark
+        ), f'冷却追踪条统一施法条质感/连续流光/停用还原校验失败: {tbb_chk}'
+
+        return '页脚全宽防隔行 + 双层C∞无缝液态流动 + 挥砍条全分区遮罩防矩形 + 冷却追踪条统一施法条效果与无损还原 全部通过'
+
+    check('综合回归-14：页脚防隔行、连续液态流与全条类质感统一', t_reg_14_footer_liquid_flow_and_unified_bars)
 
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0

@@ -463,7 +463,8 @@ local function BuildRowRegions(host, L, isEngine)
     -- 直接锚定到宿主 Frame（不锚定到 Texture region），避免引擎按钮创建期布局尺寸为 0 导致进度条不显示
     bar:SetPoint("TOPLEFT", host, "TOPLEFT", barLeft + px, -px)
     bar:SetPoint("BOTTOMRIGHT", host, "BOTTOMRIGHT", -px, px)
-    bar:SetStatusBarTexture(ST.TEX.FLAT)
+    local fillTexPath = (ST.GetBarFillTexture and ST.GetBarFillTexture(false)) or ST.TEX.FLAT
+    bar:SetStatusBarTexture(fillTexPath)
     bar:SetMinMaxValues(0, 1)
     bar:SetValue(1)
     bar:SetClipsChildren(true)
@@ -471,6 +472,8 @@ local function BuildRowRegions(host, L, isEngine)
     DisablePixelSnap(bar)
     local fill = bar:GetStatusBarTexture()
     local spark = nil
+    local bloom = nil
+    local flow = nil
     local barLvl = F.PlainNumber(bar:GetFrameLevel(), 1) or 1
     if fill then
         if fill.SetBlockingLoadsRequested then pcall(fill.SetBlockingLoadsRequested, fill, true) end
@@ -478,29 +481,47 @@ local function BuildRowRegions(host, L, isEngine)
         DisablePixelSnap(fill)
         AddRoundMask(bar, fill, bar, (r > 0) and inner or 0, isEngine)
 
-        -- 前沿柔和羽化光刃（与施法条同款 SparkBlade，纯锚定 fill 右沿，零 OnUpdate）：
-        -- 让低速倒计时在亚像素移动时通过羽化光晕平滑过渡相邻像素，观感对齐施法条
+        -- 前沿柔和羽化光刃 + Bloom（与施法条同源，纯锚定 fill 右沿，零 OnUpdate，引擎行零脚本钩子）
         local sparkHost = CreateFrame("Frame", nil, bar)
         sparkHost:SetAllPoints(bar)
         sparkHost:SetClipsChildren(true)
         sparkHost:SetFrameLevel(barLvl + 1)
         if sparkHost.EnableMouse then sparkHost:EnableMouse(false) end
+        if ST.IsFXEnabled and ST.IsFXEnabled("fx_barTexture") then
+            bloom = sparkHost:CreateTexture(nil, "OVERLAY", nil, 4)
+            if bloom.SetBlockingLoadsRequested then pcall(bloom.SetBlockingLoadsRequested, bloom, true) end
+            bloom:SetTexture(ST.GetEdgeBloomTexture and ST.GetEdgeBloomTexture() or ST.TEX.BAR_EDGE_BLOOM)
+            bloom:SetBlendMode("ADD")
+            bloom:SetSize(22, L.h + 8)
+            bloom:SetPoint("CENTER", fill, "RIGHT", -2, 0)
+            bloom:SetVertexColor(1, 1, 1, 0.72)
+            DisablePixelSnap(bloom)
+            AddRoundMask(sparkHost, bloom, bar, (r > 0) and inner or 0, isEngine)
+        end
         spark = sparkHost:CreateTexture(nil, "OVERLAY", nil, 5)
         if spark.SetBlockingLoadsRequested then pcall(spark.SetBlockingLoadsRequested, spark, true) end
-        spark:SetTexture(ST.TEX.SPARK_BLADE)
+        spark:SetTexture((ST.GetSparkTexture and ST.GetSparkTexture()) or ST.TEX.SPARK_BLADE)
         spark:SetBlendMode("ADD")
-        spark:SetSize(16, L.h + 4)
+        spark:SetSize(18, L.h + 4)
         spark:SetPoint("CENTER", fill, "RIGHT", -1, 0)
         spark:SetVertexColor(1, 1, 1, 0.88)
         DisablePixelSnap(spark)
         AddRoundMask(sparkHost, spark, bar, (r > 0) and inner or 0, isEngine)
+
+        -- 非引擎自绘条叠加双层连续液态流动（引擎按钮严禁挂任何脚本钩子，保持纯静态明暗+柔光刃）
+        if not isEngine and F.Motion and F.Motion.AttachBarLivingFlow then
+            flow = F.Motion.AttachBarLivingFlow(bar, bar, {
+                reverse = false, period = 2.4, peakAlpha = 0.26, softAlpha = 0.14, depthAlpha = 0.20, levelOffset = 1,
+            })
+            if flow and r > 0 then flow:Refresh(inner) end
+        end
     end
 
     -- 文字载体放在填充条与光刃之上（直接锚定 Frame bar，避免锚定到 Texture region bd 导致布局尺寸为 0）
     local carrier = CreateFrame("Frame", nil, host)
     carrier:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, 0)
     carrier:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", 0, 0)
-    carrier:SetFrameLevel(barLvl + 2)
+    carrier:SetFrameLevel(barLvl + 4)
     if carrier.EnableMouse then carrier:EnableMouse(false) end
 
     local timeFS = carrier:CreateFontString(nil, "OVERLAY")
@@ -526,7 +547,7 @@ local function BuildRowRegions(host, L, isEngine)
     countFS:SetJustifyH("RIGHT")
     countFS:SetText("")
 
-    row.border, row.track, row.bar, row.spark, row.carrier = bd, track, bar, spark, carrier
+    row.border, row.track, row.bar, row.spark, row.bloom, row.flow, row.carrier = bd, track, bar, spark, bloom, flow, carrier
     row.time, row.name, row.count = timeFS, nameFS, countFS
     return row
 end
@@ -558,6 +579,13 @@ local function PaintRow(row, r, g, b)
             math_min(1, b * 0.30 + 0.70),
             0.88)
     end
+    if row.bloom then
+        row.bloom:SetVertexColor(
+            math_min(1, r * 0.35 + 0.65),
+            math_min(1, g * 0.35 + 0.65),
+            math_min(1, b * 0.35 + 0.65),
+            0.72)
+    end
     -- 底槽 = 核心双翼血条的掉血底色：按条色轻染的半透明玻璃（深色条稍透一些），不是统一的近黑色块
     local a = (lr + lg + lb < 0.25) and 0.34 or 0.42
     row.track:SetVertexColor(lr * 0.16 + 0.06, lg * 0.16 + 0.06, lb * 0.16 + 0.08, a)
@@ -579,6 +607,11 @@ local function AcquireRow(pool, parent, i)
         row = BuildRowRegions(f, layout)
         row.frame = f
         row._gen = layoutGen
+        if row.flow then
+            local fl = row.flow
+            f:HookScript("OnShow", function() fl:SetEnabled(true) end)
+            f:HookScript("OnHide", function() fl:SetEnabled(false) end)
+        end
         pool[i] = row
     end
     return row

@@ -464,10 +464,16 @@ local function BuildPetHUD()
     hpBar._trail = M.AttachHealthTrail(hpBar._bar, {
         delay = 0.16, reverse = false, color = ST.COLORS.trail,
     })
+    hpBar._flow = M.AttachBarLivingFlow(hpBar, hpBar._bar, {
+        reverse = false, period = 3.4, peakAlpha = 0.26, softAlpha = 0.14, depthAlpha = 0.20, depthSoftAlpha = 0.11,
+    })
     f._hpBar = hpBar
 
     local ppBar = CreateWingBar(f, 130, 4, false)
     ppBar:SetPoint("TOPLEFT", hpBar, "BOTTOMLEFT", 0, -2)
+    ppBar._flow = M.AttachBarLivingFlow(ppBar, ppBar._bar, {
+        reverse = false, period = 3.6, peakAlpha = 0.24, softAlpha = 0.13, depthAlpha = 0.18, depthSoftAlpha = 0.10,
+    })
     f._ppBar = ppBar
 
     local petTextLayer = CreateFrame("Frame", nil, f)
@@ -525,6 +531,9 @@ local function BuildTopTargetHUD()
 
     local ppBar = CreateWingBar(f, 256, 4, false)
     ppBar:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 0, 2)
+    ppBar._flow = M.AttachBarLivingFlow(ppBar, ppBar._bar, {
+        reverse = false, period = 3.4, peakAlpha = 0.24, softAlpha = 0.13, depthAlpha = 0.18, depthSoftAlpha = 0.10,
+    })
     f._ppBar = ppBar
 
     local hpBar = CreateWingBar(f, 256, 18, false)
@@ -537,7 +546,7 @@ local function BuildTopTargetHUD()
     })
     hpBar._spark:SetShown(false)
     hpBar._flow = M.AttachBarLivingFlow(hpBar, hpBar._bar, {
-        reverse = false, period = 6.2, peakAlpha = 0.18, softAlpha = 0.10,
+        reverse = false, period = 3.0, peakAlpha = 0.30, softAlpha = 0.16, depthAlpha = 0.24, depthSoftAlpha = 0.13,
     })
     f._hpBar = hpBar
 
@@ -592,6 +601,9 @@ local function BuildTopTargetHUD()
     -- 目标的目标微条（作为附属浮标挂在圆形头像右侧外，不撑偏目标条主居中盒）
     local totBar = CreateWingBar(f, 84, 10, false)
     totBar:SetPoint("LEFT", port, "RIGHT", 8, -4)
+    totBar._flow = M.AttachBarLivingFlow(totBar, totBar._bar, {
+        reverse = false, period = 3.2, peakAlpha = 0.26, softAlpha = 0.14, depthAlpha = 0.20, depthSoftAlpha = 0.11,
+    })
     -- 名字必须挂在小血条上：挂在目标条本体上时，小血条隐藏后名字仍残留上一次的内容（总显示「风蛇」）
     local totName = totBar:CreateFontString(nil, "OVERLAY")
     ST.ApplyText(totName, 10, 0.90, 0.92, 0.96, 1)
