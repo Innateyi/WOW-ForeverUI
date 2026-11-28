@@ -57,7 +57,9 @@ local mod = F.RegisterModule("coreHUD", {
         keepOriginalEUI = false,
         -- 双翼 / 宠物 / 目标条可点击：左键选中、右键单位菜单（安全按钮，战斗中同样可用）
         clickableHUD = true,
-        -- 方案 A：圆球正上方常驻 BUFF（守护/姿态/光环）+ 下方两行增益与减益（含 +N 溢出折叠）+ 右上角彻底收起
+        -- 一键开关：打开=自身常驻/限时增益与减益统一在双翼上下显示并收起小地图左侧原生栏；
+        -- 关闭=双翼不显示自身光环，自动恢复小地图左侧原生增益/减益栏（配合 AuraBarSkin 统一圆角风格）
+        wingOwnAuras = true,
         showPermanentBuffs = true,
         showCombatBuffs = true,
         showCombatDebuffs = true,
@@ -66,6 +68,8 @@ local mod = F.RegisterModule("coreHUD", {
         dedupeTopRightAuras = true,
         buffFilter = "non_permanent", -- "non_permanent" | "short_2m" | "short_5m" | "all"
         auraIconSize = 26,
+        -- 无限服蓝条 5 秒规则 + 2 秒回蓝节拍火花（"ticks" | "fsr" | "off"）
+        manaRegenSpark = "ticks",
         -- 脱战空闲柔和淡隐（默认开启）
         idleFade = true,
         idleAlpha = 0.50,
@@ -75,6 +79,7 @@ local mod = F.RegisterModule("coreHUD", {
         v5AutoReplaceMigrated = false,
         v6AuraRefined = false,
         v7OptionAAndInsideText = false,
+        v8UnifiedOwnAuraToggle = false,
         -- 独立宠物框体
         showPetFrame = true,
         -- 统一圆角渐变目标条（默认开启）

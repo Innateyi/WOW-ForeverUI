@@ -8,8 +8,8 @@ if not F then return end
 local CH = F._CoreHUD
 if not CH then return end
 
-local ipairs, math_floor, math_max, math_min, pairs, pcall, tostring, type =
-    ipairs, math.floor, math.max, math.min, pairs, pcall, tostring, type
+local ipairs, math_abs, math_floor, math_max, math_min, pairs, pcall, tostring, type =
+    ipairs, math.abs, math.floor, math.max, math.min, pairs, pcall, tostring, type
 local string_format = string.format
 local table_concat, table_sort = table.concat, table.sort
 local CreateFrame = CreateFrame
@@ -632,8 +632,9 @@ end
 --      • 无 AuraKit 环境自动退回安全扫描池，保持一致圆角风格与完整提示。
 ----------------------------------------------------------------------
 local TARGET_AURA_ROW_W = 256
-local TARGET_AURA_GAP = 3
-local TARGET_AURA_ROW_GAP = 4
+local TARGET_AURA_GAP = 4
+local TARGET_AURA_ROW_GAP = 5
+local TARGET_AURA_DIV_GAP = 7 -- 减益与增益之间：7px + 1px「|」分隔线 + 7px = 15px 留白
 local TARGET_MAX_MY_DEBUFFS = 10
 local TARGET_MAX_OTHER_DEBUFFS = 10
 local TARGET_MAX_BUFFS = 12
@@ -648,9 +649,118 @@ local tgtAuraState = {
     capBuff = nil,
     engineFailed = false,
     fallbackSlots = {},
+    divider = nil,
+    engineDebuffBtns = {},
+    engineBuffBtns = {},
+    dividerPending = false,
     eventFrame = nil,
     scanPending = false,
 }
+
+local function EnsureTargetAuraDivider(host)
+    if tgtAuraState.divider then return tgtAuraState.divider end
+    if not host then return nil end
+    local div = host:CreateTexture(nil, "OVERLAY", nil, 6)
+    div:SetColorTexture(0.78, 0.85, 0.94, 0.62)
+    ST.Hairline(div, true)
+    div:Hide()
+    tgtAuraState.divider = div
+    return div
+end
+
+local function HideTargetAuraDivider()
+    if tgtAuraState.divider then
+        tgtAuraState.divider:Hide()
+    end
+end
+
+local function IsEngineBtnShownPlain(btn)
+    if not (btn and btn.IsShown) then return false end
+    local ok, s = pcall(btn.IsShown, btn)
+    return ok and (not F.IsSecret(s)) and s == true
+end
+
+local function TargetAuraMetrics()
+    local db = mod:GetDB()
+    local sz = math_floor(math_max(18, math_min(28, F.PlainNumber(db.targetAuraSize, 22) or 22)) + 0.5)
+    local rad = math_min(ST.GetCornerRadius(5), 5)
+    if rad < 0 then rad = 0 end
+    local wantBuffs = db.showTargetBuffs ~= false
+    local wantDebuffs = db.showTargetDebuffs ~= false
+    return sz, rad, wantBuffs, wantDebuffs
+end
+
+local function RefreshEngineTargetDivider()
+    tgtAuraState.dividerPending = false
+    local host = CH.topTargetFrame and CH.topTargetFrame._auraHost
+    local c = tgtAuraState.container
+    if not (host and c and mod._active and mod:GetDB().enableTopTarget ~= false and UnitExistsSafe("target")) then
+        HideTargetAuraDivider()
+        return
+    end
+    local sz = TargetAuraMetrics()
+    local div = EnsureTargetAuraDivider(host)
+    if not div then return end
+    local hostL = host.GetLeft and F.PlainNumber(host:GetLeft(), nil) or nil
+    local hostT = host.GetTop and F.PlainNumber(host:GetTop(), nil) or nil
+    if not (hostL and hostT) then
+        div:Hide()
+        return
+    end
+
+    -- 找出最末行最右侧的可见减益，以及同行首个可见增益；12.x 保密值一律静默跳过不报错
+    local lastDTop, lastDBot, lastDRight = nil, nil, nil
+    for _, btn in ipairs(tgtAuraState.engineDebuffBtns) do
+        if IsEngineBtnShownPlain(btn) then
+            local r = btn.GetRight and F.PlainNumber(btn:GetRight(), nil) or nil
+            local t = btn.GetTop and F.PlainNumber(btn:GetTop(), nil) or nil
+            local b = btn.GetBottom and F.PlainNumber(btn:GetBottom(), nil) or nil
+            if r and t and b then
+                if (not lastDTop) or (t < lastDTop - 4) or (math_abs(t - lastDTop) <= 4 and r > lastDRight) then
+                    lastDTop, lastDBot, lastDRight = t, b, r
+                end
+            end
+        end
+    end
+    if not lastDRight then
+        div:Hide()
+        return
+    end
+
+    local firstBLeft = nil
+    for _, btn in ipairs(tgtAuraState.engineBuffBtns) do
+        if IsEngineBtnShownPlain(btn) then
+            local l = btn.GetLeft and F.PlainNumber(btn:GetLeft(), nil) or nil
+            local t = btn.GetTop and F.PlainNumber(btn:GetTop(), nil) or nil
+            if l and t and math_abs(t - lastDTop) <= 4 and l >= lastDRight + 6 then
+                if (not firstBLeft) or l < firstBLeft then
+                    firstBLeft = l
+                end
+            end
+        end
+    end
+    if firstBLeft then
+        local midX = (lastDRight + firstBLeft) * 0.5 - hostL
+        local midY = ((lastDTop + lastDBot) * 0.5) - hostT
+        div:SetHeight(math_max(10, sz - 6))
+        ST.Hairline(div, true)
+        div:ClearAllPoints()
+        div:SetPoint("CENTER", host, "TOPLEFT", midX, midY)
+        div:Show()
+    else
+        div:Hide()
+    end
+end
+
+local function QueueEngineTargetDivider()
+    if tgtAuraState.dividerPending or not tgtAuraState.container then return end
+    tgtAuraState.dividerPending = true
+    if _G.C_Timer and _G.C_Timer.After then
+        _G.C_Timer.After(0.04, RefreshEngineTargetDivider)
+    else
+        RefreshEngineTargetDivider()
+    end
+end
 
 local function GetTargetAK()
     local EUI = _G.EllesmereUI
@@ -662,16 +772,6 @@ local function GetTargetAK()
         return AK
     end
     return nil
-end
-
-local function TargetAuraMetrics()
-    local db = mod:GetDB()
-    local sz = math_floor(math_max(18, math_min(28, F.PlainNumber(db.targetAuraSize, 22) or 22)) + 0.5)
-    local rad = math_min(ST.GetCornerRadius(5), 5)
-    if rad < 0 then rad = 0 end
-    local wantBuffs = db.showTargetBuffs ~= false
-    local wantDebuffs = db.showTargetDebuffs ~= false
-    return sz, rad, wantBuffs, wantDebuffs
 end
 
 local function ApplyTargetAuraText(button, d)
@@ -731,6 +831,7 @@ local function HideFallbackTargetSlots()
     for _, slot in ipairs(tgtAuraState.fallbackSlots) do
         slot:Hide()
     end
+    HideTargetAuraDivider()
 end
 
 local function ReleaseTargetAuraEngine()
@@ -739,6 +840,10 @@ local function ReleaseTargetAuraEngine()
     tgtAuraState.layoutFP = nil
     tgtAuraState.capDebuff = nil
     tgtAuraState.capBuff = nil
+    tgtAuraState.engineDebuffBtns = {}
+    tgtAuraState.engineBuffBtns = {}
+    tgtAuraState.dividerPending = false
+    HideTargetAuraDivider()
     local AK = GetTargetAK()
     if AK then
         if tgtAuraState.debuffStyleKey then AK.styles[tgtAuraState.debuffStyleKey] = nil end
@@ -785,17 +890,18 @@ local function EnsureTargetAuraEngine()
             tgtAuraState.layoutFP = fp
             AK.styles[tgtAuraState.debuffStyleKey] = BuildTargetAuraStyleTable(sz, rad, true)
             AK.styles[tgtAuraState.buffStyleKey] = BuildTargetAuraStyleTable(sz, rad, false)
+            local divSpan = TARGET_AURA_DIV_GAP * 2 + 1
             local gLayout = {
                 elementWidth = sz, elementHeight = sz,
                 elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-                groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
+                groupSpacing = TARGET_AURA_GAP, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             }
             if c.SetAuraGroupLayout then
-                gLayout.layoutIndex = 1; gLayout.forceNewLine = nil
+                gLayout.layoutIndex = 1; gLayout.forceNewLine = nil; gLayout.groupSpacing = TARGET_AURA_GAP
                 pcall(c.SetAuraGroupLayout, c, "kk_tgt_my_debuffs", gLayout)
-                gLayout.layoutIndex = 2; gLayout.forceNewLine = nil
+                gLayout.layoutIndex = 2; gLayout.forceNewLine = nil; gLayout.groupSpacing = TARGET_AURA_GAP
                 pcall(c.SetAuraGroupLayout, c, "kk_tgt_other_debuffs", gLayout)
-                gLayout.layoutIndex = 3; gLayout.forceNewLine = true
+                gLayout.layoutIndex = 3; gLayout.forceNewLine = nil; gLayout.groupSpacing = divSpan
                 pcall(c.SetAuraGroupLayout, c, "kk_tgt_buffs", gLayout)
             end
             if AK.RestyleSoon then
@@ -857,32 +963,41 @@ local function EnsureTargetAuraEngine()
         })
         local SM = _G.AuraContainerSortMethod
         local sortDefault = SM and SM.Default or nil
+        local divSpan = TARGET_AURA_DIV_GAP * 2 + 1
+        tgtAuraState.engineDebuffBtns = {}
+        tgtAuraState.engineBuffBtns = {}
+        local function TrackDebuffBtn(btn)
+            tgtAuraState.engineDebuffBtns[#tgtAuraState.engineDebuffBtns + 1] = btn
+        end
+        local function TrackBuffBtn(btn)
+            tgtAuraState.engineBuffBtns[#tgtAuraState.engineBuffBtns + 1] = btn
+        end
         local myDebuffLayout = {
             elementWidth = sz, elementHeight = sz,
             elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
+            groupSpacing = TARGET_AURA_GAP, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             layoutIndex = 1,
         }
         local otherDebuffLayout = {
             elementWidth = sz, elementHeight = sz,
             elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
+            groupSpacing = TARGET_AURA_GAP, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             layoutIndex = 2,
         }
         local buffLayout = {
             elementWidth = sz, elementHeight = sz,
             elementSpacing = TARGET_AURA_GAP, lineSpacing = TARGET_AURA_ROW_GAP,
-            groupSpacing = 0, groupLineSpacing = TARGET_AURA_ROW_GAP + 1,
-            forceNewLine = true,
+            groupSpacing = divSpan, groupLineSpacing = TARGET_AURA_ROW_GAP + 4,
             layoutIndex = 3,
         }
-        -- 第 1 排：玩家自身减益优先，紧接队友/其他来源减益；第 2 排：目标增益（无减益时自动顶上不留空行）
+        -- 同行流式排布：减益（自身优先 + 其他）与增益之间留出 15px 间距并居中绘制「|」分隔线
         AK.AddGroupToContainer(c, {
             key = "kk_tgt_my_debuffs",
             filter = { "HARMFUL", "PLAYER" },
             maxFrameCount = wantDebuffs and TARGET_MAX_MY_DEBUFFS or 0,
             sortMethod = sortDefault,
             style = dKey,
+            extraInit = TrackDebuffBtn,
             layout = myDebuffLayout,
         })
         AK.AddGroupToContainer(c, {
@@ -891,6 +1006,7 @@ local function EnsureTargetAuraEngine()
             maxFrameCount = wantDebuffs and TARGET_MAX_OTHER_DEBUFFS or 0,
             sortMethod = sortDefault,
             style = dKey,
+            extraInit = TrackDebuffBtn,
             layout = otherDebuffLayout,
         })
         AK.AddGroupToContainer(c, {
@@ -899,12 +1015,16 @@ local function EnsureTargetAuraEngine()
             maxFrameCount = wantBuffs and TARGET_MAX_BUFFS or 0,
             sortMethod = sortDefault,
             style = bKey,
+            extraInit = TrackBuffBtn,
             layout = buffLayout,
         })
         if c.SetAuraGroupLayout then
             pcall(c.SetAuraGroupLayout, c, "kk_tgt_my_debuffs", myDebuffLayout)
             pcall(c.SetAuraGroupLayout, c, "kk_tgt_other_debuffs", otherDebuffLayout)
             pcall(c.SetAuraGroupLayout, c, "kk_tgt_buffs", buffLayout)
+        end
+        if c.HookScript then
+            pcall(c.HookScript, c, "OnSizeChanged", QueueEngineTargetDivider)
         end
         if c.SetEnabled then pcall(c.SetEnabled, c, true) end
         AK.FinishContainer(c, "target")
@@ -1133,45 +1253,94 @@ local function UpdateTargetAurasFallback()
     local sz, rad, wantBuffs, wantDebuffs = TargetAuraMetrics()
     local debuffs = wantDebuffs and CollectTargetAurasFallback("HARMFUL", 16) or {}
     local buffs = wantBuffs and CollectTargetAurasFallback("HELPFUL", TARGET_MAX_BUFFS) or {}
-    local perRow = math_max(1, math_floor((TARGET_AURA_ROW_W + TARGET_AURA_GAP) / (sz + TARGET_AURA_GAP)))
     local stepX = sz + TARGET_AURA_GAP
     local stepY = sz + TARGET_AURA_ROW_GAP
+    local divSpan = TARGET_AURA_DIV_GAP * 2 + 1
     local used = 0
+    local xCursor = 0
     local yCursor = 0
+    local div = EnsureTargetAuraDivider(host)
 
     if #debuffs > 0 then
-        for i, data in ipairs(debuffs) do
+        for _, data in ipairs(debuffs) do
+            if xCursor > 0 and (xCursor + sz) > TARGET_AURA_ROW_W then
+                xCursor = 0
+                yCursor = yCursor + stepY
+            end
             used = used + 1
             local slot = AcquireTargetFallbackSlot(used)
             if slot then
-                local col = (i - 1) % perRow
-                local row = math_floor((i - 1) / perRow)
                 slot:ClearAllPoints()
-                slot:SetPoint("TOPLEFT", host, "TOPLEFT", col * stepX, -(yCursor + row * stepY))
+                slot:SetPoint("TOPLEFT", host, "TOPLEFT", xCursor, -yCursor)
                 PaintTargetFallbackSlot(slot, data, true, sz, rad)
             end
+            xCursor = xCursor + stepX
         end
-        local debuffRows = math_floor((#debuffs - 1) / perRow) + 1
-        yCursor = yCursor + debuffRows * stepY + 1
+    end
+
+    if #debuffs > 0 and #buffs > 0 then
+        -- 减益末尾与增益之间：同排有空间时画竖向「|」分隔线并留 15px 距离；若已占满行则换新排并增加排距
+        local lastRight = xCursor - TARGET_AURA_GAP
+        if (lastRight + divSpan + sz) <= TARGET_AURA_ROW_W then
+            if div then
+                div:SetHeight(math_max(10, sz - 6))
+                ST.Hairline(div, true)
+                div:ClearAllPoints()
+                div:SetPoint("CENTER", host, "TOPLEFT", lastRight + TARGET_AURA_DIV_GAP + 0.5, -(yCursor + sz * 0.5))
+                div:Show()
+            end
+            xCursor = lastRight + divSpan
+        else
+            if div then div:Hide() end
+            xCursor = 0
+            yCursor = yCursor + stepY + 4
+        end
+    elseif div then
+        div:Hide()
     end
 
     if #buffs > 0 then
-        for i, data in ipairs(buffs) do
+        for _, data in ipairs(buffs) do
+            if xCursor > 0 and (xCursor + sz) > TARGET_AURA_ROW_W then
+                xCursor = 0
+                yCursor = yCursor + stepY
+            end
             used = used + 1
             local slot = AcquireTargetFallbackSlot(used)
             if slot then
-                local col = (i - 1) % perRow
-                local row = math_floor((i - 1) / perRow)
                 slot:ClearAllPoints()
-                slot:SetPoint("TOPLEFT", host, "TOPLEFT", col * stepX, -(yCursor + row * stepY))
+                slot:SetPoint("TOPLEFT", host, "TOPLEFT", xCursor, -yCursor)
                 PaintTargetFallbackSlot(slot, data, false, sz, rad)
             end
+            xCursor = xCursor + stepX
         end
     end
 
     for i = used + 1, #tgtAuraState.fallbackSlots do
         tgtAuraState.fallbackSlots[i]:Hide()
     end
+end
+
+local function EnsureTargetAuraEventFrame()
+    if tgtAuraState.eventFrame then return tgtAuraState.eventFrame end
+    local ef = CreateFrame("Frame")
+    ef:SetScript("OnEvent", function()
+        if not mod._active then return end
+        if tgtAuraState.container then
+            QueueEngineTargetDivider()
+            return
+        end
+        if tgtAuraState.scanPending then return end
+        tgtAuraState.scanPending = true
+        _G.C_Timer.After(0.06, function()
+            tgtAuraState.scanPending = false
+            if mod._active and not tgtAuraState.container then
+                UpdateTargetAurasFallback()
+            end
+        end)
+    end)
+    tgtAuraState.eventFrame = ef
+    return ef
 end
 
 local function SyncTargetAuras()
@@ -1192,8 +1361,15 @@ local function SyncTargetAuras()
     host:Show()
     local hasTarget = UnitExistsSafe("target")
     if EnsureTargetAuraEngine() then
+        local ef = EnsureTargetAuraEventFrame()
+        pcall(ef.RegisterUnitEvent, ef, "UNIT_AURA", "target")
         if hasTarget and tgtAuraState.container and tgtAuraState.container.UpdateAllAuras then
             pcall(tgtAuraState.container.UpdateAllAuras, tgtAuraState.container)
+        end
+        if hasTarget then
+            QueueEngineTargetDivider()
+        else
+            HideTargetAuraDivider()
         end
         return
     end
@@ -1202,21 +1378,8 @@ local function SyncTargetAuras()
         return
     end
     -- 兜底扫描模式：为 target 单独挂 UNIT_AURA 监听（不占用模块主事件帧上 player 的 UNIT_AURA）
-    if not tgtAuraState.eventFrame then
-        local ef = CreateFrame("Frame")
-        ef:SetScript("OnEvent", function()
-            if tgtAuraState.scanPending or not mod._active then return end
-            tgtAuraState.scanPending = true
-            _G.C_Timer.After(0.06, function()
-                tgtAuraState.scanPending = false
-                if mod._active and not tgtAuraState.container then
-                    UpdateTargetAurasFallback()
-                end
-            end)
-        end)
-        tgtAuraState.eventFrame = ef
-    end
-    pcall(tgtAuraState.eventFrame.RegisterUnitEvent, tgtAuraState.eventFrame, "UNIT_AURA", "target")
+    local ef = EnsureTargetAuraEventFrame()
+    pcall(ef.RegisterUnitEvent, ef, "UNIT_AURA", "target")
     UpdateTargetAurasFallback()
 end
 

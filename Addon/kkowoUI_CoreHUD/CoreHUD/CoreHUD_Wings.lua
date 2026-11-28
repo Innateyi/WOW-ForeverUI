@@ -1084,7 +1084,21 @@ local function CanToggleBlizzFrameVisibility(f)
     return true
 end
 
+local function NotifyMinimapAuraSkinRefresh()
+    local skinMod = F.Modules and F.Modules.Get and F.Modules.Get("auraBarSkin") or nil
+    if skinMod and skinMod._active and skinMod.OnRefresh then
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, function()
+                if skinMod._active then pcall(skinMod.OnRefresh, skinMod) end
+            end)
+        else
+            pcall(skinMod.OnRefresh, skinMod)
+        end
+    end
+end
+
 local function SyncTopRightFrameVisibility()
+    local restoredAny = false
     local bf = _G.BuffFrame
     if IsSafeBlizzFrame(bf) and CanToggleBlizzFrameVisibility(bf) then
         if trState.buffFullMuted then
@@ -1097,6 +1111,7 @@ local function SyncTopRightFrameVisibility()
             trState.showBusy = true
             pcall(bf.Show, bf)
             trState.showBusy = false
+            restoredAny = true
         end
     end
     local df = _G.DebuffFrame
@@ -1111,21 +1126,26 @@ local function SyncTopRightFrameVisibility()
             trState.showBusy = true
             pcall(df.Show, df)
             trState.showBusy = false
+            restoredAny = true
         end
+    end
+    if restoredAny then
+        NotifyMinimapAuraSkinRefresh()
     end
 end
 
 SyncTopRightAuraDedupe = function(repositionMicro)
     local db = mod:GetDB()
     local hudOn = mod._active == true and db.showCoreHUD ~= false
-    -- 只有双翼确实在显示对应的增益 / 减益时，才收起或去重右上角原生栏；
-    -- 否则关掉双翼的减益排后，玩家会在屏幕上任何地方都看不到减益。
-    local wingShowsBuffs = db.showCombatBuffs ~= false or db.showPermanentBuffs ~= false
-    local wingShowsDebuffs = db.showCombatDebuffs ~= false
-    local hideTopRight = hudOn and (db.hideTopRightBlizzAuras ~= false)
+    local wingOwn = db.wingOwnAuras ~= false
+    -- 只有「双翼显示自身增益/减益」总开关打开且对应排启用时，才收起右上角原生栏；
+    -- 关闭总开关时自动完整还原小地图左侧 BuffFrame / DebuffFrame 并通知增益栏美化刷新圆角。
+    local wingShowsBuffs = wingOwn and (db.showCombatBuffs ~= false or db.showPermanentBuffs ~= false)
+    local wingShowsDebuffs = wingOwn and (db.showCombatDebuffs ~= false)
+    local hideTopRight = hudOn and wingOwn and (db.hideTopRightBlizzAuras ~= false)
     local wantFullHideOptionA = hideTopRight and (not trState.tempExpanded) and wingShowsBuffs
     local wantDebuffFullHide = hideTopRight and (not trState.tempExpanded) and wingShowsDebuffs
-    local dedupeOn = hudOn and (not trState.tempExpanded) and (db.dedupeTopRightAuras ~= false)
+    local dedupeOn = hudOn and wingOwn and (not trState.tempExpanded) and (db.dedupeTopRightAuras ~= false)
     local wantBuffDedupe = dedupeOn and (not wantFullHideOptionA) and wingShowsBuffs
     local wantDebuffDedupe = wantDebuffFullHide or (dedupeOn and wingShowsDebuffs)
 
@@ -1379,14 +1399,15 @@ local function UpdateCombatAuras()
     for k in pairs(wingShownIcons) do wingShownIcons[k] = nil end
 
     local activeHUD = mod._active == true and db.showCoreHUD ~= false
+    local wingOwn = activeHUD and db.wingOwnAuras ~= false
     local permBuffs, timedBuffs = {}, {}
-    if activeHUD and (db.showPermanentBuffs ~= false or db.showCombatBuffs ~= false) then
+    if wingOwn and (db.showPermanentBuffs ~= false or db.showCombatBuffs ~= false) then
         permBuffs, timedBuffs = CollectSplitBuffs(db.buffFilter or "non_permanent")
     end
 
     -- 顶冠排（中央能量球正上方 +6px，距上方挥砍条留足 15px 空间零遮挡）：常驻 BUFF（守护/姿态/光环/追踪）
     if CH.coreFrame._permSlots then
-        local showPerm = activeHUD and db.showPermanentBuffs ~= false
+        local showPerm = wingOwn and db.showPermanentBuffs ~= false
         LayoutAuraRowWithOverflow(
             CH.coreFrame._permSlots, CH.coreFrame._permOverflow,
             showPerm and permBuffs or {}, MAX_PERM_SLOTS,
@@ -1398,13 +1419,13 @@ local function UpdateCombatAuras()
     -- 下方第一排（紧贴中央能量球正下方）：限时增益 Buff 动态水平居中平衡（超 8 个自动 +N 折叠）
     local nBuffShown = LayoutAuraRowWithOverflow(
         CH.coreFrame._buffSlots, CH.coreFrame._buffOverflow,
-        (activeHUD and db.showCombatBuffs ~= false) and timedBuffs or {}, MAX_AURA_SLOTS,
+        (wingOwn and db.showCombatBuffs ~= false) and timedBuffs or {}, MAX_AURA_SLOTS,
         sz, gap, anchorTarget, "TOP", "BOTTOM", -8,
         false, false, true
     )
 
     -- 下方第二排（有增益时在增益排正下方，无增益时自动上提至能量球正下方）：自身 Debuff 动态居中 + +N 折叠
-    local debuffs = (activeHUD and db.showCombatDebuffs ~= false) and CollectUnitDebuffs() or {}
+    local debuffs = (wingOwn and db.showCombatDebuffs ~= false) and CollectUnitDebuffs() or {}
     hasActiveDebuffs = (#debuffs > 0)
     local debuffY = (nBuffShown > 0) and -(8 + sz + 9) or -8
     LayoutAuraRowWithOverflow(

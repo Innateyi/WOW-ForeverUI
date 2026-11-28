@@ -36,6 +36,8 @@ local ROOT_NAMES = { "BuffFrame", "DebuffFrame" }
 local skinned = setmetatable({}, { __mode = "k" })
 local origBorderAlpha = setmetatable({}, { __mode = "k" })
 local origCountStyle = setmetatable({}, { __mode = "k" })
+local origDurationStyle = setmetatable({}, { __mode = "k" })
+local hookedRoots = setmetatable({}, { __mode = "k" })
 local buttonList = {}
 local AURA_EXPIRE_TICK_KEY = "kkowoUI_AuraFeel_Expire"
 
@@ -314,6 +316,11 @@ local function SkinAuraButton(btn, isDebuff)
             if oc.face and cnt.SetFont then pcall(cnt.SetFont, cnt, oc.face, oc.size, oc.flags) end
             if oc.r and cnt.SetTextColor then pcall(cnt.SetTextColor, cnt, oc.r, oc.g, oc.b, oc.a) end
         end
+        local durFS = btn.Duration or btn.duration
+        local od = durFS and origDurationStyle[durFS]
+        if durFS and od and od.face and durFS.SetFont then
+            pcall(durFS.SetFont, durFS, od.face, od.size, od.flags)
+        end
         return
     end
 
@@ -413,31 +420,69 @@ local function SkinAuraButton(btn, isDebuff)
         F.Theme.ApplyFont(btn.Count, 11, "OUTLINE", 1, 0.96, 0.80, 1)
     end
 
+    local durFS = btn.Duration or btn.duration
+    if durFS and durFS.SetFont then
+        if not origDurationStyle[durFS] then
+            local rec = {}
+            if durFS.GetFont then
+                local okF, face, sz, fl = pcall(durFS.GetFont, durFS)
+                if okF and type(face) == "string" and face ~= "" then
+                    rec.face, rec.size, rec.flags = face, F.PlainNumber(sz, 11) or 11, F.PlainString(fl, "") or ""
+                end
+            end
+            origDurationStyle[durFS] = rec
+        end
+        F.Theme.ApplyFont(durFS, 10, "OUTLINE")
+    end
+
     EnsureAuraFeelAnims(btn, ov, rad)
 end
 
-local function VisitContainer(c, isDebuff)
+local function VisitContainer(c, isDebuff, seen)
     if not (IsSafe(c) and c.GetChildren) then return end
     for _, ch in ipairs({ c:GetChildren() }) do
-        if IsSafe(ch) and (ch.Icon or ch.icon) then
+        if IsSafe(ch) and not seen[ch] and (ch.Icon or ch.icon) then
+            seen[ch] = true
             SkinAuraButton(ch, isDebuff)
         end
     end
 end
 
+local QueueRefresh -- 前向声明
+
+local function EnsureRootHooks(root)
+    if not IsSafe(root) or hookedRoots[root] then return end
+    hookedRoots[root] = true
+    local function OnRootUpdate()
+        if mod._active and QueueRefresh then QueueRefresh() end
+    end
+    for _, m in ipairs({ "UpdateAuras", "UpdateAuraButtons", "Update" }) do
+        if type(root[m]) == "function" then
+            _G.hooksecurefunc(root, m, OnRootUpdate)
+        end
+    end
+    if root.HookScript then
+        pcall(root.HookScript, root, "OnShow", OnRootUpdate)
+    end
+end
+
 local function RefreshAllAuras()
+    local seen = {}
     for idx, rootName in ipairs(ROOT_NAMES) do
         local isDebuff = (idx == 2)
         local root = _G[rootName]
         if IsSafe(root) then
+            if mod._active then EnsureRootHooks(root) end
             if type(root.auraFrames) == "table" then
                 for _, btn in ipairs(root.auraFrames) do
-                    SkinAuraButton(btn, isDebuff)
+                    if IsSafe(btn) and not seen[btn] then
+                        seen[btn] = true
+                        SkinAuraButton(btn, isDebuff)
+                    end
                 end
-            else
-                VisitContainer(root.AuraContainer, isDebuff)
-                VisitContainer(root, isDebuff)
             end
+            VisitContainer(root.AuraContainer, isDebuff, seen)
+            VisitContainer(root, isDebuff, seen)
         end
     end
     if mod._active and ST.IsFXEnabled("fx_auraFeel") and M and M.RegisterTextTick then
@@ -451,7 +496,7 @@ local function RefreshAllAuras()
     end
 end
 
-local QueueRefresh = F.Debounce(0.10, RefreshAllAuras)
+QueueRefresh = F.Debounce(0.06, RefreshAllAuras)
 
 function mod:OnEnable()
     self:RegisterUnitEvent("UNIT_AURA", "player", QueueRefresh)

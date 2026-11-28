@@ -157,6 +157,36 @@ local function UpdatePlayerHealth(instant)
     end
 end
 
+-- 无限服蓝条 5 秒规则 + 2 秒回蓝节拍火花（托管给 EUI 原生 ManaRegenSpark，12.x 机密值安全，0 Lua OnUpdate）
+local manaSparkAttached = false
+
+local function SyncManaRegenSpark(forcePowerType)
+    local EUI = _G.EllesmereUI
+    local MRS = EUI and EUI.ManaRegenSpark
+    if not (MRS and type(MRS.Attach) == "function" and type(MRS.Detach) == "function") then
+        return
+    end
+    local db = mod:GetDB()
+    local mode = db.manaRegenSpark or "ticks"
+    local bar = CH.coreFrame and CH.coreFrame._ppWing and CH.coreFrame._ppWing._bar or nil
+    local want = mod._active == true and db.showCoreHUD ~= false and mode ~= "off" and bar ~= nil
+    if want then
+        local pType = forcePowerType
+        if pType == nil then
+            pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("player"), 0) or 0
+        end
+        if type(MRS.SetMana) == "function" then
+            pcall(MRS.SetMana, "kkowo_corehud", pType == 0)
+        end
+        if bar.SetClipsChildren then pcall(bar.SetClipsChildren, bar, true) end
+        pcall(MRS.Attach, "kkowo_corehud", bar, mode == "ticks")
+        manaSparkAttached = true
+    elseif manaSparkAttached then
+        manaSparkAttached = false
+        pcall(MRS.Detach, "kkowo_corehud")
+    end
+end
+
 local function UpdatePlayerPower(instant)
     if not (CH.coreFrame and CH.coreFrame:IsShown()) then return end
     local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("player"), 0) or 0
@@ -172,6 +202,12 @@ local function UpdatePlayerPower(instant)
     if CH.coreFrame._ppWing._trail then
         CH.coreFrame._ppWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
         CH.coreFrame._ppWing._trail:SetValue(cur, mx, instant or ptChanged)
+    end
+    if manaSparkAttached and (ptChanged or instant) then
+        local MRS = _G.EllesmereUI and _G.EllesmereUI.ManaRegenSpark
+        if MRS and type(MRS.SetMana) == "function" then
+            pcall(MRS.SetMana, "kkowo_corehud", pType == 0)
+        end
     end
     local r1, g1, b1, r2, g2, b2 = ST.GetPowerGradient(pType)
     ApplyCachedBarGradient(bar, r1, g1, b1, r2, g2, b2, 0.98, false)
@@ -869,6 +905,7 @@ local function ApplyLayoutAndTheme()
             ApplyWingStyle(CH.coreFrame._ppWing, pr1, pg1, pb1, pr2, pg2, pb2, rad)
             if CH.coreFrame._ppWing._trail then CH.coreFrame._ppWing._trail:SyncAnchor() end
             if CH.coreFrame._ppWing._spark then CH.coreFrame._ppWing._spark:SyncAnchor() end
+            SyncManaRegenSpark(pType)
 
             ApplyWingStyle(CH.coreFrame._swingWing, r1 * 0.85, g1 * 0.85, b1 * 0.85, r2, g2, b2, GetBarRadius(5))
             CH.coreFrame._swingWing._lastColorKey = "class"
@@ -890,6 +927,7 @@ local function ApplyLayoutAndTheme()
             UpdateCombatAuras()
         else
             CH.swingTicker:Hide()
+            SyncManaRegenSpark()
             SyncTopRightAuraDedupe(true)
         end
     end
@@ -1093,6 +1131,14 @@ function mod:OnEnable()
         db.showPermanentBuffs = true
         db.hideTopRightBlizzAuras = true
         db.showTopRightMicroToggle = true
+    end
+    if not db.v8UnifiedOwnAuraToggle then
+        db.v8UnifiedOwnAuraToggle = true
+        local anyWing = (db.showPermanentBuffs ~= false) or (db.showCombatBuffs ~= false) or (db.showCombatDebuffs ~= false)
+        db.wingOwnAuras = anyWing
+        if not anyWing then
+            db.hideTopRightBlizzAuras = false
+        end
     end
 
     BuildCoreHUD()
@@ -1387,6 +1433,7 @@ function mod:OnDisable()
     if CH.topTargetFrame then CH.topTargetFrame:Hide() end
     if CH.euiTrailPlayer then CH.euiTrailPlayer:SetEnabled(false) end
     if CH.euiTrailTarget then CH.euiTrailTarget:SetEnabled(false) end
+    SyncManaRegenSpark()
     SyncEUISmoothing()
     SyncHiddenEUIFrames()
     SyncTopRightAuraDedupe()
@@ -1491,40 +1538,42 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
     })
     y = y - h
 
-    _, h = W:DualRow(parent, y, {
-        type = "toggle",
-        text = "上方显示常驻增益",
-        tooltip = "在圆球上方显示守护、姿态、光环与追踪，超 6 个折叠。",
-        getValue = function() return db.showPermanentBuffs ~= false end,
-        setValue = function(v) db.showPermanentBuffs = v == true; UpdateCombatAuras() end,
-    }, {
-        type = "toggle",
-        text = "下方显示限时增益",
-        tooltip = "在圆球下方显示限时增益，超 8 个自动折叠，脱战右键可取消。",
-        getValue = function() return db.showCombatBuffs ~= false end,
-        setValue = function(v) db.showCombatBuffs = v == true; UpdateCombatAuras() end,
-    })
-    y = y - h
+    local function SetWingOwnAuras(on)
+        local en = on == true
+        db.wingOwnAuras = en
+        db.showPermanentBuffs = en
+        db.showCombatBuffs = en
+        db.showCombatDebuffs = en
+        db.hideTopRightBlizzAuras = en
+        trState.tempExpanded = false
+        UpdateCombatAuras()
+        SyncTopRightAuraDedupe(true)
+        if not en then
+            local skinMod = F.Modules and F.Modules.Get and F.Modules.Get("auraBarSkin") or nil
+            if skinMod and skinMod._active and skinMod.OnRefresh then
+                pcall(skinMod.OnRefresh, skinMod)
+            end
+        end
+    end
 
     _, h = W:DualRow(parent, y, {
         type = "toggle",
-        text = "下方显示自身减益",
-        tooltip = "在增益排下方按类型着色显示自身减益，无减益时不占位。",
-        getValue = function() return db.showCombatDebuffs ~= false end,
-        setValue = function(v) db.showCombatDebuffs = v == true; UpdateCombatAuras() end,
+        text = "双翼显示自身增益/减益",
+        tooltip = "开启：自身常驻/限时增益与减益统一在双翼上下显示，自动收起小地图左侧原生栏。\n关闭：双翼隐藏自身光环，自动恢复小地图左侧增益/减益栏（圆角统一风格）。",
+        getValue = function() return db.wingOwnAuras ~= false end,
+        setValue = SetWingOwnAuras,
     }, {
         type = "dropdown",
-        text = "右上角增益栏",
-        tooltip = "控制小地图左侧原版增益栏收起、保留 [B] 按钮或仅去重。",
+        text = "蓝条回蓝节拍提示",
+        tooltip = "在右翼蓝条上显示无限服 5 秒回蓝规则与每 2 秒精神/喝水回蓝脉冲火花。",
         values = {
-            hide_with_toggle = "收起并保留 [B] 开关",
-            hide_all         = "完全收起",
-            dedupe           = "保留并隐藏已显示项",
-            keep             = "保持原样",
+            ticks = "5秒规则 + 2秒回蓝（推荐）",
+            fsr   = "仅5秒回蓝规则",
+            off   = "关闭",
         },
-        order = { "hide_with_toggle", "hide_all", "dedupe", "keep" },
-        getValue = GetTopRightMode,
-        setValue = SetTopRightMode,
+        order = { "ticks", "fsr", "off" },
+        getValue = function() return db.manaRegenSpark or "ticks" end,
+        setValue = function(v) db.manaRegenSpark = v; SyncManaRegenSpark() end,
     })
     y = y - h
 
@@ -1609,56 +1658,70 @@ function mod:BuildOptions(W, parent, y, enableSlot, blank)
                 all           = "全部限时增益",
             },
             order = { "non_permanent", "short_2m", "short_5m", "all" },
-            disabled = function() return db.showCombatBuffs == false end,
+            disabled = function() return db.wingOwnAuras == false end,
             getValue = function() return db.buffFilter or "non_permanent" end,
             setValue = function(v) db.buffFilter = v; UpdateCombatAuras() end,
         }, {
+            type = "dropdown",
+            text = "小地图左侧原生栏行为",
+            tooltip = "双翼显示自身光环开启时，控制小地图左侧收起方式或 [B] 临时展开钮。",
+            values = {
+                hide_with_toggle = "收起并保留 [B] 开关",
+                hide_all         = "完全收起",
+                dedupe           = "保留并隐藏已显示项",
+                keep             = "保持原样",
+            },
+            order = { "hide_with_toggle", "hide_all", "dedupe", "keep" },
+            disabled = function() return db.wingOwnAuras == false end,
+            getValue = GetTopRightMode,
+            setValue = SetTopRightMode,
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
             type = "toggle",
             text = "掉血延迟残影",
             tooltip = "受击掉血时在底层留出半透明残影并平滑追赶，不遮挡护盾。",
             getValue = function() return db.showTrail ~= false end,
             setValue = function(v) db.showTrail = v == true; ApplyLayoutAndTheme() end,
-        })
-        curY = curY - rh
-
-        _, rh = w:DualRow(p, curY, {
+        }, {
             type = "slider",
             text = "残影延迟 (秒)",
             min = 0.08, max = 0.35, step = 0.02,
             disabled = function() return db.showTrail == false end,
             getValue = function() return F.PlainNumber(db.trailDelay, 0.16) or 0.16 end,
             setValue = function(v) db.trailDelay = v; ApplyLayoutAndTheme() end,
-        }, {
+        })
+        curY = curY - rh
+
+        _, rh = w:DualRow(p, curY, {
             type = "slider",
             text = "单翼宽度 (px)",
             min = 100, max = 180, step = 4,
             getValue = function() return F.PlainNumber(db.wingWidth, 136) or 136 end,
             setValue = function(v) db.wingWidth = math_floor(v + 0.5); ApplyLayoutAndTheme() end,
-        })
-        curY = curY - rh
-
-        _, rh = w:DualRow(p, curY, {
+        }, {
             type = "slider",
             text = "整体缩放 (倍)",
             min = 0.75, max = 1.35, step = 0.05,
             getValue = function() return F.PlainNumber(db.scale, 1.0) or 1.0 end,
             setValue = function(v) db.scale = v; ApplyLayoutAndTheme() end,
-        }, {
-            type = "toggle",
-            text = "双翼与目标可点击",
-            tooltip = "开启后支持左键选中与右键单位菜单，关闭后完全鼠标穿透。",
-            getValue = function() return db.clickableHUD ~= false end,
-            setValue = function(v) db.clickableHUD = v == true; CH.SyncClickLayers() end,
         })
         curY = curY - rh
 
         _, rh = w:DualRow(p, curY, {
             type = "toggle",
+            text = "双翼与目标可点击",
+            tooltip = "开启后支持左键选中与右键单位菜单，关闭后完全鼠标穿透。",
+            getValue = function() return db.clickableHUD ~= false end,
+            setValue = function(v) db.clickableHUD = v == true; CH.SyncClickLayers() end,
+        }, {
+            type = "toggle",
             text = "保留原版头像对比",
             tooltip = "开启新版双翼时同时保留 EUI 原头像，仅用于布局对比。",
             getValue = function() return db.keepOriginalEUI == true end,
             setValue = function(v) db.keepOriginalEUI = v == true; SyncHiddenEUIFrames() end,
-        }, blank)
+        })
         curY = curY - rh
         return curY
     end
