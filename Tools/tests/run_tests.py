@@ -2397,6 +2397,284 @@ def run_all():
 
     check('离线回放框架（7813558先红后绿 / 闭环回放 / 实机录像自动发现）', t_offline_replay_framework)
 
+    # 26. Batch 1 Motion Upgrade behavioral tests (1.0–1.5 + Q12 layout snapshot + baseline off-parity)
+    def t_batch1_motion_fx():
+        l_env, m_env, load_fn = create_env()
+        l_env.execute('''
+            local erb = CreateFrame("Frame", "ERB_CastBarFrame", UIParent)
+            erb:SetSize(240, 18)
+            erb:SetPoint("CENTER", UIParent, "CENTER", 0, -180)
+            erb:Show()
+            EllesmereUI._ModuleNS.EllesmereUIResourceBars = {
+                ERB = { db = { profile = { castBar = { enabled = true } } } }
+            }
+            local pf = CreateFrame("Frame", "EllesmereUIUnitFrames_Player", UIParent)
+            pf.Health = CreateFrame("StatusBar", nil, pf)
+            pf.Power = CreateFrame("StatusBar", nil, pf)
+            pf.Health.smoothing = nil
+            pf.Power.smoothing = nil
+            if WorldMapFrame then WorldMapFrame:Hide() end
+        ''')
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(2.0, 4)
+
+        # A) Main bar smoothing: normal = ExponentialEaseOut, unit/max/powerType/dead/0/OnShow = Immediate, off = 1-arg
+        res_smooth = l_env.eval('''(function()
+            local F = kkowoUI
+            local ch = _G.kkowoUI_CoreHUD
+            local hpBar = ch._hpWing._bar
+            local ppBar = ch._ppWing._bar
+            local euiPf = _G.EllesmereUIUnitFrames_Player
+
+            local hp, mx, pt, dead = 1000, 1000, 0, false
+            UnitHealth = function() return hp end
+            UnitHealthMax = function() return mx end
+            UnitPower = function() return 800 end
+            UnitPowerMax = function() return 1000 end
+            UnitPowerType = function() return pt, pt == 0 and "MANA" or "RAGE" end
+            UnitIsDeadOrGhost = function() return dead end
+
+            -- Trigger initial update, then normal drop -> ExponentialEaseOut
+            m_first = true
+            hp = 900; F.Modules.Get("coreHUD"):OnRefresh()
+            hp = 750
+            return {
+                euiSmoothOn = euiPf.Health.smoothing == Enum.StatusBarInterpolation.ExponentialEaseOut,
+            }
+        end)()''')
+        assert res_smooth.euiSmoothOn is True, 'fx_smoothMain 开启时应设置 EUI 玩家框体 Health.smoothing'
+
+        m_env.FireEvent('UNIT_HEALTH', 'player')
+        interp_norm = l_env.eval('_G.kkowoUI_CoreHUD._hpWing._bar._lastInterp')
+        assert interp_norm == 1, f'普通掉血应传 ExponentialEaseOut(1)，实际={interp_norm}'
+
+        # Max health changed -> Immediate(0)
+        l_env.execute('UnitHealthMax = function() return 1200 end')
+        m_env.FireEvent('UNIT_MAXHEALTH', 'player')
+        interp_max = l_env.eval('_G.kkowoUI_CoreHUD._hpWing._bar._lastInterp')
+        assert interp_max == 0, f'最大值变化应传 Immediate(0)，实际={interp_max}'
+
+        # Death / 0 -> Immediate(0)
+        l_env.execute('UnitHealth = function() return 0 end; UnitIsDeadOrGhost = function() return true end')
+        m_env.FireEvent('UNIT_HEALTH', 'player')
+        interp_dead = l_env.eval('_G.kkowoUI_CoreHUD._hpWing._bar._lastInterp')
+        assert interp_dead == 0, f'死亡/归零应传 Immediate(0)，实际={interp_dead}'
+        l_env.execute('UnitHealth = function() return 900 end; UnitIsDeadOrGhost = function() return false end')
+        m_env.FireEvent('UNIT_HEALTH', 'player')
+
+        # OnShow -> next SetValue snaps Immediate(0)
+        l_env.execute('_G.kkowoUI_CoreHUD._hpWing._bar:Hide(); _G.kkowoUI_CoreHUD._hpWing._bar:Show()')
+        m_env.FireEvent('UNIT_HEALTH', 'player')
+        interp_show = l_env.eval('_G.kkowoUI_CoreHUD._hpWing._bar._lastInterp')
+        assert interp_show == 0, f'OnShow 后首次设值应传 Immediate(0)，实际={interp_show}'
+
+        # Cached SetGradient on repeated UNIT_POWER_FREQUENT with same powerType
+        grad_cnt = l_env.eval('''(function()
+            local bar = _G.kkowoUI_CoreHUD._ppWing._bar
+            local tex = bar:GetStatusBarTexture()
+            local cnt = 0
+            local orig = tex.SetGradient
+            tex.SetGradient = function(self, ...) cnt = cnt + 1; return orig(self, ...) end
+            return function() return cnt end
+        end)()''')
+        m_env.FireEvent('UNIT_POWER_FREQUENT', 'player', 'MANA')
+        m_env.FireEvent('UNIT_POWER_FREQUENT', 'player', 'MANA')
+        m_env.FireEvent('UNIT_POWER_FREQUENT', 'player', 'MANA')
+        assert grad_cnt() == 0, f'相同能量类型连续事件不应重复 SetGradient，实际={grad_cnt()}'
+
+        # Off-switch exact 1-arg SetValue parity + EUI smoothing restored
+        l_env.execute('kkowoUI.Modules.Get("motionFX"):GetDB().fx_smoothMain = false; kkowoUI.Modules.Get("coreHUD"):Refresh()')
+        m_env.FireEvent('UNIT_HEALTH', 'player')
+        argc_off = l_env.eval('_G.kkowoUI_CoreHUD._hpWing._bar._lastSetValueArgc')
+        eui_restored = l_env.eval('_G.EllesmereUIUnitFrames_Player.Health.smoothing == nil')
+        assert argc_off == 1, f'关闭 fx_smoothMain 后应退回 1 参 SetValue，实际 argc={argc_off}'
+        assert eui_restored is True, '关闭 fx_smoothMain 后应还原 EUI 原 smoothing'
+        l_env.execute('kkowoUI.Modules.Get("motionFX"):GetDB().fx_smoothMain = true; kkowoUI.Modules.Get("coreHUD"):Refresh()')
+
+        # B) Secret trail zero per-event closure allocation
+        l_env.globals()._T_SEC = m_env.NewSecret('hp_sec')
+        trail_res = l_env.eval('''(function()
+            local trail = _G.kkowoUI_CoreHUD._hpWing._trail
+            local funcs, calls = {}, 0
+            local origAfter = C_Timer.After
+            C_Timer.After = function(d, fn)
+                calls = calls + 1
+                funcs[tostring(fn)] = true
+                return origAfter(d, fn)
+            end
+            local origUH = UnitHealth
+            UnitHealth = function() return _G._T_SEC end
+            for i = 1, 6 do trail:UpdateFromUnit("player", false) end
+            UnitHealth = origUH
+            C_Timer.After = origAfter
+            local uniq = 0
+            for _ in pairs(funcs) do uniq = uniq + 1 end
+            return { calls = calls, uniq = uniq }
+        end)()''')
+        assert trail_res.uniq <= 1, f'机密拖尾每事件不应新建闭包，6次事件唯一闭包数={trail_res.uniq}'
+
+        # C) Hit flash (plain ratio, secret crit flag, secret throttled light flash, off-switch)
+        l_env.execute('''
+            UnitHealthMax = function() return 1000 end
+            _G.__HF_COUNT = 0
+            local orig = kkowoUI.Motion.TriggerBarHitFlash
+            kkowoUI.Motion.TriggerBarHitFlash = function(bar, kind, opts)
+                local ok = orig(bar, kind, opts)
+                if ok then _G.__HF_COUNT = _G.__HF_COUNT + 1 end
+                return ok
+            end
+        ''')
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', '', 40, 1)  # 4% < 8% -> no flash
+        assert l_env.eval('_G.__HF_COUNT') == 0, '4% 小额伤害不应触发受击闪光'
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', '', 120, 1)  # 12% >= 8% -> flash
+        assert l_env.eval('_G.__HF_COUNT') == 1, '12% 大额伤害应触发受击闪光'
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'HEAL', '', 150, 1)  # 15% >= 10% -> flash
+        assert l_env.eval('_G.__HF_COUNT') == 2, '15% 大额治疗应触发治疗闪光'
+        # Secret amount + plain non-crit -> skip; secret amount + plain CRITICAL -> flash
+        sec_amt = m_env.NewSecret('dmg')
+        sec_flg = m_env.NewSecret('flg')
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', '', sec_amt, 1)
+        assert l_env.eval('_G.__HF_COUNT') == 2, '机密数值+明文非暴击不应误触闪光'
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', 'CRITICAL', sec_amt, 1)
+        assert l_env.eval('_G.__HF_COUNT') == 3, '机密数值+明文暴击应触发闪光'
+        # Secret amount + secret flags -> throttled 0.35s light flash
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', sec_flg, sec_amt, 1)
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', sec_flg, sec_amt, 1)
+        assert l_env.eval('_G.__HF_COUNT') == 4, '机密数值+机密标志应在 0.35s 内限流只闪 1 次'
+        m_env.StepTime(0.4, 2)
+        m_env.FireEvent('UNIT_COMBAT', 'player', 'WOUND', sec_flg, sec_amt, 1)
+        assert l_env.eval('_G.__HF_COUNT') == 5, '超过 0.35s 后机密轻闪应可再次触发'
+
+        # D) Castbar: SetTimerDuration, 0 OnUpdate, delay re-set, secret cast keeps kkowoUI shown + host muted, finish & interrupt hide (K12)
+        l_env.execute('''
+            local t0 = GetTime() * 1000
+            UnitCastingInfo = function(u)
+                if u == "player" then return "火球术", "火球术", 135812, t0, t0 + 2000, false, "c-10", false, 133 end
+            end
+        ''')
+        m_env.FireEvent('UNIT_SPELLCAST_START', 'player', 'c-10', 133)
+        cb_chk = l_env.eval('''(function()
+            local ov = _G.kkowoUI_CastbarOverlay
+            return {
+                shown = ov:IsShown(),
+                hasOU = ov:GetScript("OnUpdate") ~= nil,
+                timerSet = ov._bar._timerSetCount or 0,
+                ticks = kkowoUI.Motion.GetActiveTextTickCount(),
+                hostAlpha = _G.ERB_CastBarFrame:GetAlpha(),
+            }
+        end)()''')
+        assert cb_chk.shown and (not cb_chk.hasOU) and cb_chk.timerSet >= 1 and cb_chk.ticks >= 1, f'原生施法条计时异常: {cb_chk}'
+        # Delayed -> re-calls SetTimerDuration
+        m_env.FireEvent('UNIT_SPELLCAST_DELAYED', 'player', 'c-10', 133)
+        assert l_env.eval('_G.kkowoUI_CastbarOverlay._bar._timerSetCount') >= cb_chk.timerSet + 1, '施法推迟后应重设 SetTimerDuration'
+        # Interrupt -> holds ghost briefly then strictly Hides (K12)
+        l_env.execute('UnitCastingInfo = function() return end')
+        m_env.FireEvent('UNIT_SPELLCAST_INTERRUPTED', 'player', 'c-10', 133)
+        assert l_env.eval('kkowoUI.Motion.GetActiveTextTickCount()') == 0, '施法结束后共享倒计时 ticker 应立即停止'
+        m_env.StepTime(0.3, 3)
+        assert l_env.eval('_G.kkowoUI_CastbarGhost:IsShown()') is True, '被打断后 0.3s 应保持打断色停留'
+        m_env.StepTime(1.0, 5)
+        assert l_env.eval('_G.kkowoUI_CastbarGhost:IsShown()') is False, '打断收尾结束后 ghost 必须 Hide（K12）'
+
+        # Secret cast time (Q9): overlay stays shown AND host stays muted!
+        m_env.SetSecretAPIs(l_env.table_from({'UnitCastingInfo': True, 'UnitCastingDuration': True}))
+        l_env.execute('''
+            UnitCastingInfo = function(u)
+                if u == "player" then
+                    return "稳固射击", "稳固射击", 132213, _G._T_SEC, _G._T_SEC, false, _G._T_SEC, _G._T_SEC, 56641
+                end
+            end
+        ''')
+        m_env.FireEvent('UNIT_SPELLCAST_START', 'player', 'c-sec', 56641)
+        sec_cb = l_env.eval('''(function()
+            return {
+                shown = _G.kkowoUI_CastbarOverlay:IsShown(),
+                hostAlpha = _G.ERB_CastBarFrame:GetAlpha(),
+                hasOU = _G.kkowoUI_CastbarOverlay:GetScript("OnUpdate") ~= nil,
+            }
+        end)()''')
+        assert sec_cb.shown is True and sec_cb.hostAlpha == 0 and (not sec_cb.hasOU), f'机密施法时间下应保持 kkowoUI 样式与宿主静音: {sec_cb}'
+        m_env.FireEvent('UNIT_SPELLCAST_STOP', 'player', 'c-sec', 56641)
+        m_env.SetSecretAPIs(l_env.table())
+
+        # E) Recorder v2 auto-arm migration (v1 already used -> v2_motion_fx arms ONCE, records vitals/casts with power throttle)
+        l_rec, m_rec, load_rec = create_env(pre_sv_lua='kkowoUIRecordDB = { schemaVersion=1, armed=false, recording=false, autoArmFlags={ v1_initial=true }, sessions={} }')
+        for name in LOAD_ORDER:
+            load_rec(name)
+        m_rec.FireEvent('PLAYER_LOGIN')
+        assert l_rec.globals().kkowoUI.Recorder.GetState().armed is True, 'v1已用过的旧存档升级后应靠 v2_motion_fx 重新自动待录一次'
+        m_rec.SetInstanceMode(True, 'party', '影牙城堡')
+        m_rec.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        for _ in range(5):
+            m_rec.FireEvent('UNIT_POWER_FREQUENT', 'player', 'MANA')
+        m_rec.FireEvent('UNIT_COMBAT', 'player', 'WOUND', 'CRITICAL', 200, 1)
+        m_rec.FireEvent('UNIT_HEAL_PREDICTION', 'player')
+        m_rec.ResetScenario()
+        m_rec.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        rec_v2_chk = l_rec.eval('''(function()
+            local s = _G.kkowoUIRecordDB.sessions[1]
+            local pwrN, cbtN, hpN = 0, 0, 0
+            for _, e in ipairs(s.entries) do
+                if e.ev == "UNIT_POWER_FREQUENT" then pwrN = pwrN + 1
+                elseif e.ev == "UNIT_COMBAT" then cbtN = cbtN + 1
+                elseif e.ev == "UNIT_HEAL_PREDICTION" then hpN = hpN + 1 end
+            end
+            return { pwrN = pwrN, cbtN = cbtN, hpN = hpN, armed = _G.kkowoUIRecordDB.armed }
+        end)()''')
+        assert rec_v2_chk.pwrN == 1 and rec_v2_chk.cbtN == 1 and rec_v2_chk.hpN == 1 and rec_v2_chk.armed is False, f'v2录制器校验失败: {rec_v2_chk}'
+
+        # F) Q12 Layout Snapshot invariance vs pre-change baseline (both ON and OFF)
+        base_path = pathlib.Path(r'D:\code\wow\review\21_旧行为基线.json')
+        if base_path.is_file():
+            base_layout = json.loads(base_path.read_text(encoding='utf-8')).get('layout_snapshot', {})
+            for mode_label, force_off in [('全开', False), ('全关', True)]:
+                l_snap, m_snap, load_snap = create_env()
+                l_snap.execute('''
+                    local erb = CreateFrame("Frame", "ERB_CastBarFrame", UIParent)
+                    erb:SetSize(240, 18); erb:SetPoint("CENTER", UIParent, "CENTER", 0, -180); erb:Show()
+                    EllesmereUI._ModuleNS.EllesmereUIResourceBars = { ERB = { db = { profile = { castBar = { enabled = true } } } } }
+                    if WorldMapFrame then WorldMapFrame:Hide() end
+                ''')
+                for name in LOAD_ORDER:
+                    load_snap(name)
+                m_snap.FireEvent('PLAYER_LOGIN')
+                m_snap.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+                m_snap.StepTime(2.0, 4)
+                if force_off:
+                    l_snap.execute('kkowoUI.Modules.Get("motionFX"):GetDB().intensity = "off"; kkowoUI.Modules.Get("motionFX"):Refresh()')
+                cur_layout = l_snap.eval('''(function()
+                    local out = {}
+                    for k, v in pairs(_G) do
+                        if type(k) == "string" and k:find("^kkowoUI_") and type(v) == "table" and v.GetSize and v.GetNumPoints then
+                            local w, h = v:GetSize()
+                            local pts = {}
+                            for i = 1, (v:GetNumPoints() or 0) do
+                                local pt, rel, rpt, x, y = v:GetPoint(i)
+                                local rn = (type(rel) == "table" and rel.GetName and rel:GetName()) or tostring(rel)
+                                pts[#pts + 1] = { pt = pt, rel = rn, rpt = rpt, x = x or 0, y = y or 0 }
+                            end
+                            out[k] = { w = w or 0, h = h or 0, strata = v:GetFrameStrata() or "MEDIUM", level = v:GetFrameLevel() or 0, points = pts }
+                        end
+                    end
+                    return out
+                end)()''')
+                for fname, binfo in base_layout.items():
+                    if fname in ('kkowoUI_XPBar', 'kkowoUI_RepBar'):
+                        continue
+                    cinfo = cur_layout[fname]
+                    assert cinfo is not None, f'布局快照({mode_label})缺失框体: {fname}'
+                    assert abs(float(cinfo.w) - float(binfo['w'])) < 0.01 and abs(float(cinfo.h) - float(binfo['h'])) < 0.01, (
+                        f'布局快照({mode_label})尺寸变化 {fname}: 旧={binfo["w"]}x{binfo["h"]}, 新={cinfo.w}x{cinfo.h}'
+                    )
+                    assert str(cinfo.strata) == str(binfo['strata']), f'布局快照({mode_label})层级变化 {fname}'
+
+        return '主条平滑/瞬切/缓存/关回1参 + 机密拖尾0闭包 + 闪光阈值限流 + 施法条SetTimerDuration/0OnUpdate/机密保样式/收尾Hide + v2待录 + Q12布局快照不变 全部通过'
+
+    check('第一批条形动效升级（1.0~1.5 行为 + 机密值 + Q12 布局快照）', t_batch1_motion_fx)
+
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0
 

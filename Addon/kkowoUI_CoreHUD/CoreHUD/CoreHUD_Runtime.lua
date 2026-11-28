@@ -382,9 +382,12 @@ local function SyncEUISmoothing()
     local want = mod._active == true and ST.IsFXEnabled("fx_smoothMain")
     local interp = _G.Enum and _G.Enum.StatusBarInterpolation and _G.Enum.StatusBarInterpolation.ExponentialEaseOut or nil
     local frames = { _G.EllesmereUIUnitFrames_Player, _G.EllesmereUIUnitFrames_Target }
-    for _, uf in ipairs(frames) do
+    for fi = 1, 2 do
+        local uf = frames[fi]
         if uf then
-            for _, elem in ipairs({ uf.Health, uf.Power }) do
+            local elems = { uf.Health, uf.Power }
+            for ei = 1, 2 do
+                local elem = elems[ei]
                 if elem then
                     if want and interp ~= nil then
                         if euiOrigSmoothing[elem] == nil then
@@ -393,7 +396,11 @@ local function SyncEUISmoothing()
                         elem.smoothing = interp
                     elseif euiOrigSmoothing[elem] ~= nil then
                         local orig = euiOrigSmoothing[elem]
-                        elem.smoothing = (orig == NIL_SMOOTH_SENTINEL) and nil or orig
+                        if orig == NIL_SMOOTH_SENTINEL then
+                            elem.smoothing = nil
+                        else
+                            elem.smoothing = orig
+                        end
                         euiOrigSmoothing[elem] = nil
                     end
                 end
@@ -1126,7 +1133,9 @@ function mod:OnEnable()
         UpdateIdleFade(false)
     end)
     self:RegisterUnitEvent("UNIT_COMBAT", "player", "target", function(_, _, unit, action, flags, amount)
-        HandleUnitCombatFlash(unit, action, flags, amount)
+        if unit == "player" or unit == "target" then
+            HandleUnitCombatFlash(unit, action, flags, amount)
+        end
     end)
     if not mod._numFmtHooked and EUI and type(EUI.RegisterNumberFormatCallback) == "function" then
         mod._numFmtHooked = true
@@ -1145,7 +1154,9 @@ function mod:OnEnable()
         CH.petEventFrame:SetScript("OnEvent", function(_, ev, unit, action, flags, amount)
             if not mod._active then return end
             if ev == "UNIT_COMBAT" then
-                HandleUnitCombatFlash(unit, action, flags, amount)
+                if unit == "pet" then
+                    HandleUnitCombatFlash(unit, action, flags, amount)
+                end
                 return
             end
             UpdatePetHUD(ev == "UNIT_MAXHEALTH")
