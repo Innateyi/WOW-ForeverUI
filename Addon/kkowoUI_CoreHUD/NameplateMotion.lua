@@ -318,6 +318,7 @@ local function ResetPlateFX(plate, fx)
     if fx.leftBox then fx.leftBox:Hide() end
     if fx.rightBox then fx.rightBox:Hide() end
     if fx.arrowHost then fx.arrowHost:Hide() end
+    if fx.targetOutline then fx.targetOutline:Hide() end
     if fx.questFS then fx.questFS:Hide() end
     if fx.stripeFillClip then fx.stripeFillClip:Hide() end
     if fx.stripeBgClip then fx.stripeBgClip:Hide() end
@@ -479,8 +480,32 @@ local function EnsurePlateFX(plate)
     questFS:SetJustifyH("RIGHT")
     questFS:Hide()
 
+    -- 6) 2h 当前目标高亮描边从左到右绘制动画层（4 条边渐进增长 + 裁剪 TexCoord，不用裁剪框体，不改尺寸）
+    local outlineHost = CreateFrame("Frame", nil, health)
+    outlineHost:SetAllPoints(health)
+    outlineHost:SetFrameLevel(hLvl + 7)
+    outlineHost:EnableMouse(false)
+    local olLeft = outlineHost:CreateTexture(nil, "OVERLAY", nil, 6)
+    olLeft:SetTexture(ST.TEX.FLAT)
+    olLeft:SetPoint("TOPLEFT", outlineHost, "TOPLEFT", 0, 0)
+    local olTop = outlineHost:CreateTexture(nil, "OVERLAY", nil, 6)
+    olTop:SetTexture(ST.TEX.FLAT)
+    olTop:SetPoint("TOPLEFT", outlineHost, "TOPLEFT", 0, 0)
+    local olBot = outlineHost:CreateTexture(nil, "OVERLAY", nil, 6)
+    olBot:SetTexture(ST.TEX.FLAT)
+    olBot:SetPoint("BOTTOMLEFT", outlineHost, "BOTTOMLEFT", 0, 0)
+    local olRight = outlineHost:CreateTexture(nil, "OVERLAY", nil, 6)
+    olRight:SetTexture(ST.TEX.FLAT)
+    olRight:SetPoint("TOPRIGHT", outlineHost, "TOPRIGHT", 0, 0)
+    outlineHost._left = olLeft
+    outlineHost._top = olTop
+    outlineHost._bottom = olBot
+    outlineHost._right = olRight
+    outlineHost:Hide()
+
     fx = {
         arrowHost      = arrowHost,
+        targetOutline  = outlineHost,
         leftBox        = leftBox,
         rightBox       = rightBox,
         leftTex        = leftTex,
@@ -738,7 +763,7 @@ local function ApplyPlateRounding(plate, fx, active, isTarget)
                 pcall(plate._customBorder.SetAlpha, plate._customBorder, 1)
                 fx.mutedCustomBd = false
             end
-            if isTarget and mod:GetDB().muteCrudeTargetGlow ~= false then
+            if isTarget and mod:GetDB().muteCrudeTargetGlow ~= false and not ST.IsFXEnabled("fx_plateOutline") then
                 local cr, cg, cb = ResolveArrowColors(mod:GetDB().arrowColorMode or "amber")
                 ST.ApplyRoundedBorder(health, rad, cr, cg, cb, 0.94, 7)
             else
@@ -987,6 +1012,118 @@ local function InstallEUIArrowSyncHook()
     end
 end
 
+-- 2h 当前目标姓名板描边从左到右绘制驱动（单任务挂在 F.Motion 共享驱动，画完自动休眠）
+local OUTLINE_DRAW_DUR = 0.40
+local activeOutlinePlate = nil
+local outlineAnimTask = {
+    plate   = nil,
+    fx      = nil,
+    elapsed = 0,
+    dur     = OUTLINE_DRAW_DUR,
+}
+
+local function ApplyTargetOutlineProgress(plate, fx, progress, cr, cg, cb, alpha)
+    if not (IsSafe(plate) and IsSafe(plate.health) and fx and fx.targetOutline) then return false end
+    local ol = fx.targetOutline
+    local w = F.PlainNumber(plate.health.GetWidth and plate.health:GetWidth(), 120) or 120
+    local h = F.PlainNumber(plate.health.GetHeight and plate.health:GetHeight(), 14) or 14
+    if w < 1 then w = 120 end
+    if h < 1 then h = 14 end
+    local px = math_max(1, ST.GetPixel(plate.health) or 1)
+    local a = alpha or 0.94
+
+    local p = math_max(0, math_min(1, progress))
+    local e = 1 - (1 - p) * (1 - p) * (1 - p)
+
+    -- 阶段 1 (0..0.15)：左边自上而下展开
+    local fL = math_min(1, e / 0.15)
+    ol._left:SetVertexColor(cr, cg, cb, a)
+    ol._left:SetSize(px, math_max(0.01, h * fL))
+    ol._left:SetTexCoord(0, 1, 0, fL)
+    ol._left:SetShown(fL > 0.001)
+
+    -- 阶段 2 (0.15..0.85)：上下两条横边同步从左向右绘制并裁剪 TexCoord
+    local fH = math_max(0, math_min(1, (e - 0.15) / 0.70))
+    ol._top:SetVertexColor(cr, cg, cb, a)
+    ol._top:SetSize(math_max(0.01, w * fH), px)
+    ol._top:SetTexCoord(0, fH, 0, 1)
+    ol._top:SetShown(fH > 0.001)
+
+    ol._bottom:SetVertexColor(cr, cg, cb, a)
+    ol._bottom:SetSize(math_max(0.01, w * fH), px)
+    ol._bottom:SetTexCoord(0, fH, 0, 1)
+    ol._bottom:SetShown(fH > 0.001)
+
+    -- 阶段 3 (0.85..1.0)：右边收口闭合
+    local fR = math_max(0, math_min(1, (e - 0.85) / 0.15))
+    ol._right:SetVertexColor(cr, cg, cb, a)
+    ol._right:SetSize(px, math_max(0.01, h * fR))
+    ol._right:SetTexCoord(0, 1, 0, fR)
+    ol._right:SetShown(fR > 0.001)
+
+    ol:Show()
+    return true
+end
+
+outlineAnimTask._tick = function(task, dt)
+    local plate = task.plate
+    local fx = task.fx
+    if not (mod._active and ST.IsFXEnabled("fx_plateOutline") and plate and fx and IsSafe(plate) and plate:IsShown()) then
+        if fx and fx.targetOutline then fx.targetOutline:Hide() end
+        task.plate = nil
+        task.fx = nil
+        return false
+    end
+    task.elapsed = task.elapsed + (dt or 0.016)
+    local p = (task.dur > 0) and (task.elapsed / task.dur) or 1
+    local cr, cg, cb = ResolveArrowColors(mod:GetDB().arrowColorMode or "amber")
+    local alpha = (ST.GetFXIntensity() == "soft") and 0.76 or 0.94
+    if p >= 1 then
+        ApplyTargetOutlineProgress(plate, fx, 1, cr, cg, cb, alpha)
+        task.plate = nil
+        task.fx = nil
+        return false
+    end
+    ApplyTargetOutlineProgress(plate, fx, p, cr, cg, cb, alpha)
+    return true
+end
+
+local function SyncPlateTargetOutline(plate, fx, active, isTarget)
+    if not (fx and fx.targetOutline) then return end
+    local wantOutline = active and isTarget and ST.IsFXEnabled("fx_plateOutline")
+        and mod:GetDB().muteCrudeTargetGlow ~= false
+    if not wantOutline then
+        fx.targetOutline:Hide()
+        if outlineAnimTask.plate == plate then
+            outlineAnimTask.plate = nil
+            outlineAnimTask.fx = nil
+            M.UnregisterTask(outlineAnimTask)
+        end
+        if activeOutlinePlate == plate then
+            activeOutlinePlate = nil
+        end
+        return
+    end
+    local cr, cg, cb = ResolveArrowColors(mod:GetDB().arrowColorMode or "amber")
+    local alpha = (ST.GetFXIntensity() == "soft") and 0.76 or 0.94
+    if activeOutlinePlate ~= plate then
+        -- 切到新目标：立刻隐藏旧目标描边并重置进度重新从左到右绘制
+        if activeOutlinePlate and plateFX[activeOutlinePlate] and plateFX[activeOutlinePlate].targetOutline then
+            plateFX[activeOutlinePlate].targetOutline:Hide()
+        end
+        activeOutlinePlate = plate
+        outlineAnimTask.plate = plate
+        outlineAnimTask.fx = fx
+        outlineAnimTask.elapsed = 0
+        outlineAnimTask.dur = (ST.GetFXIntensity() == "soft") and 0.32 or OUTLINE_DRAW_DUR
+        ApplyTargetOutlineProgress(plate, fx, 0.02, cr, cg, cb, alpha)
+        M.RegisterTask(outlineAnimTask)
+    elseif outlineAnimTask.plate ~= plate then
+        -- 已经绘制完成：维持完整描边色与尺寸，驱动保持休眠
+        ApplyTargetOutlineProgress(plate, fx, 1, cr, cg, cb, alpha)
+    end
+end
+
 local function PaintSinglePlate(plate, instantTrail)
     if not (IsSafe(plate) and IsSafe(plate.health)) then return end
     local fx = EnsurePlateFX(plate)
@@ -1002,8 +1139,9 @@ local function PaintSinglePlate(plate, instantTrail)
     end
     local isTarget = active and IsUnitTarget(unit)
 
-    -- 0) 血条与施法条圆角美化
+    -- 0) 血条与施法条圆角美化 + 2h 当前目标高亮描边绘制动画
     ApplyPlateRounding(plate, fx, active, isTarget)
+    SyncPlateTargetOutline(plate, fx, active, isTarget)
 
     -- 1) 呼吸箭头与任务击杀进度（若 EUI / Questie 本身已在姓名板左侧显示 1/8 进度，则自动让位，绝不重复显示两份）
     local function PlateAlreadyHasQuestText(p)
@@ -1173,8 +1311,21 @@ local function RefreshAllPlates(instantTrail)
     SyncEUINonTargetDim()
     local plates = GetEUIPlates()
     if type(plates) ~= "table" then return end
+    local anyTarget = false
     for _, plate in pairs(plates) do
         PaintSinglePlate(plate, instantTrail)
+        if IsSafe(plate) and plate:IsShown() and plate.unit and IsUnitTarget(plate.unit) then
+            anyTarget = true
+        end
+    end
+    if not anyTarget then
+        if activeOutlinePlate and plateFX[activeOutlinePlate] and plateFX[activeOutlinePlate].targetOutline then
+            plateFX[activeOutlinePlate].targetOutline:Hide()
+        end
+        activeOutlinePlate = nil
+        outlineAnimTask.plate = nil
+        outlineAnimTask.fx = nil
+        M.UnregisterTask(outlineAnimTask)
     end
 end
 
