@@ -48,14 +48,46 @@ local function UpdateBarSparkVis(wing, cur, mx)
     end
 end
 
+-- 零 GC 颜色缓存：仅在颜色/方向变化时重刷渐变，避免每次血蓝事件重复 SetGradient
+local function ApplyCachedBarGradient(bar, r1, g1, b1, r2, g2, b2, alpha, reverse)
+    if not bar then return end
+    local a = alpha or 0.98
+    local rev = reverse == true
+    local c = bar._kkGradCache
+    if c and c[1] == r1 and c[2] == g1 and c[3] == b1
+        and c[4] == r2 and c[5] == g2 and c[6] == b2
+        and c[7] == a and c[8] == rev then
+        return
+    end
+    if not c then c = {}; bar._kkGradCache = c end
+    c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8] = r1, g1, b1, r2, g2, b2, a, rev
+    ST.ApplyBarGradient(bar, r1, g1, b1, r2, g2, b2, a, rev)
+end
+
+-- 统一主条赋值（fx_smoothMain 关闭时严格退回旧路径 SetMinMaxValues + 1 参 SetValue）
+local function SetHUDMainBar(bar, val, mx, unit, instant, extraChanged)
+    if not bar then return end
+    if not ST.IsFXEnabled("fx_smoothMain") then
+        pcall(bar.SetMinMaxValues, bar, 0, mx)
+        M.SetBarValue(bar, val, { fxKey = "fx_smoothMain" })
+        return
+    end
+    local maxChanged = M.SetBarMinMax(bar, 0, mx)
+    M.SetBarValue(bar, val, {
+        fxKey = "fx_smoothMain",
+        unit = unit,
+        instant = instant == true,
+        maxChanged = maxChanged or extraChanged == true,
+    })
+end
+
 local function UpdatePlayerHealth(instant)
     if CH.coreFrame and CH.coreFrame:IsShown() then
         local hp = _G.UnitHealth and _G.UnitHealth("player")
         if type(hp) == "nil" then hp = 0 end
         local mx = _G.UnitHealthMax and _G.UnitHealthMax("player")
         if type(mx) == "nil" then mx = 1 end
-        pcall(CH.coreFrame._hpWing._bar.SetMinMaxValues, CH.coreFrame._hpWing._bar, 0, mx)
-        pcall(CH.coreFrame._hpWing._bar.SetValue, CH.coreFrame._hpWing._bar, hp)
+        SetHUDMainBar(CH.coreFrame._hpWing._bar, hp, mx, "player", instant)
         UpdateBarSparkVis(CH.coreFrame._hpWing, hp, mx)
         if CH.coreFrame._hpWing._trail then
             CH.coreFrame._hpWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
@@ -77,15 +109,17 @@ local function UpdatePlayerPower(instant)
     if type(cur) == "nil" then cur = 0 end
     local mx = _G.UnitPowerMax and _G.UnitPowerMax("player", pType)
     if type(mx) == "nil" then mx = 1 end
-    pcall(CH.coreFrame._ppWing._bar.SetMinMaxValues, CH.coreFrame._ppWing._bar, 0, mx)
-    pcall(CH.coreFrame._ppWing._bar.SetValue, CH.coreFrame._ppWing._bar, cur)
+    local bar = CH.coreFrame._ppWing._bar
+    local ptChanged = (bar._kkLastPowerType ~= nil and bar._kkLastPowerType ~= pType)
+    bar._kkLastPowerType = pType
+    SetHUDMainBar(bar, cur, mx, "player", instant, ptChanged)
     UpdateBarSparkVis(CH.coreFrame._ppWing, cur, mx)
     if CH.coreFrame._ppWing._trail then
         CH.coreFrame._ppWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
-        CH.coreFrame._ppWing._trail:SetValue(cur, mx, instant)
+        CH.coreFrame._ppWing._trail:SetValue(cur, mx, instant or ptChanged)
     end
     local r1, g1, b1, r2, g2, b2 = ST.GetPowerGradient(pType)
-    ST.ApplyBarGradient(CH.coreFrame._ppWing._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
+    ApplyCachedBarGradient(bar, r1, g1, b1, r2, g2, b2, 0.98, false)
     local _, ppMode = ResolveWingTextModes()
     SetPowerText(CH.coreFrame._ppText, "player", pType, ppMode)
 end
@@ -105,28 +139,31 @@ local function UpdatePetHUD(instant)
         if CH.lastIdleAlpha then CH.petFrame:SetAlpha(CH.lastIdleAlpha) end
         if CH.SyncClickLayers then CH.SyncClickLayers() end
     end
+    local snap = instant == true or (not wasShown)
     local hp = _G.UnitHealth and _G.UnitHealth("pet")
     if type(hp) == "nil" then hp = 0 end
     local mx = _G.UnitHealthMax and _G.UnitHealthMax("pet")
     if type(mx) == "nil" then mx = 1 end
-    pcall(CH.petFrame._hpBar._bar.SetMinMaxValues, CH.petFrame._hpBar._bar, 0, mx)
-    pcall(CH.petFrame._hpBar._bar.SetValue, CH.petFrame._hpBar._bar, hp)
+    local hpBar = CH.petFrame._hpBar._bar
+    SetHUDMainBar(hpBar, hp, mx, "pet", snap)
     if CH.petFrame._hpBar._trail then
         CH.petFrame._hpBar._trail:SetEnabled(db.showTrail ~= false)
-        CH.petFrame._hpBar._trail:SetValue(hp, mx, instant)
+        CH.petFrame._hpBar._trail:SetValue(hp, mx, snap)
     end
     local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
-    ST.ApplyBarGradient(CH.petFrame._hpBar._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
+    ApplyCachedBarGradient(hpBar, r1, g1, b1, r2, g2, b2, 0.98, false)
 
     local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("pet"), 2) or 2
     local pCur = _G.UnitPower and _G.UnitPower("pet", pType)
     if type(pCur) == "nil" then pCur = 0 end
     local pMx = _G.UnitPowerMax and _G.UnitPowerMax("pet", pType)
     if type(pMx) == "nil" then pMx = 1 end
-    pcall(CH.petFrame._ppBar._bar.SetMinMaxValues, CH.petFrame._ppBar._bar, 0, pMx)
-    pcall(CH.petFrame._ppBar._bar.SetValue, CH.petFrame._ppBar._bar, pCur)
+    local ppBar = CH.petFrame._ppBar._bar
+    local ptChanged = (ppBar._kkLastPowerType ~= nil and ppBar._kkLastPowerType ~= pType)
+    ppBar._kkLastPowerType = pType
+    SetHUDMainBar(ppBar, pCur, pMx, "pet", snap, ptChanged)
     local pr1, pg1, pb1, pr2, pg2, pb2 = ST.GetPowerGradient(pType)
-    ST.ApplyBarGradient(CH.petFrame._ppBar._bar, pr1, pg1, pb1, pr2, pg2, pb2, 0.98, false)
+    ApplyCachedBarGradient(ppBar, pr1, pg1, pb1, pr2, pg2, pb2, 0.98, false)
 
     local petName = _G.UnitName and _G.UnitName("pet")
     if type(petName) ~= "nil" then
@@ -170,7 +207,7 @@ CH.UnitNameColor = function(unit, r, g, b)
     return r, g, b, 1
 end
 
-local function UpdateTargetOfTarget()
+local function UpdateTargetOfTarget(instant)
     if not (CH.topTargetFrame and CH.topTargetFrame._totBar) then return end
     local tot = CH.topTargetFrame._totBar
     if not UnitExistsSafe("targettarget") then
@@ -178,15 +215,15 @@ local function UpdateTargetOfTarget()
         tot:Hide()
         return
     end
+    local wasShown = tot:IsShown()
     tot:Show()
     local hp = _G.UnitHealth and _G.UnitHealth("targettarget")
     if type(hp) == "nil" then hp = 0 end
     local mx = _G.UnitHealthMax and _G.UnitHealthMax("targettarget")
     if type(mx) == "nil" then mx = 1 end
-    pcall(tot._bar.SetMinMaxValues, tot._bar, 0, mx)
-    pcall(tot._bar.SetValue, tot._bar, hp)
+    SetHUDMainBar(tot._bar, hp, mx, "targettarget", instant == true or (not wasShown))
     local r1, g1, b1, r2, g2, b2 = ST.GetUnitGradient("targettarget")
-    ST.ApplyBarGradient(tot._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
+    ApplyCachedBarGradient(tot._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
     local rawName = _G.UnitName and _G.UnitName("targettarget")
     local nm = F.PlainString(rawName, nil)
     if nm then
@@ -217,25 +254,27 @@ local function UpdateTopTargetHUD(instant)
             if type(hp) == "nil" then hp = 0 end
             local mx = _G.UnitHealthMax and _G.UnitHealthMax("target")
             if type(mx) == "nil" then mx = 1 end
-            pcall(CH.topTargetFrame._hpBar._bar.SetMinMaxValues, CH.topTargetFrame._hpBar._bar, 0, mx)
-            pcall(CH.topTargetFrame._hpBar._bar.SetValue, CH.topTargetFrame._hpBar._bar, hp)
+            local hpBar = CH.topTargetFrame._hpBar._bar
+            SetHUDMainBar(hpBar, hp, mx, "target", instant)
             UpdateBarSparkVis(CH.topTargetFrame._hpBar, hp, mx)
             if CH.topTargetFrame._hpBar._trail then
                 CH.topTargetFrame._hpBar._trail:SetEnabled(db.showTrail ~= false)
                 CH.topTargetFrame._hpBar._trail:SetValue(hp, mx, instant)
             end
             local r1, g1, b1, r2, g2, b2 = ST.GetUnitGradient("target")
-            ST.ApplyBarGradient(CH.topTargetFrame._hpBar._bar, r1, g1, b1, r2, g2, b2, 0.98, false)
+            ApplyCachedBarGradient(hpBar, r1, g1, b1, r2, g2, b2, 0.98, false)
 
             local pType = _G.UnitPowerType and F.PlainNumber(_G.UnitPowerType("target"), 0) or 0
             local pCur = _G.UnitPower and _G.UnitPower("target", pType)
             if type(pCur) == "nil" then pCur = 0 end
             local pMx = _G.UnitPowerMax and _G.UnitPowerMax("target", pType)
             if type(pMx) == "nil" then pMx = 1 end
-            pcall(CH.topTargetFrame._ppBar._bar.SetMinMaxValues, CH.topTargetFrame._ppBar._bar, 0, pMx)
-            pcall(CH.topTargetFrame._ppBar._bar.SetValue, CH.topTargetFrame._ppBar._bar, pCur)
+            local ppBar = CH.topTargetFrame._ppBar._bar
+            local ptChanged = (ppBar._kkLastPowerType ~= nil and ppBar._kkLastPowerType ~= pType)
+            ppBar._kkLastPowerType = pType
+            SetHUDMainBar(ppBar, pCur, pMx, "target", instant, ptChanged)
             local pr1, pg1, pb1, pr2, pg2, pb2 = ST.GetPowerGradient(pType)
-            ST.ApplyBarGradient(CH.topTargetFrame._ppBar._bar, pr1, pg1, pb1, pr2, pg2, pb2, 0.98, false)
+            ApplyCachedBarGradient(ppBar, pr1, pg1, pb1, pr2, pg2, pb2, 0.98, false)
 
             local _, _, tgtMode = ResolveWingTextModes()
             SetHealthText(CH.topTargetFrame._hpText, "target", tgtMode)
@@ -254,7 +293,7 @@ local function UpdateTopTargetHUD(instant)
                 pcall(_G.SetPortraitTexture, CH.topTargetFrame._portrait._tex, "target")
                 ST.NotifyTextureChanged(CH.topTargetFrame._portrait._tex)
             end
-            UpdateTargetOfTarget()
+            UpdateTargetOfTarget(instant)
         end
         if instant and CH.SyncTargetAuras then
             CH.SyncTargetAuras()
@@ -283,6 +322,34 @@ end
 ----------------------------------------------------------------------
 local SyncHiddenEUIFrames -- 前向声明
 
+-- EUI 玩家/目标框体平滑联动：仅在 fx_smoothMain 开启时写入 smoothing，关闭或停用时完整还原用户 EUI 原值
+local euiOrigSmoothing = setmetatable({}, { __mode = "k" })
+local NIL_SMOOTH_SENTINEL = {}
+
+local function SyncEUISmoothing()
+    local want = mod._active == true and ST.IsFXEnabled("fx_smoothMain")
+    local interp = _G.Enum and _G.Enum.StatusBarInterpolation and _G.Enum.StatusBarInterpolation.ExponentialEaseOut or nil
+    local frames = { _G.EllesmereUIUnitFrames_Player, _G.EllesmereUIUnitFrames_Target }
+    for _, uf in ipairs(frames) do
+        if uf then
+            for _, elem in ipairs({ uf.Health, uf.Power }) do
+                if elem then
+                    if want and interp ~= nil then
+                        if euiOrigSmoothing[elem] == nil then
+                            euiOrigSmoothing[elem] = (elem.smoothing == nil) and NIL_SMOOTH_SENTINEL or elem.smoothing
+                        end
+                        elem.smoothing = interp
+                    elseif euiOrigSmoothing[elem] ~= nil then
+                        local orig = euiOrigSmoothing[elem]
+                        elem.smoothing = (orig == NIL_SMOOTH_SENTINEL) and nil or orig
+                        euiOrigSmoothing[elem] = nil
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function AttachEUITrails()
     local pf = _G.EllesmereUIUnitFrames_Player
     if pf and pf.Health and not CH.euiTrailPlayer then
@@ -298,6 +365,7 @@ local function AttachEUITrails()
             color = ST.COLORS.trail,
         })
     end
+    SyncEUISmoothing()
     if not CH.euiHooksDone and type(_G._EUF_ReloadFrames) == "function" then
         CH.euiHooksDone = true
         _G.hooksecurefunc("_EUF_ReloadFrames", function()
@@ -306,6 +374,7 @@ local function AttachEUITrails()
                     if mod._active then
                         if CH.euiTrailPlayer then CH.euiTrailPlayer:SyncAnchor() end
                         if CH.euiTrailTarget then CH.euiTrailTarget:SyncAnchor() end
+                        SyncEUISmoothing()
                         SyncHiddenEUIFrames()
                     end
                 end)
@@ -714,6 +783,8 @@ local function ApplyLayoutAndTheme()
 
             local r1, g1, b1, r2, g2, b2 = ST.GetClassGradient()
             local rad = GetBarRadius(barH)
+            CH.coreFrame._hpWing._bar._kkGradCache = nil
+            CH.coreFrame._ppWing._bar._kkGradCache = nil
             ApplyWingStyle(CH.coreFrame._hpWing, r1, g1, b1, r2, g2, b2, rad)
             if CH.coreFrame._hpWing._trail then
                 CH.coreFrame._hpWing._trail:SetDelay(db.trailDelay or 0.16)
@@ -786,6 +857,8 @@ local function ApplyLayoutAndTheme()
         local pr1, pg1, pb1, pr2, pg2, pb2 = ST.GetPowerGradient(pt)
         ApplyWingStyle(CH.petFrame._ppBar, pr1, pg1, pb1, pr2, pg2, pb2, GetBarRadius(pPpH))
         if CH.petFrame._hpBar._trail then CH.petFrame._hpBar._trail:SetDelay(db.trailDelay or 0.16) end
+        CH.petFrame._hpBar._bar._kkGradCache = nil
+        CH.petFrame._ppBar._bar._kkGradCache = nil
         UpdatePetHUD(true)
     end
     if CH.topTargetFrame then
@@ -817,9 +890,13 @@ local function ApplyLayoutAndTheme()
         ApplyWingStyle(CH.topTargetFrame._totBar, totr1, totg1, totb1, totr2, totg2, totb2, GetBarRadius(10))
         if CH.topTargetFrame._hpBar._trail then CH.topTargetFrame._hpBar._trail:SetDelay(db.trailDelay or 0.16) end
         if CH.topTargetFrame._hpBar._spark then CH.topTargetFrame._hpBar._spark:SyncAnchor() end
+        CH.topTargetFrame._hpBar._bar._kkGradCache = nil
+        CH.topTargetFrame._ppBar._bar._kkGradCache = nil
+        CH.topTargetFrame._totBar._bar._kkGradCache = nil
         UpdateTopTargetHUD(true)
     end
     if CH.euiTrailTarget then CH.euiTrailTarget:SetDelay(db.trailDelay or 0.16) end
+    SyncEUISmoothing()
     SyncHiddenEUIFrames()
     SyncTopRightAuraDedupe(true)
     CH.SyncClickLayers()
@@ -1201,6 +1278,7 @@ function mod:OnDisable()
     if CH.topTargetFrame then CH.topTargetFrame:Hide() end
     if CH.euiTrailPlayer then CH.euiTrailPlayer:SetEnabled(false) end
     if CH.euiTrailTarget then CH.euiTrailTarget:SetEnabled(false) end
+    SyncEUISmoothing()
     SyncHiddenEUIFrames()
     SyncTopRightAuraDedupe()
     CH.SyncClickLayers()
