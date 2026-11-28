@@ -31,6 +31,7 @@ const ALLOWED_GLOBALS = new Set([
   'kkowoUI',
   'kkowoUIDB',
   'kkowoUICharDB',
+  'kkowoUIRecordDB',
   // 改名前的旧存档变量（DB.Init 里搬到新名字后清空）
   'KkowoUIDB',
   'KkowoUICharDB',

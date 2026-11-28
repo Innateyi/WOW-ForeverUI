@@ -167,6 +167,13 @@ _G.SlashCmdList.KKOWOUI = function(msg)
             return
         end
     end
+    if cmd == "rec" or cmd == "record" then
+        if F.Recorder and type(F.Recorder.HandleSlash) == "function" then
+            local _, rest = raw:match("^(%S+)%s*(.*)$")
+            F.Recorder.HandleSlash(rest)
+            return
+        end
+    end
     if cmd == "" then
         local EUI = _G.EllesmereUI
         if EUI and EUI.OpenPlugin then

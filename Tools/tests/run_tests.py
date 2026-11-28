@@ -230,6 +230,7 @@ def run_all():
             ('/kk', 'probe'),
             ('/kk', 'markcal'),
             ('/kk', 'fade why'),
+            ('/kk', 'rec status'),
             ('/kk', 'selftest'),
         ]
         for c, arg in cmds:
@@ -2145,6 +2146,139 @@ def run_all():
         return '场景A(脱战机密值淡隐)/B(副本战斗保持清晰)/C(明文满血蓝淡隐)/D(悬停唤醒+离开重淡+关闭还原)+/kk fade why 全部通过'
 
     check('脱战淡隐回归与 /kk fade why 行为测试', t_immersive_fade_regression)
+
+    # 24. LiveRecorder "record once" state machine, secret/zero-return packing, and /kk rec commands
+    def t_live_recorder():
+        l_env, m_env, _ = _boot_fresh()
+        F = l_env.globals().kkowoUI
+        rec = F.Recorder
+        assert rec is not None, 'F.Recorder 未常驻加载'
+
+        # 1) First deploy auto-arms once; open world does NOT consume armed
+        st0 = rec.GetState()
+        assert st0.armed is True and st0.recording is False, f'首次登录应自动待录且未开录: armed={st0.armed}, rec={st0.recording}'
+        m_env.FireEvent('ZONE_CHANGED_NEW_AREA')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        st1 = rec.GetState()
+        assert st1.armed is True and st1.recording is False, '野外切换不应消耗待录状态'
+
+        # 2) Enter dungeon -> starts recording! Record roll + enchant + combat + nameplate + zero/nil/secret + mark
+        m_env.SetInstanceMode(True, 'party', '死亡矿井')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        st2 = rec.GetState()
+        assert st2.recording is True, '进副本后未自动开始录制'
+
+        # Test zero-return vs nil-return vs secret value packing in combat
+        m_env.SetInCombat(True)
+        m_env.ClearProtectedViolations()
+        m_env.SetZeroReturnAPIs(l_env.table_from({'UnitCastingInfo': True}))
+        m_env.SetSecretAPIs(l_env.table_from({'GetLootRollTimeLeft': True, 'UnitHealth': True, 'UnitHealthMax': True}))
+        l_env.execute('''
+            _G.GetLootRollItemInfo = function(id)
+                return 135489, "残酷倒钩", 1, 3, true, true, true, false
+            end
+            _G.C_Item = _G.C_Item or {}
+            _G.C_Item.GetWeaponEnchantInfo = function()
+                return true, 1800000, 0, 1643, false, nil, nil, nil
+            end
+        ''')
+        m_env.FireEvent('PLAYER_REGEN_DISABLED')
+        m_env.FireEvent('START_LOOT_ROLL', 77, 60000)
+        m_env.FireEvent('UNIT_SPELLCAST_START', 'player', 'Cast-3-0001', 1234)
+        forb = m_env.CreateForbiddenPlate()
+        m_env.SetMockNameplates(l_env.table_from({1: forb, 'nameplate1': forb}))
+        m_env.FireEvent('NAME_PLATE_UNIT_ADDED', 'nameplate1')
+        m_env.FireEvent('UNIT_INVENTORY_CHANGED', 'player')
+        m_env.RunSlash('/kk', 'rec mark 副本测试标记')
+        viol_rec = list(m_env.GetProtectedViolations().values())
+        assert not viol_rec, f'战斗中录制/打标触发受保护调用违规: {viol_rec}'
+
+        # 3) Reload inside SAME dungeon -> continues SAME session
+        cnt_before_reload = rec.GetState().currentCount
+        assert cnt_before_reload >= 6, f'录制条目过少: {cnt_before_reload}'
+        m_env.SetInCombat(False)
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', False, True)
+        st3 = rec.GetState()
+        assert st3.recording is True and st3.currentCount > cnt_before_reload and st3.savedSessions == 0, (
+            f'副本内 /reload 应续录同一次会话: rec={st3.recording}, cnt={st3.currentCount}, saved={st3.savedSessions}'
+        )
+
+        # 4) Leave dungeon -> stops, saves session, clears armed, prints once
+        m_env.SetMockNameplates(l_env.table())
+        m_env.ResetScenario()
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        st4 = rec.GetState()
+        assert st4.recording is False and st4.armed is False and st4.savedSessions == 1, (
+            f'离开副本后应停止并退出待录: rec={st4.recording}, armed={st4.armed}, saved={st4.savedSessions}'
+        )
+
+        # Inspect recorded entries: verify 0-return vs secret vs roll vs nameplate forbidden vs mark
+        chk = l_env.eval('''(function()
+            local s = _G.kkowoUIRecordDB.sessions[1]
+            local foundRoll, foundCastZero, foundForbNP, foundMark, foundEnch = false, false, false, false, false
+            for _, e in ipairs(s.entries) do
+                if e.ev == "START_LOOT_ROLL" then
+                    local tl = e.apis and e.apis.GetLootRollTimeLeft
+                    local ii = e.apis and e.apis.GetLootRollItemInfo
+                    if tl and tl.ok and tl.n == 1 and tl.v[1].s == true
+                        and ii and ii.ok and ii.n == 8 and ii.v[2].v == "残酷倒钩" then
+                        foundRoll = true
+                    end
+                elseif e.ev == "UNIT_SPELLCAST_START" then
+                    local ci = e.apis and e.apis.UnitCastingInfo
+                    if ci and ci.ok and ci.n == 0 and e.args.v[2].v == "<redacted>" then
+                        foundCastZero = true
+                    end
+                elseif e.ev == "NAME_PLATE_UNIT_ADDED" then
+                    if e.apis and e.apis.nameplate and e.apis.nameplate.forbidden == true then
+                        foundForbNP = true
+                    end
+                elseif e.ev == "USER_MARK" then
+                    if e.note == "副本测试标记" and type(e.clickcheck) == "table" then
+                        foundMark = true
+                    end
+                elseif e.ev == "UNIT_INVENTORY_CHANGED" then
+                    local we = e.apis and e.apis.weaponEnchants and e.apis.weaponEnchants.cItem
+                    if we and we.ok and we.n == 8 and we.v[4].v == 1643 and we.v[6].t == "nil" then
+                        foundEnch = true
+                    end
+                end
+            end
+            return foundRoll and foundCastZero and foundForbNP and foundMark and foundEnch
+        end)()''')
+        assert chk is True, '录制内容校验失败（roll机密/零返回/nil返回/forbidden姓名板/mark/脱敏）'
+
+        # 5) Re-entering dungeon MUST NOT record again
+        m_env.SetInstanceMode(True, 'party', '死亡矿井')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        assert rec.GetState().recording is False and rec.GetState().armed is False, '二次进本不应自动再录'
+
+        # 6) Simulated restart with persisted autoArmFlags MUST NOT auto-arm again
+        m_env.FireEvent('PLAYER_LOGIN')
+        assert rec.GetState().armed is False and rec.GetState().recording is False, '重启后不应再次自动待录'
+
+        # 7) /kk rec on while already in dungeon starts immediately; /kk rec off stops & preserves data
+        m_env.RunSlash('/kk', 'rec on')
+        assert rec.GetState().recording is True, '副本内 /kk rec on 应立即开录'
+        m_env.FireEvent('CANCEL_ALL_LOOT_ROLLS')
+        m_env.RunSlash('/kk', 'rec off')
+        st7 = rec.GetState()
+        assert st7.recording is False and st7.armed is False and st7.savedSessions == 2, (
+            f'/kk rec off 应立即停止并保留数据: rec={st7.recording}, armed={st7.armed}, saved={st7.savedSessions}'
+        )
+
+        # 8) /kk rec mark when NOT recording prints hint & does not crash
+        m_env.RunSlash('/kk', 'rec mark 未录制时测试')
+        prints_after = [str(p) for p in m_env.GetPrints().values()]
+        assert any('当前没有在录制' in p for p in prints_after), '未录制时 /kk rec mark 未提示当前没有在录制'
+
+        # 9) /kk rec clear clears sessions and does NOT re-arm
+        m_env.RunSlash('/kk', 'rec clear')
+        st9 = rec.GetState()
+        assert st9.savedSessions == 0 and st9.armed is False and st9.recording is False, 'clear 后应清空且不自动待录'
+        return '首次自动待录/野外不消耗/进本开录/副本内重载续录/离本即停/不再自动录/手动on-off-mark-clear/零返回与机密打包 全部通过'
+
+    check('实机录制器「只录一次」状态机与命令行为测试', t_live_recorder)
 
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0

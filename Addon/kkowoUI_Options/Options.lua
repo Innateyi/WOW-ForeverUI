@@ -284,6 +284,7 @@ local function PrintHelp(showAll)
         _G.print("  /kk selftest — 运行自动化回归自检")
         _G.print("  /kk clickcheck [kk|blizz|eui] — 只读排查隐形挡点击框体（战斗中可用）")
         _G.print("  /kk fade why — 只读排查脱战淡隐各条件读数与阻挡原因（战斗中可用）")
+        _G.print("  /kk rec [on|off|status|clear|mark <备注>] — 单次副本实机录制器（只读·战斗中可用）")
         _G.print("  /kk nav / beam / friendly / hud / perf / toast / ss / wp — 模块测试命令")
     end
 end
@@ -310,6 +311,10 @@ function UI.HandleSlash(msg)
         else
             local im = F.Modules.Get("immersiveHUD")
             if im and im.PrintFadeWhy then im:PrintFadeWhy() end
+        end
+    elseif cmd == "rec" or cmd == "record" then
+        if F.Recorder and F.Recorder.HandleSlash then
+            F.Recorder.HandleSlash(rest)
         end
     elseif cmd == "status" or cmd == "check" then
         PrintStatus()

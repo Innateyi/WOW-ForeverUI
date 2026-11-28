@@ -6,7 +6,7 @@
 ## IconTexture: Interface\AddOns\kkowoUI_Media\Media\Icons\kkowoUI
 ## Dependencies: EllesmereUI, kkowoUI_Media
 ## OptionalDeps: EllesmereUIBlizzardSkin, EllesmereUIChat, EllesmereUIMinimap, EllesmereUINameplates, EllesmereUIUnitFrames, EllesmereUIResourceBars, EllesmereUIActionBars, EllesmereUICooldownManager, EllesmereUIDamageMeters, Polestar, BigWigs, BugSack, GTFO, Scales
-## SavedVariables: kkowoUIDB, KkowoUIDB
+## SavedVariables: kkowoUIDB, KkowoUIDB, kkowoUIRecordDB
 ## SavedVariablesPerCharacter: kkowoUICharDB, KkowoUICharDB
 
 Core\Init.lua
@@ -17,4 +17,5 @@ Core\DB.lua
 Core\Modules.lua
 Core\Mover.lua
 Core\Guard.lua
+Core\LiveRecorder.lua
 Core\OptionsProxy.lua
