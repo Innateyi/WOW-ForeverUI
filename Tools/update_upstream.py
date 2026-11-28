@@ -142,6 +142,30 @@ UPSTREAM_SPECS = [
         'exclude_glob': None,
         'primary_folder': 'Questie',
         'allow_folders': {'Questie', 'QuestieDB'},
+        'slim_forever_tocs': {'QuestieDB': 'QuestieDB_Forever.toc'},
+        'mode': 'addon',
+    },
+    {
+        'key': 'DungeonsForever',
+        'repo': 'ayuanbro/DungeonsForever',
+        'source_type': 'branch',
+        'branch': 'master',
+        'toc_rel': 'DungeonsForever/DungeonsForever.toc',
+        'asset_glob': None,
+        'exclude_glob': None,
+        'primary_folder': 'DungeonsForever',
+        'allow_folders': {
+            'DF_CNLocale',
+            'DungeonsForever',
+            'DungeonsForeverClass',
+            'DungeonsForeverExplore',
+            'DungeonsForeverFaction',
+            'DungeonsForeverGear',
+            'DungeonsForeverProf',
+            'DungeonsForeverPvP',
+            'DungeonsForeverQuest',
+            'DungeonsForeverSpell',
+        },
         'mode': 'addon',
     },
     {
@@ -238,10 +262,48 @@ def github_latest(repo):
         return json.loads(resp.read().decode('utf-8'))
 
 
+def github_branch_latest(spec):
+    repo = spec['repo']
+    branch = spec.get('branch', 'master')
+    toc_rel = spec['toc_rel']
+    raw_url = f'https://raw.githubusercontent.com/{repo}/{branch}/{toc_rel}'
+    req = urllib.request.Request(raw_url, headers={'User-Agent': 'kkowoUI-updater/2.0'})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        toc_txt = resp.read().decode('utf-8', 'replace')
+    m = re.search(r'^##\s*Version:\s*(.+)$', toc_txt, re.M)
+    ver = m.group(1).strip() if m else ''
+    dt = ''
+    try:
+        c_url = f'https://api.github.com/repos/{repo}/commits/{branch}'
+        headers = {'User-Agent': 'kkowoUI-updater/2.0', 'Accept': 'application/vnd.github+json'}
+        tok = os.environ.get('GITHUB_TOKEN')
+        if tok:
+            headers['Authorization'] = f'Bearer {tok}'
+        creq = urllib.request.Request(c_url, headers=headers)
+        with urllib.request.urlopen(creq, timeout=15) as resp:
+            cdata = json.loads(resp.read().decode('utf-8'))
+            dt = str(((cdata.get('commit') or {}).get('author') or {}).get('date') or '')[:10]
+    except Exception:
+        pass
+    aname = f'{spec["key"]}-{ver or branch}.zip'
+    dl_url = f'https://codeload.github.com/{repo}/zip/refs/heads/{branch}'
+    return {
+        'tag_name': f'v{ver}' if ver and not ver.lower().startswith('v') else (ver or branch),
+        'published_at': dt,
+        'assets': [{'name': aname, 'browser_download_url': dl_url}],
+    }
+
+
+def fetch_latest_meta(spec):
+    if spec.get('source_type') == 'branch':
+        return github_branch_latest(spec)
+    return github_latest(spec['repo'])
+
+
 def pick_asset(release, asset_glob, exclude_glob=None):
     for a in release.get('assets') or []:
         name = a.get('name', '')
-        if not fnmatch.fnmatch(name, asset_glob):
+        if asset_glob and not fnmatch.fnmatch(name, asset_glob):
             continue
         if exclude_glob and fnmatch.fnmatch(name, exclude_glob):
             continue
@@ -298,7 +360,7 @@ def cmd_check(specs):
     for s in specs:
         loc = local_version(s['primary_folder']) or '(未安装)'
         try:
-            rel = github_latest(s['repo'])
+            rel = fetch_latest_meta(s)
             tag = rel.get('tag_name') or ''
             dt = str(rel.get('published_at') or '')[:10]
             aname, _ = pick_asset(rel, s['asset_glob'], s['exclude_glob'])
@@ -355,7 +417,45 @@ def folder_supports_forever(addon_dir):
     return False
 
 
-def install_zip_clean(zip_path, allow_folders=None, label='import', dry_run=False, force=False):
+def slim_addon_by_forever_toc(addon_dir, toc_name):
+    """在临时解压目录内按 Forever 专属 .toc 裁剪掉其他资料片的超大 .toc 与数据文件，避免无谓膨胀。"""
+    toc_path = os.path.join(addon_dir, toc_name)
+    if not os.path.isfile(toc_path):
+        return 0
+    keep_rel = {toc_name.lower()}
+    txt = open(toc_path, encoding='utf-8', errors='replace').read()
+    for ln in txt.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if s.startswith('#'):
+            m_ic = re.match(r'^##\s*IconTexture:\s*(.+)$', s, re.I)
+            if m_ic:
+                p = m_ic.group(1).strip().replace('\\', '/')
+                prefix = f'interface/addons/{os.path.basename(addon_dir).lower()}/'
+                if p.lower().startswith(prefix):
+                    keep_rel.add(p[len(prefix):].lower())
+            continue
+        # 去掉条件标签（如 [AllowLoadTextLocale zhCN]）
+        rel = re.split(r'\s+\[', s, maxsplit=1)[0].strip().replace('\\', '/')
+        if rel:
+            keep_rel.add(rel.lower())
+    keep_meta = {'changelog.md', 'license.md', 'license', 'gpl-3.0.md', 'readme.md', 'readme.txt'}
+    removed = 0
+    for dp, dns, fns in os.walk(addon_dir, topdown=False):
+        for fn in fns:
+            full = os.path.join(dp, fn)
+            rel = os.path.relpath(full, addon_dir).replace(os.sep, '/').lower()
+            if rel in keep_rel or rel in keep_meta or rel.startswith('icons/') or rel.startswith('types/'):
+                continue
+            os.unlink(full)
+            removed += 1
+        if dp != addon_dir and not os.listdir(dp):
+            os.rmdir(dp)
+    return removed
+
+
+def install_zip_clean(zip_path, allow_folders=None, label='import', dry_run=False, force=False, slim_forever_tocs=None):
     with tempfile.TemporaryDirectory(prefix='kk_up_') as tmp:
         safe_extract(zip_path, tmp)
         dirs = find_addon_dirs(tmp)
@@ -375,6 +475,10 @@ def install_zip_clean(zip_path, allow_folders=None, label='import', dry_run=Fals
             if (not force) and os.path.isdir(dst_old) and folder_supports_forever(dst_old) and not folder_supports_forever(src):
                 blocked_16001.append(name)
                 continue
+            if slim_forever_tocs and name in slim_forever_tocs:
+                n_trim = slim_addon_by_forever_toc(src, slim_forever_tocs[name])
+                if n_trim:
+                    print(f'[{label}] 无限服净包裁剪 {name}：移除非无限服资料片文件 {n_trim} 个')
             kept[name] = src
         if blocked_16001:
             raise RuntimeError(
@@ -406,7 +510,7 @@ def cmd_fetch(specs, force=False):
     for s in specs:
         loc = local_version(s['primary_folder']) or '(未安装)'
         try:
-            rel = github_latest(s['repo'])
+            rel = fetch_latest_meta(s)
         except Exception as e:
             print(f'[ERR] {s["key"]}: 查询失败 {e}')
             continue
@@ -504,7 +608,13 @@ def main():
             if s['mode'] == 'vendor_diff':
                 print(f'[INFO] {s["key"]} 为内嵌基准包，已下载至 {zp} 并生成 Diff 报告，需人工审核后再同步进 kkowoUI_Tooltip。')
                 continue
-            install_zip_clean(zp, allow_folders=s['allow_folders'], label=f'{s["key"]}_{norm_ver(tag)}', dry_run=args.dry_run)
+            install_zip_clean(
+                zp,
+                allow_folders=s['allow_folders'],
+                label=f'{s["key"]}_{norm_ver(tag)}',
+                dry_run=args.dry_run,
+                slim_forever_tocs=s.get('slim_forever_tocs'),
+            )
         if not args.dry_run and fetched:
             ap_mod = load_tool('apply_patches')
             old_argv = sys.argv

@@ -2027,17 +2027,35 @@ def run_all():
             mfp_mod = importlib.util.module_from_spec(mfp_spec)
             mfp_spec.loader.exec_module(mfp_mod)
             sample_sv = (
-                '\nkkowoUIDB = {\n["version"] = 1,\n["modules"] = { ["immersiveHUD"] = { ["enabled"] = true, }, },\n}\n'
+                '\nkkowoUIDB = {\n["version"] = 1,\n["modules"] = {\n'
+                '["immersiveHUD"] = { ["enabled"] = true, ["savedCVars"] = { ["x"] = "1", }, },\n'
+                '["modernChrome"] = { ["savedQuestieTownsfolk"] = { ["knownProf"] = true, }, },\n'
+                '["polestarNav"] = { ["savedRouteStyle"] = "balanced", },\n'
+                '["bagUtility"] = { ["savedEUIQuickLoot"] = true, },\n'
+                '},\n}\n'
+                'KkowoUIDB = nil\n'
                 'kkowoUIRecordDB = {\n["schemaVersion"] = 1,\n["sessions"] = { { ["instanceName"] = "死亡矿井", }, },\n}\n'
             )
             scrubbed_mfp, dropped_mfp = mfp_mod.scrub_kkowo(sample_sv)
-            assert 'kkowoUIRecordDB' not in scrubbed_mfp and 'kkowoUIDB' in scrubbed_mfp and dropped_mfp >= 1, \
-                'make_friend_pack.scrub_kkowo 未剔除 kkowoUIRecordDB'
-            fake_acc = tmp_p / 'fake_acc'
+            assert 'kkowoUIRecordDB' not in scrubbed_mfp and 'kkowoUIDB' in scrubbed_mfp and dropped_mfp >= 5, \
+                'make_friend_pack.scrub_kkowo 未剔除 kkowoUIRecordDB 或新增本机状态键'
+            assert 'savedQuestieTownsfolk' not in scrubbed_mfp and 'savedRouteStyle' not in scrubbed_mfp, \
+                'make_friend_pack.scrub_kkowo 未同步剔除 savedQuestieTownsfolk/savedRouteStyle'
+            fake_acc = tmp_p / 'acc'
             (fake_acc / 'SavedVariables').mkdir(parents=True)
             (fake_acc / 'SavedVariables' / 'kkowoUI.lua').write_text(sample_sv, encoding='utf-8')
+            (fake_acc / 'SavedVariables' / 'Polestar.lua').write_text(
+                '\nPolestarDB = {\n["update"] = { ["probed"] = { ["Foo"] = 1, }, },\n}\nPolestarLanguage = nil\n',
+                encoding='utf-8',
+            )
+            (fake_acc / 'SavedVariables' / 'EllesmereUI.lua').write_text(
+                '\nEllesmereUIDB = {\n["per_character_data_account_wide_v1"] = true,\n'
+                '["fctFontPath"] = "Interface\\\\AddOns\\\\kkowoUI\\\\Media\\\\Fonts\\\\font.ttf",\n}\n',
+                encoding='utf-8',
+            )
             fake_addons = tmp_p / 'fake_game' / 'Interface' / 'AddOns'
-            (fake_addons / 'kkowoUI').mkdir(parents=True)
+            for ad in ('kkowoUI', 'Polestar', 'EllesmereUI'):
+                (fake_addons / ad).mkdir(parents=True)
             old_game = psw_mod.GAME
             old_bk = psw_mod.BACKUP_ROOT
             try:
@@ -2045,17 +2063,53 @@ def run_all():
                 psw_mod.BACKUP_ROOT = str(bk)
                 _, keep_list, failed_list, removed_list = psw_mod.plan_account(str(fake_acc), set(), True)
                 assert not failed_list, f'prepare_share_wtf.plan_account 失败: {failed_list}'
+                kept_names = {k for k, _ in keep_list}
+                assert {'kkowoUI.lua', 'Polestar.lua', 'EllesmereUI.lua'} <= kept_names, \
+                    f'原有顶层 = nil 变量不应导致核心配置被误移走: kept={kept_names}'
                 sv_after = (fake_acc / 'SavedVariables' / 'kkowoUI.lua').read_text(encoding='utf-8')
-                assert 'kkowoUIRecordDB' not in sv_after and 'kkowoUIDB' in sv_after, \
-                    'prepare_share_wtf.plan_account 未剔除 kkowoUIRecordDB'
-                assert not psw_mod.residual_scan(str(fake_acc), set()), 'prepare_share_wtf 脱敏后仍残留可疑项'
+                assert 'kkowoUIRecordDB' not in sv_after and 'kkowoUIDB' in sv_after and 'KkowoUIDB' not in sv_after, \
+                    'prepare_share_wtf.plan_account 未剔除 kkowoUIRecordDB 或残留 KkowoUIDB = nil'
+                assert 'savedQuestieTownsfolk' not in sv_after and 'savedRouteStyle' not in sv_after and 'savedEUIQuickLoot' not in sv_after, \
+                    'prepare_share_wtf.plan_account 未剔除新增本机备份键'
+                eui_after = (fake_acc / 'SavedVariables' / 'EllesmereUI.lua').read_text(encoding='utf-8')
+                assert 'kkowoUI_Media' in eui_after, 'prepare_share_wtf 未修正 EllesmereUI.lua 旧字体路径'
+                # Verify residual_scan on temp dir named "acc" does NOT false-positive on "per_character_data_account_wide_v1"
+                assert not psw_mod.residual_scan(str(fake_acc), set(), include_dir_name=False, extra_scan_names={'688563448#1'}), \
+                    'prepare_share_wtf 脱敏后不应把目录名 acc 误报为 account 隐私命中'
+                # Verify newly-nilled top-level var IS still caught by _verify_sv_text
+                nilled_caught = False
+                try:
+                    psw_mod._verify_sv_text('\nkkowoUIDB = nil\n', 'kkowoUI.lua', orig_nil_vars=set())
+                except ValueError:
+                    nilled_caught = True
+                assert nilled_caught, '_verify_sv_text 必须继续拦截原非空变量被意外置为 nil'
                 # Verify residual_scan catches leaked kkowoUIRecordDB
                 (fake_acc / 'SavedVariables' / 'kkowoUI.lua').write_text(sample_sv, encoding='utf-8')
-                leaks = psw_mod.residual_scan(str(fake_acc), set())
+                leaks = psw_mod.residual_scan(str(fake_acc), set(), include_dir_name=False)
                 assert any('kkowoUIRecordDB' in x or '录像' in x for x in leaks), 'residual_scan 未拦截泄漏的 kkowoUIRecordDB'
             finally:
                 psw_mod.GAME = old_game
                 psw_mod.BACKUP_ROOT = old_bk
+            # F) update_upstream.py: Forever-only QuestieDB slimming keeps referenced Lua & drops other expansion TOCs
+            up_spec = importlib.util.spec_from_file_location('up_test', str(REPO / 'Tools' / 'update_upstream.py'))
+            up_mod = importlib.util.module_from_spec(up_spec)
+            up_spec.loader.exec_module(up_mod)
+            fake_qdb = tmp_p / 'QuestieDB'
+            (fake_qdb / 'src').mkdir(parents=True)
+            (fake_qdb / 'icons').mkdir(parents=True)
+            (fake_qdb / 'QuestieDB_Forever.toc').write_text(
+                '## Interface: 16001\n## IconTexture: Interface\\AddOns\\QuestieDB\\icons\\icon.png\nsrc\\keep.lua\n',
+                encoding='utf-8',
+            )
+            (fake_qdb / 'QuestieDB_Cata.toc').write_text('huge cata data', encoding='utf-8')
+            (fake_qdb / 'src' / 'keep.lua').write_text('return 1\n', encoding='utf-8')
+            (fake_qdb / 'src' / 'cata_only.lua').write_text('return 2\n', encoding='utf-8')
+            (fake_qdb / 'icons' / 'icon.png').write_bytes(b'PNG')
+            trimmed = up_mod.slim_addon_by_forever_toc(str(fake_qdb), 'QuestieDB_Forever.toc')
+            assert trimmed == 2 and (fake_qdb / 'QuestieDB_Forever.toc').is_file() and (fake_qdb / 'src' / 'keep.lua').is_file() \
+                and (fake_qdb / 'icons' / 'icon.png').is_file() and not (fake_qdb / 'QuestieDB_Cata.toc').exists() \
+                and not (fake_qdb / 'src' / 'cata_only.lua').exists(), \
+                f'update_upstream Forever 净包裁剪异常: trimmed={trimmed}'
             dep_src = (REPO / 'Tools' / 'deploy.ps1').read_text(encoding='utf-8')
             assert 'kkowoUI(Char|Record)?DB = nil' in dep_src, 'deploy.ps1 缺少 kkowoUIRecordDB 防置空保护'
 

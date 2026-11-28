@@ -201,6 +201,15 @@ def parse_talents(path):
     return data
 
 
+# 非训练师获取（任务/技能书/被动触发）但仍需保留的法术 ID 补充：
+# DungeonsForeverSpell 2.1.140 起仅收录训练师法术书条目，额外 ID 合并至列表前部（运行时仅追踪角色已学会的最高等级）
+EXTRA_IDS = {
+    ("WARRIOR", "revenge"): [25288],
+    ("SHAMAN", "reincarnation"): [21169],
+    ("DRUID", "primalbite"): [1238073],
+}
+
+
 def main():
     book = parse_spellbook(SPELLBOOK_EN)
     bookzh = parse_spellbook(SPELLBOOK_ZH)
@@ -211,8 +220,9 @@ def main():
         "--  无限服各职业预设冷却条：法术 ID 取自客户端内 DungeonsForever 的无限服法术数据，",
         "--  每项列出全部等级（高 → 低），运行时取角色已学会的最高等级。",
         "----------------------------------------------------------------------",
-        "local _, F = ...",
-        "",
+        "local _G = _G",
+        "local F = _G.kkowoUI",
+        "if not F then return end",
         "F.CooldownPresets = {",
     ]
     problems = []
@@ -223,10 +233,12 @@ def main():
         for key, en, tz, label in entries:
             ids = []
             zh = None
+            extra = EXTRA_IDS.get((cls, key), [])
             if en:
                 sp = cb.get(en)
                 if not sp:
-                    problems.append(f"{cls}: spellbook has no '{en}'")
+                    if not extra:
+                        problems.append(f"{cls}: spellbook has no '{en}'")
                 else:
                     ranks = sorted(sp["ranks"], key=lambda r: -r[0])
                     ids = [sp["id"]] + [rid for _, rid in ranks if rid != sp["id"]]
@@ -235,12 +247,18 @@ def main():
             if tz:
                 tid = talents.get(cls, {}).get(tz)
                 if not tid:
-                    problems.append(f"{cls}: talent tree has no '{tz}'")
+                    if not extra:
+                        problems.append(f"{cls}: talent tree has no '{tz}'")
                 elif tid not in ids:
                     ids.append(tid)
                 zh = zh or tz
+            for eid in reversed(extra):
+                if eid not in ids:
+                    ids.insert(0, eid)
             if not ids:
                 continue
+            if not zh and key == "reincarnation":
+                zh = "复生"
             idlist = ", ".join(str(i) for i in ids)
             lab = f', label = "{label}"' if label else ""
             lines.append(f'        {{ key = "{key}", ids = {{ {idlist} }}{lab} }}, -- {zh or en}')

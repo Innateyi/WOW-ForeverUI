@@ -39,15 +39,23 @@ def get_toc_meta(addon_dir):
     meta = {'version': 'unknown', 'title': os.path.basename(addon_dir)}
     if not os.path.isdir(addon_dir):
         return meta
-    for fn in sorted(os.listdir(addon_dir)):
-        if fn.endswith('.toc'):
-            t = read_utf8(os.path.join(addon_dir, fn))
-            mv = re.search(r'^## Version:\s*(.+)$', t, re.M)
-            mt = re.search(r'^## Title:\s*(.+)$', t, re.M)
-            if mv:
-                meta['version'] = mv.group(1).strip()
-            if mt:
-                meta['title'] = mt.group(1).strip()
+    folder = os.path.basename(addon_dir).lower()
+    tocs = sorted(
+        (fn for fn in os.listdir(addon_dir) if fn.endswith('.toc') and fn != 'dd_author.toc'),
+        key=lambda f: (
+            0 if ('forever' in f.lower() or 'camelot' in f.lower()) else (1 if f[:-4].lower() == folder else 2),
+            f,
+        ),
+    )
+    for fn in tocs:
+        t = read_utf8(os.path.join(addon_dir, fn))
+        mv = re.search(r'^##\s*Version:\s*(.+)$', t, re.M)
+        mt = re.search(r'^##\s*Title:\s*(.+)$', t, re.M)
+        if mv and meta['version'] == 'unknown':
+            meta['version'] = mv.group(1).strip()
+        if mt and meta['title'] == os.path.basename(addon_dir):
+            meta['title'] = mt.group(1).strip()
+        if meta['version'] != 'unknown':
             break
     return meta
 
