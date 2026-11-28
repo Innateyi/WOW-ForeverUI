@@ -160,6 +160,13 @@ _G.SlashCmdList.KKOWOUI = function(msg)
         if kb and kb.ToggleBoard then kb:ToggleBoard() end
         return
     end
+    if cmd == "fade" then
+        local im = F.Modules and F.Modules.Get and F.Modules.Get("immersiveHUD")
+        if im and im.PrintFadeWhy then
+            im:PrintFadeWhy()
+            return
+        end
+    end
     if cmd == "" then
         local EUI = _G.EllesmereUI
         if EUI and EUI.OpenPlugin then

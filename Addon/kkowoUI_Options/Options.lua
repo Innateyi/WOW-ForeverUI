@@ -283,6 +283,7 @@ local function PrintHelp(showAll)
         _G.print("  /kk markcal — 打开头顶标记校准滑块")
         _G.print("  /kk selftest — 运行自动化回归自检")
         _G.print("  /kk clickcheck [kk|blizz|eui] — 只读排查隐形挡点击框体（战斗中可用）")
+        _G.print("  /kk fade why — 只读排查脱战淡隐各条件读数与阻挡原因（战斗中可用）")
         _G.print("  /kk nav / beam / friendly / hud / perf / toast / ss / wp — 模块测试命令")
     end
 end
@@ -303,6 +304,13 @@ function UI.HandleSlash(msg)
         if F._Diagnostics and F._Diagnostics.RunSelfTest then F._Diagnostics.RunSelfTest() end
     elseif cmd == "clickcheck" or cmd == "cc" then
         if F._Diagnostics and F._Diagnostics.ClickCheck then F._Diagnostics.ClickCheck(rest) end
+    elseif cmd == "fade" then
+        if F._Diagnostics and F._Diagnostics.FadeWhy then
+            F._Diagnostics.FadeWhy(rest)
+        else
+            local im = F.Modules.Get("immersiveHUD")
+            if im and im.PrintFadeWhy then im:PrintFadeWhy() end
+        end
     elseif cmd == "status" or cmd == "check" then
         PrintStatus()
     elseif cmd == "loginlog" or cmd == "quiet" then

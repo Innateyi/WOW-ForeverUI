@@ -1551,3 +1551,15 @@ function Diag.ClickCheck(arg)
     end
     return res
 end
+
+----------------------------------------------------------------------
+--  6) /kk fade why — 只读排查脱战淡隐各条件读数与阻挡原因（战斗中安全）
+----------------------------------------------------------------------
+function Diag.FadeWhy()
+    local im = F.Modules and F.Modules.Get and F.Modules.Get("immersiveHUD")
+    if im and im.PrintFadeWhy then
+        return im:PrintFadeWhy()
+    end
+    F.Print("脱战淡隐模块尚未加载。")
+    return nil
+end

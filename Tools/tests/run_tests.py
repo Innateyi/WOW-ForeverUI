@@ -229,6 +229,7 @@ def run_all():
             ('/kk', 'probe'),
             ('/kk', 'probe'),
             ('/kk', 'markcal'),
+            ('/kk', 'fade why'),
             ('/kk', 'selftest'),
         ]
         for c, arg in cmds:
@@ -2082,6 +2083,15 @@ def run_all():
         assert bar_a_A < 0.35 and hud_a_A < 0.35, (
             f'场景A失败：脱战且血/蓝/目标均为机密值时应正常淡隐，实际 bar={bar_a_A:.3f}, hud={hud_a_A:.3f}'
         )
+        ih_mod = l_env.eval('_G.kkowoUI.Modules.Get("immersiveHUD")')
+        diag_a = ih_mod.InspectFadeState(ih_mod)
+        assert diag_a.shouldImmerse is True and diag_a.blockedBy is None, (
+            f'/kk fade why 场景A应允许淡隐，实际 blockedBy={diag_a.blockedBy}'
+        )
+        cond_map_a = {c.key: c for c in diag_a.conditions.values()}
+        assert cond_map_a['vitalHealth'].secret is True and cond_map_a['vitalHealth'].blocked is False
+        assert cond_map_a['vitalPower'].secret is True and cond_map_a['vitalPower'].blocked is False
+        assert cond_map_a['hasTarget'].secret is True and cond_map_a['hasTarget'].blocked is False
 
         # Scene B: In combat inside instance with same secret values -> MUST NOT fade (even with disableInInstance=false)
         l_env.execute('_G.kkowoUI.Modules.Get("immersiveHUD"):GetDB().disableInInstance = false')
@@ -2093,6 +2103,15 @@ def run_all():
         hud_a_B = l_env.eval('_G.kkowoUI_CoreHUD and _G.kkowoUI_CoreHUD:GetAlpha() or 1.0')
         assert bar_a_B > 0.95 and hud_a_B > 0.95, (
             f'场景B失败：副本战斗+机密值时绝不能淡隐，实际 bar={bar_a_B:.3f}, hud={hud_a_B:.3f}'
+        )
+        # /kk fade why must work safely in combat (read-only, 0 protected violations)
+        m_env.ClearProtectedViolations()
+        m_env.RunSlash('/kk', 'fade why')
+        viol_b = list(m_env.GetProtectedViolations().values())
+        assert not viol_b, f'/kk fade why 战斗中产生受保护调用违规: {viol_b}'
+        diag_b = ih_mod.InspectFadeState(ih_mod)
+        assert diag_b.shouldImmerse is False and diag_b.blockedBy == 'combatLockdown', (
+            f'/kk fade why 场景B应报告 combatLockdown 挡住，实际 blockedBy={diag_b.blockedBy}'
         )
 
         # Scene C: Out of combat, all plain values, full HP & Mana, no target -> MUST fade

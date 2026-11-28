@@ -620,6 +620,265 @@ do
         F.Print("脱战淡隐已" .. (self:IsEnabled() and "|cff5fd3a6开启|r" or "|cff888888关闭|r") .. "。")
     end
 
+    -- 只读诊断（战斗中 100% 安全，不修改任何框体与状态）：供 /kk fade why 与离线回归使用
+    function mod:InspectFadeState()
+        local db = self:GetDB()
+        local conds = {}
+        local blockers = {}
+
+        local function addCond(key, label, raw, isSecret, blocked, note)
+            conds[#conds + 1] = {
+                key = key,
+                label = label,
+                raw = raw,
+                secret = isSecret == true,
+                blocked = blocked == true,
+                note = note or "",
+            }
+            if blocked then
+                blockers[#blockers + 1] = key
+            end
+        end
+
+        -- 1) 模块总开关
+        local modOn = self:IsEnabled() and mod._active == true
+        addCond("moduleActive", "模块总开关",
+            "enabled=" .. tostring(self:IsEnabled()) .. ", active=" .. tostring(mod._active == true),
+            false, not modOn, modOn and "已启用" or "未启用")
+
+        -- 2) EUI 解锁模式
+        local unlockOn = (_G.EllesmereUI and _G.EllesmereUI._unlockActive == true) == true
+        addCond("unlockMode", "EUI 解锁模式", tostring(unlockOn), false, unlockOn, unlockOn and "解锁拖动中" or "关闭")
+
+        -- 3) 战斗锁定（永不机密）
+        local lockdown = (_G.InCombatLockdown and _G.InCombatLockdown() == true) == true
+        addCond("combatLockdown", "战斗锁定 InCombatLockdown", tostring(lockdown), false, lockdown, lockdown and "战斗中" or "脱战")
+
+        -- 4) 副本判定
+        local inInst, instType, instSec = IsInCombatInstance()
+        local instDisabled = db.disableInInstance ~= false
+        local instBlocked = instDisabled and inInst
+        addCond("instanceInfo", "副本判定 GetInstanceInfo",
+            "type=" .. tostring(instType) .. ", disableInInstance=" .. tostring(instDisabled),
+            instSec, instBlocked,
+            instBlocked and "副本内已禁用淡隐" or (inInst and "副本内(允许淡隐)" or "野外/主城"))
+
+        -- 5) UnitAffectingCombat("player")
+        local uacRaw, uacSec, uacBlocked, uacNote = "unavailable", false, false, "API不可用"
+        if type(_G.UnitAffectingCombat) == "function" then
+            local ok, val = pcall(_G.UnitAffectingCombat, "player")
+            if not ok then
+                uacRaw = "<pcall_err>"
+                uacBlocked = inInst
+                uacNote = inInst and "副本内调用失败→保守拦截" or "调用失败→信任InCombatLockdown"
+            elseif F.IsSecret(val) then
+                uacRaw = "<secret>"
+                uacSec = true
+                uacBlocked = inInst
+                uacNote = inInst and "副本内机密→保守拦截(P3-25)" or "野外机密→跳过(以InCombatLockdown为准)"
+            else
+                uacRaw = tostring(val == true)
+                uacBlocked = (val == true)
+                uacNote = uacBlocked and "单位处于战斗状态" or "非战斗"
+            end
+        end
+        addCond("unitCombat", "单位战斗 UnitAffectingCombat", uacRaw, uacSec, uacBlocked, uacNote)
+
+        -- 6) 首领战
+        local encRaw, encSec, encBlocked, encNote = "false", false, false, "非首领战"
+        if _G.C_InstanceEncounter and type(_G.C_InstanceEncounter.IsEncounterInProgress) == "function" then
+            local ok, val = pcall(_G.C_InstanceEncounter.IsEncounterInProgress)
+            if not ok then
+                encRaw = "<pcall_err>"
+                encNote = "调用失败→跳过"
+            elseif F.IsSecret(val) then
+                encRaw = "<secret>"
+                encSec = true
+                encNote = "机密→跳过"
+            else
+                encRaw = tostring(val == true)
+                encBlocked = (val == true)
+                encNote = encBlocked and "首领战进行中" or "非首领战"
+            end
+        end
+        addCond("encounter", "首领战 IsEncounterInProgress", encRaw, encSec, encBlocked, encNote)
+
+        -- 7) 当前目标 UnitExists("target")
+        local tgtRaw, tgtSec, tgtBlocked, tgtNote = "unavailable", false, false, "API不可用"
+        if type(_G.UnitExists) == "function" then
+            local ok, val = pcall(_G.UnitExists, "target")
+            if not ok then
+                tgtRaw = "<pcall_err>"
+                tgtNote = "调用失败→跳过"
+            elseif F.IsSecret(val) then
+                tgtRaw = "<secret>"
+                tgtSec = true
+                tgtNote = "机密→跳过"
+            else
+                tgtRaw = tostring(val == true)
+                tgtBlocked = (val == true)
+                tgtNote = tgtBlocked and "存在目标" or "无目标"
+            end
+        end
+        addCond("hasTarget", "当前目标 UnitExists(target)", tgtRaw, tgtSec, tgtBlocked, tgtNote)
+
+        -- 8) 玩家施法 / 引导
+        local isCast, castSec = SafeHasCast(_G.UnitCastingInfo, "player")
+        addCond("casting", "玩家施法 UnitCastingInfo", tostring(isCast), castSec, isCast, isCast and "正在施法" or "空闲")
+        local isChan, chanSec = SafeHasCast(_G.UnitChannelInfo, "player")
+        addCond("channeling", "玩家引导 UnitChannelInfo", tostring(isChan), chanSec, isChan, isChan and "正在引导" or "空闲")
+
+        -- 9) 大地图
+        local mapOpen = (_G.WorldMapFrame and SafeBoolCall(_G.WorldMapFrame.IsShown, _G.WorldMapFrame)) == true
+        addCond("worldMap", "世界地图 WorldMapFrame", tostring(mapOpen), false, mapOpen, mapOpen and "大地图已打开" or "未打开")
+
+        -- 10) 玩家血量
+        local hpThr = db.hpThreshold or 95
+        local hpRaw, hpSec, hpBlocked, hpNote = "unavailable", false, false, "API不可用"
+        if _G.UnitHealth and _G.UnitHealthMax then
+            local okH, rawHp = pcall(_G.UnitHealth, "player")
+            local okM, rawMax = pcall(_G.UnitHealthMax, "player")
+            if not okH or not okM then
+                hpRaw = "<pcall_err>"
+                hpNote = "调用失败→跳过"
+            elseif F.IsSecret(rawHp) or F.IsSecret(rawMax) then
+                hpRaw = (F.IsSecret(rawHp) and "<secret>" or tostring(rawHp))
+                    .. "/" .. (F.IsSecret(rawMax) and "<secret>" or tostring(rawMax))
+                hpSec = true
+                hpNote = "机密→跳过"
+            else
+                local hp = F.PlainNumber(rawHp, nil)
+                local hpMax = F.PlainNumber(rawMax, nil)
+                if hp and hpMax and hpMax > 0 then
+                    local pct = hp / hpMax * 100
+                    hpRaw = tostring(math_floor(hp)) .. "/" .. tostring(math_floor(hpMax))
+                        .. " (" .. tostring(math_floor(pct + 0.5)) .. "%)"
+                    hpBlocked = pct < hpThr
+                    hpNote = hpBlocked and ("低于阈值 " .. tostring(hpThr) .. "%") or ("达标 >=" .. tostring(hpThr) .. "%")
+                else
+                    hpRaw = tostring(rawHp) .. "/" .. tostring(rawMax)
+                    hpNote = "无有效上限→跳过"
+                end
+            end
+        end
+        addCond("vitalHealth", "玩家血量 UnitHealth", hpRaw, hpSec, hpBlocked, hpNote)
+
+        -- 11) 玩家能量
+        local mpThr = db.powerThreshold or 85
+        local mpRaw, mpSec, mpBlocked, mpNote = "unavailable", false, false, "API不可用"
+        if _G.UnitPowerType then
+            local okPT, rawPT = pcall(_G.UnitPowerType, "player")
+            if not okPT then
+                mpRaw = "pType=<pcall_err>"
+                mpNote = "能量类型读取失败→跳过"
+            elseif F.IsSecret(rawPT) then
+                mpRaw = "pType=<secret>"
+                mpSec = true
+                mpNote = "能量类型机密→跳过"
+            else
+                local pType = F.PlainNumber(rawPT, nil)
+                if pType ~= 0 then
+                    mpRaw = "pType=" .. tostring(pType) .. " (非蓝条)"
+                    mpNote = "非蓝条职业免检"
+                elseif _G.UnitPower and _G.UnitPowerMax then
+                    local okP, rawMp = pcall(_G.UnitPower, "player", 0)
+                    local okPM, rawMpMax = pcall(_G.UnitPowerMax, "player", 0)
+                    if not okP or not okPM then
+                        mpRaw = "MANA <pcall_err>"
+                        mpNote = "蓝量读取失败→跳过"
+                    elseif F.IsSecret(rawMp) or F.IsSecret(rawMpMax) then
+                        mpRaw = "MANA " .. (F.IsSecret(rawMp) and "<secret>" or tostring(rawMp))
+                            .. "/" .. (F.IsSecret(rawMpMax) and "<secret>" or tostring(rawMpMax))
+                        mpSec = true
+                        mpNote = "蓝量机密→跳过"
+                    else
+                        local mp = F.PlainNumber(rawMp, nil)
+                        local mpMax = F.PlainNumber(rawMpMax, nil)
+                        if mp and mpMax and mpMax > 0 then
+                            local pct = mp / mpMax * 100
+                            mpRaw = "MANA " .. tostring(math_floor(mp)) .. "/" .. tostring(math_floor(mpMax))
+                                .. " (" .. tostring(math_floor(pct + 0.5)) .. "%)"
+                            mpBlocked = pct < mpThr
+                            mpNote = mpBlocked and ("低于阈值 " .. tostring(mpThr) .. "%") or ("达标 >=" .. tostring(mpThr) .. "%")
+                        else
+                            mpRaw = "MANA " .. tostring(rawMp) .. "/" .. tostring(rawMpMax)
+                            mpNote = "无有效蓝上限→跳过"
+                        end
+                    end
+                end
+            end
+        end
+        addCond("vitalPower", "玩家能量 UnitPower", mpRaw, mpSec, mpBlocked, mpNote)
+
+        local managedList = {}
+        for f in pairs(managed) do
+            if f and not (f.IsForbidden and f:IsForbidden()) then
+                local nm = (f.GetName and F.PlainString(f:GetName(), nil)) or "<anon>"
+                local curA = f.GetAlpha and F.PlainNumber(f:GetAlpha(), nil) or nil
+                managedList[#managedList + 1] = {
+                    name = nm,
+                    alpha = curA,
+                    desired = desiredAlpha[f],
+                    rest = restAlpha[f] or 1.0,
+                    over = SafeIsMouseOver(f),
+                }
+            end
+        end
+
+        return {
+            enabled = self:IsEnabled(),
+            active = mod._active == true,
+            isImmersiveNow = isImmersiveNow == true,
+            idleAlpha = db.idleAlpha or 0.28,
+            disableInInstance = instDisabled,
+            shouldImmerse = #blockers == 0,
+            blockedBy = blockers[1],
+            blockers = blockers,
+            conditions = conds,
+            managedCount = #managedList,
+            managedFrames = managedList,
+        }
+    end
+
+    function mod:PrintFadeWhy()
+        local info = self:InspectFadeState()
+        local verdict = info.shouldImmerse
+            and "|cff52d669允许淡隐|r"
+            or ("|cffff5555被挡住(" .. table.concat(info.blockers, ", ") .. ")|r")
+        F.Print("脱战淡隐诊断（只读）：总开关=" .. (info.enabled and "|cff52d669开|r" or "|cff888888关|r")
+            .. " | 激活=" .. tostring(info.active)
+            .. " | 当前淡隐态=" .. tostring(info.isImmersiveNow)
+            .. " | 目标透明度=" .. tostring(info.idleAlpha)
+            .. " | 已接管框体=" .. tostring(info.managedCount)
+            .. " | 判定=" .. verdict)
+        for _, c in ipairs(info.conditions) do
+            local tag
+            if c.blocked then
+                tag = "|cffff5555[挡住]|r"
+            elseif c.secret then
+                tag = "|cffffd166[机密·跳过]|r"
+            else
+                tag = "|cff52d669[通过]|r"
+            end
+            _G.print("  " .. tag .. " " .. c.label .. " = " .. tostring(c.raw)
+                .. (c.secret and " (secret=true)" or " (secret=false)")
+                .. (c.note ~= "" and (" — " .. c.note) or ""))
+        end
+        if info.managedCount > 0 then
+            local parts = {}
+            local lim = math_min(info.managedCount, 8)
+            for i = 1, lim do
+                local m = info.managedFrames[i]
+                local aStr = m.alpha and string.format("%.2f", m.alpha) or "?"
+                local dStr = m.desired and string.format("%.2f", m.desired) or "-"
+                parts[#parts + 1] = m.name .. "(" .. aStr .. "→" .. dStr .. (m.over and ",悬停" or "") .. ")"
+            end
+            _G.print("  |cffdca77f已接管框体|r：" .. table.concat(parts, ", ")
+                .. (info.managedCount > lim and (" ...共" .. tostring(info.managedCount) .. "个") or ""))
+        end
+        return info
+    end
+
     function mod:OnEnable()
         local EUI = _G.EllesmereUI
         if not unlockHooked and EUI and EUI.RegisterUnlockModeListener then
