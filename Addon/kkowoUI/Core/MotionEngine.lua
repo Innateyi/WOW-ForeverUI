@@ -691,8 +691,8 @@ function M.StopFrameAnims(frame)
     end
 end
 
--- 5a) 完成白闪 + 轻上浮平滑淡出（0.22s）
-function M.PlayFlashFade(frame, duration, liftY, onDone)
+-- 5a) 完成白闪 + 轻上浮平滑淡出（0.22s；可选 holdDelay 实现先亮闪再淡出）
+function M.PlayFlashFade(frame, duration, liftY, onDone, holdDelay, startAlpha)
     if not (frame and frame.CreateAnimationGroup) then return end
     M.StopFrameAnims(frame)
     local ag, cache = GetSlot(frame, "flashFade")
@@ -714,23 +714,30 @@ function M.PlayFlashFade(frame, duration, liftY, onDone)
             if self._onDone then self._onDone() end
         end)
         ag:SetScript("OnStop", function()
+            frame:Hide()
             frame:SetAlpha(1)
         end)
         cache.flashFade = ag
     end
     local dur = duration or 0.22
+    local delay = holdDelay or 0
+    local fromA = startAlpha or 1
     ag:Stop()
     ag._onDone = onDone
     ag._move:SetOffset(0, liftY or 5)
+    ag._move:SetStartDelay(delay)
     ag._move:SetDuration(dur)
+    ag._fade:SetFromAlpha(fromA)
+    ag._fade:SetToAlpha(0)
+    ag._fade:SetStartDelay(delay)
     ag._fade:SetDuration(dur)
-    frame:SetAlpha(1)
+    frame:SetAlpha(fromA)
     frame:Show()
     ag:Play()
 end
 
--- 5b) 打断警示短促水平抖动（±4px, 0.18s）+ 淡出
-function M.PlayInterruptShake(frame, amplitude, duration, onDone)
+-- 5b) 打断警示短促水平抖动（±4px, 0.18s）+ 停留 + 淡出（任何退出路径严格 Hide）
+function M.PlayInterruptShake(frame, amplitude, duration, onDone, holdDelay, fadeDur)
     if not (frame and frame.CreateAnimationGroup) then return end
     M.StopFrameAnims(frame)
     local ag, cache = GetSlot(frame, "shake")
@@ -754,6 +761,7 @@ function M.PlayInterruptShake(frame, amplitude, duration, onDone)
             if self._onDone then self._onDone() end
         end)
         ag:SetScript("OnStop", function()
+            frame:Hide()
             frame:SetAlpha(1)
         end)
         cache.shake = ag
@@ -766,8 +774,8 @@ function M.PlayInterruptShake(frame, amplitude, duration, onDone)
     ag._steps[2]:SetOffset(amp * 2, 0); ag._steps[2]:SetDuration(stepDur)
     ag._steps[3]:SetOffset(-amp * 1.6, 0); ag._steps[3]:SetDuration(stepDur)
     ag._steps[4]:SetOffset(amp * 0.6, 0); ag._steps[4]:SetDuration(stepDur)
-    ag._fade:SetDuration(0.24)
-    ag._fade:SetStartDelay(0.06)
+    ag._fade:SetDuration(fadeDur or 0.24)
+    ag._fade:SetStartDelay(holdDelay ~= nil and holdDelay or 0.06)
     frame:SetAlpha(1)
     frame:Show()
     ag:Play()

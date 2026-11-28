@@ -689,8 +689,8 @@ end
 local function SpawnGhostFeedback(kind)
     if not (overlay and ghostFrame) then return end
     local db = mod:GetDB()
-    if kind == "success" and db.finishFlash == false then return end
-    if kind == "interrupt" and db.interruptShake == false then return end
+    if (kind == "success" or kind == "channel_end") and db.finishFlash == false then return end
+    if (kind == "interrupt" or kind == "failed") and db.interruptShake == false then return end
 
     local bh = overlay._barHost
     local w = F.PlainNumber(bh:GetWidth(), 220) or 220
@@ -710,18 +710,56 @@ local function SpawnGhostFeedback(kind)
     end
 
     M.StopFrameAnims(ghostFrame)
+    local polished = ST.IsFXEnabled("fx_castFinish")
+    if not polished then
+        -- 开关关闭时严格恢复改动前的两种反馈表现
+        if kind == "success" or kind == "channel_end" then
+            local _, _, _, r2, g2, b2 = ST.GetClassGradient()
+            ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", r2, g2, b2, 0.95, 1, 1, 1, 1)
+            ghostFrame._label:SetText(castState.spellName or "")
+            ghostFrame._label:SetTextColor(1, 1, 1, 0.95)
+            M.PlayFlashFade(ghostFrame, 0.22, 5)
+        else
+            local ic = ST.COLORS.interrupt
+            ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", ic[1], ic[2], ic[3], ic[4], ic[1], ic[2], ic[3], ic[4])
+            ghostFrame._label:SetText("已打断")
+            ghostFrame._label:SetTextColor(1, 0.45, 0.48, 1)
+            M.PlayInterruptShake(ghostFrame, 4, 0.18)
+        end
+        return
+    end
+
+    local isSoft = ST.GetFXIntensity() == "soft"
+    local alphaScale = isSoft and 0.68 or 1.0
+
     if kind == "success" then
+        -- 成功：约 0.15s 亮闪停留，再用约 0.16s 轻上浮淡出
         local _, _, _, r2, g2, b2 = ST.GetClassGradient()
-        ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", r2, g2, b2, 0.95, 1, 1, 1, 1)
+        ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", r2, g2, b2, 0.92 * alphaScale, 1, 1, 1, 0.98 * alphaScale)
         ghostFrame._label:SetText(castState.spellName or "")
-        ghostFrame._label:SetTextColor(1, 1, 1, 0.95)
-        M.PlayFlashFade(ghostFrame, 0.22, 5)
+        ghostFrame._label:SetTextColor(1, 1, 1, 0.96)
+        M.PlayFlashFade(ghostFrame, 0.16, isSoft and 3 or 5, nil, 0.15, alphaScale)
+    elseif kind == "channel_end" then
+        -- 引导结束：柔和淡出，无刺眼白闪
+        local cc = ST.COLORS.channel
+        ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", cc[1] * 0.8, cc[2] * 0.88, cc[3] * 0.92, 0.78 * alphaScale, cc[1], cc[2], cc[3], 0.82 * alphaScale)
+        ghostFrame._label:SetText(castState.spellName or "")
+        ghostFrame._label:SetTextColor(0.84, 0.96, 0.94, 0.88)
+        M.PlayFlashFade(ghostFrame, 0.20, isSoft and 1.5 or 2.5, nil, 0, 0.82 * alphaScale)
+    elseif kind == "failed" then
+        -- 失败：与被打断区分开，更淡、更短、不重抖
+        local ic = ST.COLORS.interrupt
+        ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", ic[1] * 0.85, ic[2] * 0.85, ic[3] * 0.85, 0.65 * alphaScale, ic[1] * 0.95, ic[2] * 0.90, ic[3] * 0.85, 0.65 * alphaScale)
+        ghostFrame._label:SetText("施法失败")
+        ghostFrame._label:SetTextColor(1, 0.68, 0.62, 0.90)
+        M.PlayFlashFade(ghostFrame, 0.18, 0, nil, 0.08, 0.72 * alphaScale)
     else
+        -- 被打断：打断色停留约 0.50s，柔和强度抖动幅度减半（±2px vs ±4px），结束后严格 Hide
         local ic = ST.COLORS.interrupt
         ST.ApplyGradient(ghostFrame._fill, "HORIZONTAL", ic[1], ic[2], ic[3], ic[4], ic[1], ic[2], ic[3], ic[4])
         ghostFrame._label:SetText("已打断")
         ghostFrame._label:SetTextColor(1, 0.45, 0.48, 1)
-        M.PlayInterruptShake(ghostFrame, 4, 0.18)
+        M.PlayInterruptShake(ghostFrame, isSoft and 2 or 4, 0.18, nil, 0.50, 0.20)
     end
 end
 
@@ -1018,7 +1056,7 @@ function mod:OnEnable()
         if sid and castState.spellID and sid ~= castState.spellID then return end
         if castState.active and not castState.isChannel then
             if F.UnitIsCasting("player") then return end
-            StopCast("interrupt", castGUID)
+            StopCast("failed", castGUID)
         end
     end)
     self:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "player", function(_, _, _, castGUID, spellID)
@@ -1030,7 +1068,7 @@ function mod:OnEnable()
     end)
     self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player", function()
         if castState.active and castState.isChannel then
-            StopCast("success", nil)
+            StopCast("channel_end", nil)
         end
     end)
     self:RegisterEvent("PLAYER_ENTERING_WORLD", function()
