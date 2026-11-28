@@ -10,6 +10,17 @@ local _aurasSecret = false
 local _secretAPIs = {}
 local _zeroReturnAPIs = {}
 local _mouseFoci = {}
+local _cursorX, _cursorY = 960, 540
+local _mouselooking = false
+local _userWaypoint = nil
+local _superTrackWp = false
+local _superTrackQuestID = 0
+local _navProjector = nil
+local _navLatencyFrames = 0
+local _navPendingWp = nil
+local _navAppliedWp = nil
+local _navPendingAge = 0
+local _navFrame = nil
 local _locale = "zhCN"
 local _eventListeners = {}
 local _timers = {}
@@ -373,7 +384,8 @@ function RegionProto:Raise() end
 function RegionProto:Lower() end
 function RegionProto:SetClampedToScreen() end
 function RegionProto:SetClampRectInsets() end
-function RegionProto:SetClipsChildren() end
+function RegionProto:SetClipsChildren(v) self._clipsChildren = (v == true) end
+function RegionProto:DoesClipChildren() return self._clipsChildren == true end
 function RegionProto:EnableMouse(on)
     if self._protected then recordProtected("EnableMouse", self) end
     local v = (on == true)
@@ -615,8 +627,31 @@ function RegionProto:SetTexelSnappingBias() end
 function RegionProto:SetBlockingLoadsRequested() end
 function RegionProto:SetTextureSliceMargins() end
 function RegionProto:SetTextureSliceMode() end
-function RegionProto:AddMaskTexture() end
-function RegionProto:RemoveMaskTexture() end
+function RegionProto:AddMaskTexture(m)
+    if not m then return end
+    self._masks = self._masks or {}
+    for i = 1, #self._masks do
+        if self._masks[i] == m then return end
+    end
+    self._masks[#self._masks + 1] = m
+end
+function RegionProto:RemoveMaskTexture(m)
+    if not (m and self._masks) then return end
+    for i = #self._masks, 1, -1 do
+        if self._masks[i] == m then
+            table.remove(self._masks, i)
+        end
+    end
+end
+function RegionProto:GetNumMaskTextures()
+    return self._masks and #self._masks or 0
+end
+function RegionProto:GetMaskTexture(i)
+    return self._masks and self._masks[i or 1] or nil
+end
+function RegionProto:IsObjectLoaded()
+    return self._notLoaded ~= true
+end
 function RegionProto:SetFont(p, sz, fl) self._font = { p, sz, fl }; return true end
 function RegionProto:GetFont() return self._font[1], self._font[2], self._font[3] end
 function RegionProto:SetFontObject() end
@@ -798,6 +833,7 @@ DebuffFrame = CreateFrame("Frame", "DebuffFrame", UIParent)
 MainMenuBar = CreateFrame("Frame", "MainMenuBar", UIParent)
 ChatFrame1 = CreateFrame("ScrollingMessageFrame", "ChatFrame1", UIParent)
 ChatFrame1:SetID(1)
+UIErrorsFrame = CreateFrame("Frame", "UIErrorsFrame", UIParent)
 ChatFrame1EditBox = CreateFrame("EditBox", "ChatFrame1EditBox", UIParent); ChatFrame1EditBox:Hide()
 ChatFrame1Tab = CreateFrame("Button", "ChatFrame1Tab", UIParent)
 ChatFrame1Tab:SetScript("OnClick", function() FCFDock_SelectWindow(GENERAL_CHAT_DOCK, ChatFrame1) end)
@@ -1199,6 +1235,29 @@ function UnitHealthPercent(unit, scaleTo100, curve)
     if curve and curve.Evaluate then return curve:Evaluate(frac) end
     return scaleTo100 and (frac * 100) or frac
 end
+function UnitPowerPercent(unit, powerType, scaleTo100, curve)
+    local cur = UnitPower(unit, powerType)
+    local mx = UnitPowerMax(unit, powerType)
+    if _secretSentinels[cur] or _secretSentinels[mx] then
+        return newSecretSentinel("powerPct")
+    end
+    local frac = (mx and mx > 0) and (cur / mx) or 0
+    if curve and curve.Evaluate then return curve:Evaluate(frac) end
+    return scaleTo100 and (frac * 100) or frac
+end
+function GetCursorPosition() return _cursorX, _cursorY end
+function IsMouselooking() return _mouselooking == true end
+function CreateVector2D(x, y)
+    return { x = x or 0, y = y or 0, GetXY = function(self) return self.x, self.y end }
+end
+UiMapPoint = {
+    CreateFromCoordinates = function(mapID, x, y)
+        return { uiMapID = mapID, position = CreateVector2D(x, y) }
+    end,
+    CreateFromVector2D = function(mapID, vec)
+        return { uiMapID = mapID, position = vec }
+    end,
+}
 function GetRaidTargetIndex() return nil end
 function IsInGroup() return false end
 function IsInRaid() return false end
@@ -1315,20 +1374,102 @@ C_QuestLog = {
     GetQuestObjectives = function() return {} end,
     IsQuestTrivial = function() return false end,
 }
+local function EnsureNavFrame()
+    if not _navFrame then
+        _navFrame = CreateFrame("Frame", "SuperTrackedFrame", UIParent)
+        _navFrame:SetSize(24, 24)
+        _navFrame.GetCenter = function(self)
+            if self._projX ~= nil and self._projY ~= nil then
+                return self._projX, self._projY
+            end
+            return 960, 540
+        end
+    end
+    return _navFrame
+end
+
+local function SyncNavProjection()
+    local nf = EnsureNavFrame()
+    local wp = _navAppliedWp
+    if _navProjector and wp and wp.position then
+        local ok, sx, sy, dist, valid, clamped = pcall(_navProjector, wp)
+        if ok then
+            nf._projValid = (valid ~= false)
+            nf._projClamped = (clamped == true)
+            nf._projDist = dist
+            if sx ~= nil and sy ~= nil then
+                nf._projX = sx
+                nf._projY = sy
+            end
+            return
+        end
+    end
+    nf._projValid = false
+    nf._projClamped = false
+    nf._projDist = nil
+end
+
 C_Map = {
     GetBestMapForUnit = function() return 1411 end,
     GetMapInfo = function(id) return { mapID = id, name = "杜隆塔尔", mapType = 3 } end,
     GetAreaInfo = function() return "杜隆塔尔" end,
-    GetUserWaypoint = function() return nil end,
-    HasUserWaypoint = function() return false end,
-    SetUserWaypoint = function() end,
-    ClearUserWaypoint = function() end,
+    GetMapWorldSize = function() return 1000, 1000 end,
+    GetPlayerMapPosition = function() return CreateVector2D(0.5, 0.5) end,
+    CanSetUserWaypointOnMap = function() return true end,
+    GetUserWaypoint = function() return _userWaypoint end,
+    HasUserWaypoint = function() return _userWaypoint ~= nil end,
+    SetUserWaypoint = function(pt)
+        _userWaypoint = pt
+        if _navLatencyFrames <= 0 then
+            _navAppliedWp = pt
+            _navPendingWp = nil
+            _navPendingAge = 0
+            SyncNavProjection()
+        else
+            _navPendingWp = pt
+            _navPendingAge = 0
+        end
+        M.FireEvent("USER_WAYPOINT_UPDATED")
+    end,
+    ClearUserWaypoint = function()
+        _userWaypoint = nil
+        _navPendingWp = nil
+        _navAppliedWp = nil
+        _navPendingAge = 0
+        SyncNavProjection()
+        M.FireEvent("USER_WAYPOINT_UPDATED")
+    end,
 }
 C_SuperTrack = {
-    IsSuperTrackingAnything = function() return false end,
-    IsSuperTrackingUserWaypoint = function() return false end,
-    SetSuperTrackedUserWaypoint = function() end,
-    GetHighestPrioritySuperTrackingType = function() return nil end,
+    IsSuperTrackingAnything = function() return _superTrackWp or (_superTrackQuestID and _superTrackQuestID > 0) end,
+    IsSuperTrackingUserWaypoint = function() return _superTrackWp == true end,
+    SetSuperTrackedUserWaypoint = function(v)
+        _superTrackWp = (v == true)
+        if _superTrackWp then _superTrackQuestID = 0 end
+    end,
+    GetSuperTrackedQuestID = function() return _superTrackQuestID or 0 end,
+    SetSuperTrackedQuestID = function(qid)
+        _superTrackQuestID = qid or 0
+        if _superTrackQuestID > 0 then _superTrackWp = false end
+    end,
+    GetHighestPrioritySuperTrackingType = function()
+        if _superTrackWp then return Enum.SuperTrackingType.UserWaypoint end
+        return nil
+    end,
+}
+C_Navigation = {
+    GetFrame = function()
+        return EnsureNavFrame()
+    end,
+    HasValidScreenPosition = function()
+        return _navFrame ~= nil and _navFrame._projValid == true
+    end,
+    WasClampedToScreen = function()
+        return _navFrame ~= nil and _navFrame._projClamped == true
+    end,
+    GetDistance = function()
+        return _navFrame and _navFrame._projDist or nil
+    end,
 }
 C_Spell = {
     GetSpellInfo = function() return nil end,
@@ -1365,6 +1506,9 @@ Enum = {
     UnitIncomingHealClampMode = { MissingHealth = 0, MaximumHealth = 1 },
     UnitMaximumHealthMode = { Default = 0, WithAbsorbs = 1 },
     CurveType = { Linear = 0, Step = 1 },
+    LuaCurveType = { Linear = 0, Step = 1 },
+    PowerType = { Mana = 0, Rage = 1, Focus = 2, Energy = 3, ComboPoints = 4, RunicPower = 6 },
+    TooltipDataType = { Item = 0, Spell = 1, Unit = 2 },
 }
 
 -- LibStub + LibSharedMedia-3.0 mock
@@ -1529,6 +1673,18 @@ function M.SetMockHealPrediction(unit, tbl)
     end
 end
 function M.SetMouseFoci(list) _mouseFoci = type(list) == "table" and list or {} end
+function M.SetCursorPosition(x, y) _cursorX, _cursorY = x or 960, y or 540 end
+function M.SetMouselooking(v) _mouselooking = (v == true) end
+function M.SetNavProjector(fn, latencyFrames)
+    _navProjector = fn
+    _navLatencyFrames = latencyFrames or 0
+    if _navLatencyFrames <= 0 then
+        _navAppliedWp = _userWaypoint
+        _navPendingWp = nil
+        _navPendingAge = 0
+    end
+    SyncNavProjection()
+end
 function M.SetActiveRolls(map)
     _activeRolls = {}
     if type(map) == "table" then
@@ -1544,6 +1700,16 @@ function M.ResetScenario()
     _secretAPIs = {}
     _zeroReturnAPIs = {}
     _mouseFoci = {}
+    _cursorX, _cursorY = 960, 540
+    _mouselooking = false
+    _userWaypoint = nil
+    _superTrackWp = false
+    _superTrackQuestID = 0
+    _navProjector = nil
+    _navLatencyFrames = 0
+    _navPendingWp = nil
+    _navAppliedWp = nil
+    _navPendingAge = 0
     _activeRolls = {}
     _mockHealPred = {}
     _protectedViolations = {}
@@ -1562,6 +1728,15 @@ function M.CreateForbiddenPlate()
 end
 function M.TickOnUpdates(dt)
     dt = dt or 0.1
+    if _navPendingWp ~= nil then
+        _navPendingAge = _navPendingAge + 1
+        if _navPendingAge >= _navLatencyFrames then
+            _navAppliedWp = _navPendingWp
+            _navPendingWp = nil
+            _navPendingAge = 0
+            SyncNavProjection()
+        end
+    end
     for i = 1, #_allFrames do
         local f = _allFrames[i]
         if f and f._scripts and f._scripts.OnUpdate and f:IsVisible() then

@@ -3572,6 +3572,948 @@ def run_all():
 
     check('副本反馈五项修复回归校验（报错/圆角/法术书/光环/回蓝）', t_post_dungeon_fixes)
 
+    # 30. 综合回归-01：静态检查器自测（Tools/check.js 0 错误 0 警告）
+    def t_reg_01_check_js():
+        proc = subprocess.run(
+            ['node', str(REPO / 'Tools' / 'check.js')],
+            cwd=str(REPO),
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+        )
+        assert proc.returncode == 0, f'check.js 退出码非 0 ({proc.returncode}): {proc.stdout}\n{proc.stderr}'
+        assert '0 个错误，0 个警告' in proc.stdout, f'check.js 未输出 0 错误 0 警告: {proc.stdout}'
+        return 'Tools/check.js 返回 0（0 错误 0 警告）'
+
+    check('综合回归-01：静态检查器自测（check.js 0/0）', t_reg_01_check_js)
+
+    # 31. 综合回归-02：RollBars:OnRefresh() 活跃 Roll 条不报 math_max nil 且 CloseBar 状态归零
+    def t_reg_02_rollbars_refresh():
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(1.0, 2)
+
+        m_env.SetActiveRolls(l_env.table_from({
+            77: l_env.table_from({'name': '毁灭之刃', 'quality': 4, 'tex': 135489, 'endAt': 200.0})
+        }))
+        m_env.FireEvent('START_LOOT_ROLL', 77, 60000)
+        m_env.StepTime(0.1, 1)
+
+        res = l_env.eval('''(function()
+            local rb = kkowoUI.Modules.Get("rollBars")
+            local okR, errR = pcall(rb.OnRefresh, rb)
+            local c = _G.kkowoUI_RollBars
+            local activeBar = nil
+            for _, ch in ipairs({ c:GetChildren() }) do
+                if ch:IsShown() and ch.status then activeBar = ch; break end
+            end
+            return { okR = okR, errR = tostring(errR or ""), hasBar = activeBar ~= nil }
+        end)()''')
+        assert res.okR and res.hasBar, f'RollBars:OnRefresh() 在活跃条期间失败: {res}'
+
+        m_env.SetActiveRolls(l_env.table())
+        m_env.FireEvent('CANCEL_LOOT_ROLL', 77)
+        m_env.StepTime(0.1, 1)
+        closed = l_env.eval('''(function()
+            local c = _G.kkowoUI_RollBars
+            for _, ch in ipairs({ c:GetChildren() }) do
+                if ch.status then
+                    if ch:IsShown() or ch._nativeTimer == true or ch._totalDur ~= nil
+                        or ch._lastSec ~= nil or ch:GetScript("OnUpdate") ~= nil then
+                        return { clean = false, shown = ch:IsShown(), native = ch._nativeTimer, tot = ch._totalDur, sec = ch._lastSec, ou = ch:GetScript("OnUpdate") ~= nil }
+                    end
+                end
+            end
+            return { clean = true }
+        end)()''')
+        assert closed.clean is True, f'CloseBar 后字段未完全归零: {closed}'
+        return 'RollBars 活跃条 OnRefresh 零报错 + CloseBar 全状态归零通过'
+
+    check('综合回归-02：RollBars:OnRefresh() 与 CloseBar 状态归零', t_reg_02_rollbars_refresh)
+
+    # 32. 综合回归-03：NameplateMotion 目标消失与 ResetPlateFX 残留圆角描边清理
+    def t_reg_03_nameplate_outline_clear():
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(1.0, 2)
+
+        l_env.execute('''
+            local p = CreateFrame("Frame", "MockNP_Reg3", UIParent)
+            p:SetSize(130, 14)
+            p.health = CreateFrame("StatusBar", nil, p)
+            p.health:SetSize(130, 14)
+            p.health:SetStatusBarTexture("Interface\\\\Buttons\\\\WHITE8x8")
+            p._npRounded = true
+            p.unit = "nameplate1"
+            p:Show()
+            _G._reg3Plate = p
+            EllesmereUI._ModuleNS.EllesmereUINameplates = {
+                plates = { nameplate1 = p },
+                ENP = { db = { profile = { cornerRadius = 6 } } },
+            }
+            UnitExists = function(u) return u == "player" or u == "target" end
+            UnitIsUnit = function(a, b) return (a == "nameplate1" and b == "target") or (a == "target" and b == "nameplate1") end
+            kkowoUI.Modules.Get("nameplateMotion"):OnRefresh()
+        ''')
+        m_env.StepTime(0.5, 5)
+        applied = l_env.eval('''(function()
+            local h = _G._reg3Plate.health
+            for _, ch in ipairs({ h:GetChildren() }) do
+                if ch._tex and ch:IsShown() then return true end
+            end
+            return false
+        end)()''')
+        assert applied is True, '目标姓名板完成描边后应在 plate.health 上应用圆角描边'
+
+        # Clear target -> RefreshAllPlates(anyTarget == false) must clear outlineRoundedBorder
+        l_env.execute('UnitExists = function(u) return u == "player" end; UnitIsUnit = function() return false end')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.1, 1)
+        after_clear = l_env.eval('''(function()
+            local h = _G._reg3Plate.health
+            local borderShown = false
+            for _, ch in ipairs({ h:GetChildren() }) do
+                if ch._tex and ch:IsShown() then borderShown = true end
+            end
+            return { borderShown = borderShown }
+        end)()''')
+        assert not after_clear.borderShown, f'目标消失后 plate.health 残留圆角描边: {after_clear}'
+
+        # Re-target then Disable (triggers ResetPlateFX) -> must also clear rounded border cleanly
+        l_env.execute('''
+            UnitExists = function(u) return u == "player" or u == "target" end
+            UnitIsUnit = function(a, b) return (a == "nameplate1" and b == "target") or (a == "target" and b == "nameplate1") end
+        ''')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.5, 5)
+        assert l_env.eval('''(function()
+            for _, ch in ipairs({ _G._reg3Plate.health:GetChildren() }) do
+                if ch._tex and ch:IsShown() then return true end
+            end
+            return false
+        end)()''') is True
+        l_env.execute('kkowoUI.Modules.Get("nameplateMotion"):Disable()')
+        after_reset = l_env.eval('''(function()
+            local h = _G._reg3Plate.health
+            local borderShown = false
+            for _, ch in ipairs({ h:GetChildren() }) do
+                if ch._tex and ch:IsShown() then borderShown = true end
+            end
+            return { borderShown = borderShown }
+        end)()''')
+        assert not after_reset.borderShown, f'ResetPlateFX 后 plate.health 残留圆角描边: {after_reset}'
+        return 'RefreshAllPlates(无目标) 与 ResetPlateFX 均彻底清理圆角描边'
+
+    check('综合回归-03：NameplateMotion 残留圆角描边清理', t_reg_03_nameplate_outline_clear)
+
+    # 33. 综合回归-04：MotionEngine 遮罩宿主(maskHost)、rad=0 卸载与 targetArrive 同帧竞争防护
+    def t_reg_04_motion_maskhost_and_arrive_race():
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+
+        chk = l_env.eval('''(function()
+            local M = kkowoUI.Motion
+            local ST = kkowoUI.StyleTokens
+            local holder = CreateFrame("Frame", nil, UIParent)
+            holder:SetSize(160, 18)
+            local sb = CreateFrame("StatusBar", nil, holder)
+            sb:SetAllPoints(holder)
+            sb:SetStatusBarTexture(ST.TEX.FLAT)
+            sb:SetMinMaxValues(0, 1000)
+            sb:SetValue(600)
+
+            local hp = M.AttachHealPrediction(sb, { maskHost = holder, reverse = false })
+            local hfOk = M.TriggerBarHitFlash(sb, "heal", { maskHost = holder, radius = 6 })
+            local hFill = hp._healBar:GetStatusBarTexture()
+            local overM = hp._overMark
+            local m1 = hFill:GetMaskTexture(1)
+            local m2 = overM:GetMaskTexture(1)
+            local sbHasMask = false
+            for _, r in ipairs({ sb:GetRegions() }) do
+                if r.GetObjectType and r:GetObjectType() == "MaskTexture" then sbHasMask = true end
+            end
+            local maskOnHolder = (m1 ~= nil and m1:GetParent() == holder)
+                and (m2 ~= nil and m2:GetParent() == holder)
+                and (not sbHasMask)
+            local maskedBefore = (hFill:GetNumMaskTextures() == 1) and (overM:GetNumMaskTextures() == 1)
+
+            -- Switch radius to 0 -> unmask cleanly without leaving stale masks
+            local mdb = kkowoUI.Modules.Get("motionFX"):GetDB()
+            local prevRad = mdb.cornerRadius
+            mdb.cornerRadius = 0
+            hp:SyncLayout(true)
+            M.SyncBarHitFlashMask(sb, holder, 0)
+            local maskedAfterZero = (hFill:GetNumMaskTextures() == 0) and (overM:GetNumMaskTextures() == 0)
+            mdb.cornerRadius = prevRad
+
+            -- targetArrive same-frame CancelBarArriveGlide race check
+            local trail = M.AttachHealthTrail(sb, { delay = 0.16 })
+            M.PlayBarArriveGlide(sb, 1000, 1000, trail)
+            local glideStart = sb:GetValue()
+            -- Same frame: UNIT_HEALTH arrives -> CancelBarArriveGlide + SetValue(420)
+            M.CancelBarArriveGlide(sb)
+            sb:SetValue(420)
+            _G._reg4SB = sb
+            return {
+                hfOk = hfOk,
+                maskOnHolder = maskOnHolder,
+                maskedBefore = maskedBefore,
+                maskedAfterZero = maskedAfterZero,
+                glideStart = glideStart,
+            }
+        end)()''')
+        m_env.StepTime(0.05, 1)
+        val_after = float(l_env.eval('_G._reg4SB:GetValue()'))
+        assert chk.hfOk and chk.maskOnHolder and chk.maskedBefore and chk.maskedAfterZero, f'maskHost 挂载/归零卸载校验失败: {chk}'
+        assert abs(float(chk.glideStart) - 550.0) < 1.0 and abs(val_after - 420.0) < 0.01, (
+            f'CancelBarArriveGlide 同帧竞争校验失败: start={chk.glideStart}, after={val_after}'
+        )
+        return 'maskHost 挂载+rad=0 卸载 + targetArrive 同帧取消防覆盖通过'
+
+    check('综合回归-04：MotionEngine 遮罩宿主与 targetArrive 竞争防护', t_reg_04_motion_maskhost_and_arrive_race)
+
+    # 34. 综合回归-05：ActionBarMotion fx_buttonPress(2px) 关闭刷新与切页 100% 复位
+    def t_reg_05_actionbar_press_reset():
+        l_env, m_env, load_fn = create_env()
+        l_env.execute('''
+            local abBar = CreateFrame("Frame", "EABBar_MainBar", UIParent)
+            abBar:SetSize(480, 40)
+            local abBtn = CreateFrame("CheckButton", "ActionButton1", abBar)
+            abBtn:SetSize(36, 36); abBtn.action = 1
+            abBtn.icon = abBtn:CreateTexture(nil, "ARTWORK")
+            abBtn.icon:SetPoint("TOPLEFT", abBtn, "TOPLEFT", 1, -1)
+            abBtn.icon:SetPoint("BOTTOMRIGHT", abBtn, "BOTTOMRIGHT", -1, 1)
+            abBtn.icon:SetTexture("Interface\\\\Icons\\\\Spell_Fire_FireBolt")
+            abBtn.PushedTexture = abBtn:CreateTexture(nil, "OVERLAY")
+            abBtn.PushedTexture:Hide()
+            EllesmereUI._ModuleNS.EllesmereUIActionBars = { barButtons = { MainBar = { abBtn } }, _eabFD = {} }
+        ''')
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(1.0, 2)
+
+        chk = l_env.eval('''(function()
+            local btn = _G.ActionButton1
+            local mdb = kkowoUI.Modules.Get("motionFX"):GetDB()
+            local abm = kkowoUI.Modules.Get("actionBarMotion")
+            local _, _, _, _, y0 = btn.icon:GetPoint(1)
+            btn:SetButtonState("PUSHED")
+            local _, _, _, _, yPressed = btn.icon:GetPoint(1)
+            -- Disable fx_buttonPress while pressed & call OnRefresh()
+            mdb.fx_buttonPress = false
+            abm:OnRefresh()
+            local _, _, _, _, yAfterOff = btn.icon:GetPoint(1)
+            -- Re-enable, press again, fire ACTIONBAR_PAGE_CHANGED
+            mdb.fx_buttonPress = true
+            abm:OnRefresh()
+            btn:SetButtonState("PUSHED")
+            local _, _, _, _, yPressed2 = btn.icon:GetPoint(1)
+            return { y0 = y0, yPressed = yPressed, yAfterOff = yAfterOff, yPressed2 = yPressed2 }
+        end)()''')
+        m_env.FireEvent('ACTIONBAR_PAGE_CHANGED')
+        y_after_page = float(l_env.eval('select(5, _G.ActionButton1.icon:GetPoint(1))'))
+        assert abs((float(chk.y0) - float(chk.yPressed)) - 2.0) < 0.05, f'标准按键下沉应为 2px，实际={chk}'
+        assert abs(float(chk.yAfterOff) - float(chk.y0)) < 0.01, f'关闭 fx_buttonPress 刷新后未复位: {chk}'
+        assert abs((float(chk.y0) - float(chk.yPressed2)) - 2.0) < 0.05 and abs(y_after_page - float(chk.y0)) < 0.01, (
+            f'切页事件后按键未复位: y0={chk.y0}, yAfterPage={y_after_page}'
+        )
+        return '2px 下沉 + 关闭 OnRefresh 复位 + 切页事件复位全部通过'
+
+    check('综合回归-05：ActionBarMotion fx_buttonPress(2px) 复位校验', t_reg_05_actionbar_press_reset)
+
+    # 35. 综合回归-06：ImmersiveHUD instant=true 对未追踪框体真实写入 SetAlpha(1.0)
+    def t_reg_06_immersive_hud_instant():
+        l_env, m_env, load_fn = create_env()
+        l_env.execute('''
+            UnitExists = function(u) return u == "player" end
+            UnitHealth = function() return 1000 end
+            UnitHealthMax = function() return 1000 end
+            UnitPower = function() return 1000 end
+            UnitPowerMax = function() return 1000 end
+            UnitPowerType = function() return 0 end
+            if WorldMapFrame then WorldMapFrame:Hide() end
+            local bar = CreateFrame("Frame", "EABBar_MainBar", UIParent)
+            bar:SetSize(480, 40); bar:Show()
+            bar:SetAlpha(0.30)
+            -- Hovering over an untracked frame in immersive mode triggers FadeFrameTo(bar, 1.0, instant=true)
+            bar._mouseOver = true
+            _G._reg6SetAlphaCalls = {}
+            local origSA = bar.SetAlpha
+            bar.SetAlpha = function(self, a)
+                _G._reg6SetAlphaCalls[#_G._reg6SetAlphaCalls + 1] = a
+                return origSA(self, a)
+            end
+        ''')
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+        l_env.execute('kkowoUI.Modules.Get("immersiveHUD"):OnRefresh()')
+
+        chk = l_env.eval('''(function()
+            local sawOne = false
+            for _, a in ipairs(_G._reg6SetAlphaCalls) do
+                if math.abs((a or 0) - 1.0) < 0.01 then sawOne = true end
+            end
+            return { alpha = _G.EABBar_MainBar:GetAlpha(), sawOne = sawOne, nCalls = #_G._reg6SetAlphaCalls }
+        end)()''')
+        assert chk.sawOne and abs(float(chk.alpha) - 1.0) < 0.01, f'未追踪框体 instant=true 应真实调用 SetAlpha(1.0): {chk}'
+        return f'未追踪框体(0.30->1.0) instant=true 真实写入 SetAlpha(1.0)（calls={chk.nCalls}）'
+
+    check('综合回归-06：ImmersiveHUD instant=true 未追踪框体同步', t_reg_06_immersive_hud_instant)
+
+    # 36. 综合回归-07：法术书搜索框第 0 帧预留零跳动 + 右侧筛选下拉钮垂直居中对齐
+    def t_reg_07_spellbook_searchbox_no_jump():
+        l_env, m_env, load_fn = create_env()
+        l_env.execute('''
+            local psf = CreateFrame("Frame", "PlayerSpellsFrame", UIParent)
+            psf:SetSize(640, 560)
+            local sb = CreateFrame("Frame", nil, psf)
+            sb:SetSize(620, 500); sb:Hide()
+            local tabSys = CreateFrame("Frame", nil, sb)
+            tabSys:SetSize(300, 36)
+            tabSys.GetLeft = function() return 20 end
+            tabSys.GetRight = function() return 320 end
+            tabSys.GetTop = function() return 500 end
+            tabSys.GetBottom = function() return 464 end
+
+            -- Two DF tabs initially HIDDEN at frame 0 (matching DungeonsForeverSpell NativeSpellBook.lua)
+            local dfSpell = CreateFrame("Button", "DungeonsForeverSpellBookTab", sb)
+            dfSpell:SetSize(36, 36); dfSpell:Hide()
+            dfSpell.GetRight = function() return 357 end
+            dfSpell.GetTop = function() return 500 end
+            dfSpell.GetBottom = function() return 464 end
+            local dfWeap = CreateFrame("Button", "DungeonsForeverWeaponBookTab", sb)
+            dfWeap:SetSize(36, 36); dfWeap:Hide()
+            dfWeap.GetRight = function() return 394 end
+            dfWeap.GetTop = function() return 500 end
+            dfWeap.GetBottom = function() return 464 end
+
+            local sbox = CreateFrame("EditBox", nil, sb)
+            sbox:SetSize(240, 26)
+            sbox:SetPoint("TOPRIGHT", sb, "TOPRIGHT", -48, -10)
+            sbox.GetRight = function() return 600 end
+            sbox.GetTop = function(self)
+                local _, _, _, _, y = self:GetPoint(1)
+                return 526 + (y or -10)
+            end
+            sbox.GetBottom = function(self) return self:GetTop() - 26 end
+
+            local filt = CreateFrame("Button", nil, sb)
+            filt:SetSize(24, 24)
+            filt:SetPoint("LEFT", sbox, "RIGHT", 4, 0)
+            filt.GetLeft = function() return 604 end
+            filt.GetTop = function(self)
+                local _, _, _, _, fy = self:GetPoint(1)
+                return (sbox:GetTop() - 1) + (fy or 0)
+            end
+            filt.GetBottom = function(self) return self:GetTop() - 24 end
+            sb.FilterDropdown = filt
+
+            sb.CategoryTabSystem = tabSys
+            sb.SearchBox = sbox
+            sb.ResizeSearchBox = function() end
+            psf.SpellBookFrame = sb
+            psf:Show()
+        ''')
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+
+        # Frame 0 open: DF tabs are still hidden!
+        w0 = float(l_env.eval('''(function()
+            _G.PlayerSpellsFrame.SpellBookFrame:Show()
+            return _G.PlayerSpellsFrame.SpellBookFrame.SearchBox:GetWidth()
+        end)()'''))
+        # 0.15s later: DF poll shows both tabs and runs FitSearchBoxNow (right - left - 10 = 600 - 394 - 10 = 196)
+        m_env.StepTime(0.15, 2)
+        after = l_env.eval('''(function()
+            _G.DungeonsForeverSpellBookTab:Show()
+            _G.DungeonsForeverWeaponBookTab:Show()
+            local sb = _G.PlayerSpellsFrame.SpellBookFrame
+            sb.SearchBox:SetWidth(600 - 394 - 10)
+            local _, _, _, _, sy = sb.SearchBox:GetPoint(1)
+            local _, fRel, _, _, fy = sb.FilterDropdown:GetPoint(1)
+            return {
+                w1 = sb.SearchBox:GetWidth(),
+                sy = sy or 0,
+                fy = fy or 0,
+                fRelIsBox = (fRel == sb.SearchBox),
+            }
+        end)()''')
+        m_env.StepTime(0.10, 2)
+        w2 = float(l_env.eval('_G.PlayerSpellsFrame.SpellBookFrame.SearchBox:GetWidth()'))
+        assert abs(float(after.w1) - w0) <= 1.0 and abs(w2 - w0) <= 1.0, (
+            f'法术书搜索框第 0 帧与 DF 显形后宽度跳动: w0={w0}, w1={after.w1}, w2={w2}'
+        )
+        # CategoryTabSystem centerY = (500+464)/2 = 482, SearchBox orig centerY = (516+490)/2 = 503 => dy = -21
+        # FilterDropdown anchored to SearchBox keeps relative y=0 (centers match!)
+        assert abs(float(after.sy) - (-10 - 21)) <= 1.0 and after.fRelIsBox and abs(float(after.fy)) <= 1.0, (
+            f'SearchBox 与 FilterDropdown 垂直居中对齐异常: {after}'
+        )
+        return f'第0帧({w0:.1f}px) vs 0.25s后({w2:.1f}px) 零跳动 + 筛选钮居中对齐通过'
+
+    check('综合回归-07：法术书搜索框零跳动与筛选钮对齐', t_reg_07_spellbook_searchbox_no_jump)
+
+    # 37. 综合回归-08：蓝条回蓝节拍（明文满蓝瞬隐 / 机密阶跃曲线透明度 / ppWing 遮罩且 bar 无 ClipsChildren）
+    def t_reg_08_mana_regen_spark():
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+
+        l_env.execute('''
+            _G._reg8Mana = 1500
+            _G._reg8Max = 3000
+            UnitPower = function(u, pt) return _G._reg8Mana end
+            UnitPowerMax = function(u, pt) return _G._reg8Max end
+            UnitPowerType = function() return 0, "MANA" end
+            C_Spell.GetSpellPowerCost = function() return { { type = 0, cost = 100 } } end
+        ''')
+        # Trigger 5s FSR cast
+        m_env.FireEvent('UNIT_SPELLCAST_SUCCEEDED', 'player', 'c-mana', 116)
+        st_fsr = l_env.eval('''(function()
+            local mr = kkowoUI._CoreHUD.manaRegenState
+            local ppWing = kkowoUI._CoreHUD.coreFrame._ppWing
+            return {
+                shown = mr.overlay:IsShown(),
+                inWindow = mr.inWindow,
+                sparkMasked = (ppWing._manaRegenSparkTex:GetNumMaskTextures() == 1),
+                barClips = ppWing._bar:DoesClipChildren(),
+            }
+        end)()''')
+        assert st_fsr.shown and st_fsr.inWindow and st_fsr.sparkMasked and (not st_fsr.barClips), f'5s 规则期状态/遮罩/裁剪异常: {st_fsr}'
+
+        # Advance 5.2s -> transitions into 2s tick sweep
+        m_env.StepTime(5.2, 6)
+        st_tick = l_env.eval('''(function()
+            local mr = kkowoUI._CoreHUD.manaRegenState
+            return { shown = mr.overlay:IsShown(), inWindow = mr.inWindow }
+        end)()''')
+        assert st_tick.shown and (not st_tick.inWindow), f'5s 结束后应切入 2s 回蓝节拍: {st_tick}'
+
+        # Plain mana reaches full -> Idle() hides immediately (no leftover 2s sweep!)
+        l_env.execute('_G._reg8Mana = 3000')
+        m_env.FireEvent('UNIT_POWER_UPDATE', 'player', 'MANA')
+        st_full = l_env.eval('kkowoUI._CoreHUD.manaRegenState.overlay:IsShown()')
+        assert st_full is False, '明文满蓝瞬间必须立即 Idle() 隐藏火花'
+
+        # Secret combat mana -> UnitPowerPercent step curve writes gateFrame:SetAlpha with 0 errors
+        l_env.globals()['_reg8SecPwr'] = m_env.NewSecret('mana')
+        l_env.execute('''
+            UnitPower = function() return _G._reg8SecPwr end
+            UnitPowerMax = function() return _G._reg8SecPwr end
+        ''')
+        m_env.FireEvent('UNIT_SPELLCAST_SUCCEEDED', 'player', 'c-sec-mana', 116)
+        m_env.FireEvent('UNIT_POWER_UPDATE', 'player', 'MANA')
+        sec_gate = l_env.eval('''(function()
+            local mr = kkowoUI._CoreHUD.manaRegenState
+            return {
+                shown = mr.overlay:IsShown(),
+                gateAlphaSecret = issecretvalue(mr.gateFrame._alpha),
+            }
+        end)()''')
+        assert sec_gate.shown and sec_gate.gateAlphaSecret, f'机密蓝量应经阶跃曲线写入 gateFrame:SetAlpha: {sec_gate}'
+        return '5s规则/2s回蓝/明文满蓝瞬隐/机密阶跃曲线/ppWing遮罩零bar裁剪全部通过'
+
+    check('综合回归-08：蓝条回蓝节拍（明文瞬隐/机密曲线/零溢出）', t_reg_08_mana_regen_spark)
+
+    # 38. 综合回归-09：Tooltip 商人行去重、金币居中规范与 Scales 排版对齐
+    def t_reg_09_tooltip_dedupe_and_format():
+        l_env, m_env, load_fn = create_env()
+        # Load core first, then load TooltipStyle with a realistic PrettyTooltip ptNS
+        for name in LOAD_ORDER:
+            if name != 'kkowoUI_Tooltip':
+                load_fn(name)
+        l_env.execute('''
+            _G._reg9SellOpt = true
+            _G._reg9PtNS = {
+                TooltipTypes = {
+                    [0] = { extension = {} },
+                },
+                option = function(k)
+                    if k == "sellPrice" then return _G._reg9SellOpt end
+                    return true
+                end,
+                ui = {
+                    formatMoney = function()
+                        return "30|TInterface\\\\MoneyFrame\\\\UI-SilverIcon:14:14:0:0|t37|TInterface\\\\MoneyFrame\\\\UI-CopperIcon:14:14:0:0|t"
+                    end,
+                },
+            }
+            Auctionator = { L = { VENDOR = "商人" } }
+        ''')
+        # Execute Bridge/TooltipStyle.lua with our mock ptNS
+        ts_src = (ADDON_BASE / 'kkowoUI_Tooltip' / 'Bridge' / 'TooltipStyle.lua').read_text(encoding='utf-8')
+        l_env.eval('function(src, ns) local fn, err = loadstring(src, "@TooltipStyle"); assert(fn, err); fn("kkowoUI_Tooltip", ns) end')(ts_src, l_env.globals()._reg9PtNS)
+        m_env.SetAddonLoaded('kkowoUI_Tooltip', True)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+
+        res = l_env.eval('''(function()
+            local ptNS = _G._reg9PtNS
+            local ext = ptNS.TooltipTypes[0].extension
+            local mod = kkowoUI.Modules.Get("tooltipStyle")
+            local model = {
+                footerRight = {
+                    { sellPrice = true, left = "30|TInterface\\\\MoneyFrame\\\\UI-SilverIcon:14:14:0:0|t37|TInterface\\\\MoneyFrame\\\\UI-CopperIcon:14:14:0:0|t" },
+                },
+                extras = {
+                    { left = "|cffffffff商人|r", right = "30|TInterface\\\\MoneyFrame\\\\UI-SilverIcon:14:14:0:0|t37|TInterface\\\\MoneyFrame\\\\UI-CopperIcon:14:14:0:0|t" },
+                    { left = "拍卖", right = "21|TInterface\\\\MoneyFrame\\\\UI-SilverIcon:14:14:0:0|t00|TInterface\\\\MoneyFrame\\\\UI-CopperIcon:14:14:0:0|t  " },
+                    { left = "来源", right = "死亡矿井" },
+                    { left = "Scales", right = "+12.4%" },
+                    { left = "   DPS", right = "|cffffffff+8.2  |r" },
+                },
+            }
+            ext.afterRead(model, {})
+            local extraStyle = { size = 13 }
+            local footerStyle = { size = 13 }
+            local view = {
+                sections = {
+                    { kind = "rows", style = extraStyle, gap = 1, rows = model.extras },
+                },
+            }
+            ext.extendView(view, model, { styles = { extras = extraStyle, footer = footerStyle } })
+
+            -- Verify sellPrice=false keeps vendor row
+            _G._reg9SellOpt = false
+            local model2 = {
+                footerRight = { { sellPrice = true, left = "10" } },
+                extras = {
+                    { left = "商人", right = "30|TInterface\\\\MoneyFrame\\\\UI-SilverIcon:14:14:0:0|t" },
+                    { left = "拍卖", right = "21|TInterface\\\\MoneyFrame\\\\UI-SilverIcon:14:14:0:0|t" },
+                },
+            }
+            ext.afterRead(model2, {})
+            _G._reg9SellOpt = true
+
+            local labels = {}
+            for _, r in ipairs(model.extras) do labels[#labels + 1] = r.left end
+            return {
+                keptCount = #model.extras,
+                labels = table.concat(labels, "|"),
+                auctionRight = model.extras[1].right,
+                dpsLeft = model.extras[4].left,
+                dpsRight = model.extras[4].right,
+                footerCoin = model.footerRight[1].left,
+                gap = view.sections[1].gap,
+                keptWhenOff = #model2.extras,
+                szExtras = mod._BALANCED_PRETTY_SIZES.extras,
+                szFooter = mod._BALANCED_PRETTY_SIZES.footer,
+            }
+        end)()''')
+        assert int(res.keptCount) == 4 and '商人' not in str(res.labels), f'商人行应被去重，其余4行保留: {res}'
+        assert '拍卖' in str(res.labels) and '来源' in str(res.labels) and 'Scales' in str(res.labels) and 'DPS' in str(res.labels), f'必要附加行丢失: {res}'
+        assert str(res.dpsLeft) == 'DPS', f'Scales "   DPS" 前导空格未清理: {res.dpsLeft!r}'
+        assert not str(res.auctionRight).endswith(' '), f'右侧尾随空格未清理: {res.auctionRight!r}'
+        assert ':0:1|t' in str(res.footerCoin) and '30 |T' in str(res.footerCoin), f'金币图标未规范为 :0:1 与数字间距: {res.footerCoin}'
+        assert int(res.gap) == 3 and int(res.keptWhenOff) == 2 and int(res.szExtras) == 13 and int(res.szFooter) == 13, f'排版参数或 sellPrice=false 保留异常: {res}'
+        return '商人行去重/sellPrice关闭保留/DPS去空格/金币:0:1居中/13px字号与3px行距全部通过'
+
+    check('综合回归-09：Tooltip 商人行去重与金币排版对齐', t_reg_09_tooltip_dedupe_and_format)
+
+    # 39. 综合回归-10：MarkBar 1:1 重构（无无效头顶滑块 / 40px 自动同步 / 停用还原 / 按钮图标大小）
+    def t_reg_10_markbar_1to1_refactor():
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+
+        chk = l_env.eval('''(function()
+            local mb = kkowoUI.Modules.Get("markBar")
+            local p = EllesmereUINameplatesDB.profiles.Default
+            local synced40 = (p.raidMarkerSize == 40 and p.raidMarkerCoreSize == 40 and p.nameRaidMarkerSize == 40)
+
+            -- Verify BuildOptions widgets: no overheadSize/targetMarkerScalePct, has button icon size
+            local texts = {}
+            local fakeW = {
+                DualRow = function(_, _, _, s1, s2)
+                    if type(s1) == "table" and s1.text then texts[#texts + 1] = s1.text end
+                    if type(s2) == "table" and s2.text then texts[#texts + 1] = s2.text end
+                    return nil, 32
+                end,
+            }
+            mb:BuildOptions(fakeW, UIParent, 0, { type = "toggle", text = "启用" })
+            local joined = table.concat(texts, "|")
+            local hasOld = joined:find("头顶标记", 1, true) ~= nil or joined:find("目标标记放大", 1, true) ~= nil
+            local hasBtnSz = joined:find("按钮图标大小", 1, true) ~= nil
+
+            mb:ApplyBarIconSize(28)
+            local btnSz = _G.kkowoUI_MarkBar and _G.kkowoUI_MarkBar:GetHeight() or 0
+
+            mb:Disable()
+            local restored = (p.raidMarkerSize == 24 and p.raidMarkerCoreSize == 24 and p.nameRaidMarkerSize == 14)
+            return { synced40 = synced40, hasOld = hasOld, hasBtnSz = hasBtnSz, btnSz = btnSz, restored = restored }
+        end)()''')
+        assert chk.synced40 and (not chk.hasOld) and chk.hasBtnSz and float(chk.btnSz) >= 28 and chk.restored, f'MarkBar 1:1 重构校验失败: {chk}'
+        return '40px 自动同步 + 移除无效滑块 + 按钮图标大小调节 + 停用无损还原全部通过'
+
+    check('综合回归-10：MarkBar 1:1 重构与停用还原', t_reg_10_markbar_1to1_refactor)
+
+    # 40. 综合回归-11：AuraBarSkin 父框体整图圆角遮罩（零污染）与 AddMaskTexture 失败方形降级
+    def t_reg_11_aurabarskin_mask_and_fallback():
+        l_env, m_env, load_fn = create_env()
+        l_env.execute('''
+            local bf = _G.BuffFrame
+            bf:SetSize(200, 36); bf:Show()
+            local function makeBtn(name)
+                local b = CreateFrame("Button", name, bf)
+                b:SetSize(30, 30)
+                b.Icon = b:CreateTexture(nil, "ARTWORK"); b.Icon:SetAllPoints()
+                b.Icon:SetTexture("Interface\\\\Icons\\\\Spell_Holy_PowerWordShield")
+                b.Border = b:CreateTexture(nil, "OVERLAY")
+                return b
+            end
+            local bOk = makeBtn("Reg11BuffOk")
+            local bErr = makeBtn("Reg11BuffErr")
+            bErr.Icon.AddMaskTexture = function() error("mock AddMaskTexture rejected") end
+            local bNoop = makeBtn("Reg11BuffNoop")
+            bNoop.Icon.AddMaskTexture = function() end
+            bf.auraFrames = { bOk, bErr, bNoop }
+        ''')
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+
+        chk = l_env.eval('''(function()
+            local sk = kkowoUI.Modules.Get("auraBarSkin")
+            sk:OnRefresh()
+            local bOk, bErr, bNoop = _G.Reg11BuffOk, _G.Reg11BuffErr, _G.Reg11BuffNoop
+            local ovOk = sk:_GetSkinState(bOk)
+            local ovErr = sk:_GetSkinState(bErr)
+            local ovNoop = sk:_GetSkinState(bNoop)
+            local polluted = false
+            for k in pairs(bOk) do
+                if type(k) == "string" and k:find("^_kk") then polluted = true end
+            end
+            local errSqShown = ovErr and ovErr.sqEdges and ovErr.sqEdges[1]:IsShown() or false
+            local noopSqShown = ovNoop and ovNoop.sqEdges and ovNoop.sqEdges[1]:IsShown() or false
+            local errRoundOff = not (ovErr and ovErr.wrap and ovErr.wrap._kkBorderFrame and ovErr.wrap._kkBorderFrame:IsShown())
+            return {
+                maskOnBtn = (ovOk and ovOk.iconMask and ovOk.iconMask:GetParent() == bOk) or false,
+                maskNotWrap = (ovOk and ovOk.iconMask and ovOk.iconMask:GetParent() ~= ovOk.wrap) or false,
+                polluted = polluted,
+                okMode = ovOk and ovOk.lastMode or "",
+                okNumMasks = bOk.Icon:GetNumMaskTextures(),
+                errMode = ovErr and ovErr.lastMode or "",
+                noopMode = ovNoop and ovNoop.lastMode or "",
+                errSqShown = errSqShown,
+                noopSqShown = noopSqShown,
+                errRoundOff = errRoundOff,
+            }
+        end)()''')
+        assert chk.maskOnBtn and chk.maskNotWrap and (not chk.polluted) and chk.okMode == 'rounded' and int(chk.okNumMasks) == 1, (
+            f'AuraBarSkin 正常圆角遮罩校验失败: {chk}'
+        )
+        assert chk.errMode == 'square-fallback' and chk.noopMode == 'square-fallback' and chk.errSqShown and chk.noopSqShown and chk.errRoundOff, (
+            f'AuraBarSkin 失败/静默拒绝自动方形降级校验失败: {chk}'
+        )
+        return '父框体整图遮罩零污染 + 抛错/静默拒绝自动降级 1px 方形框全部通过'
+
+    check('综合回归-11：AuraBarSkin 父框体圆角与安全方形降级', t_reg_11_aurabarskin_mask_and_fallback)
+
+    # 41. 综合回归-12：GroundPin 逆投影求解器收敛、失败无损恢复、拒绝条件与 /kk navprobe
+    def t_reg_12_groundpin_solver_and_rejects():
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(0.5, 2)
+
+        # Install perspective-like ground projection model with 2-frame latency
+        # (e, n) in yards from player (0.5, 0.5) on 1000x1000 map:
+        # depth = 120 + 0.35*n, sx = 960 + 540 * e / depth, sy = 500 + 360 * n / depth
+        l_env.execute('''
+            _G._reg12SecretProj = false
+            _G._reg12Sky = false
+            _G._reg12Project = function(wp)
+                if _G._reg12SecretProj then
+                    return _G._reg12SecVal, _G._reg12SecVal, 25, true, false
+                end
+                local e = (wp.position.x - 0.5) * 1000
+                local n = (0.5 - wp.position.y) * 1000
+                local d2 = math.sqrt(e * e + n * n)
+                if _G._reg12Sky and d2 > 30 then
+                    return 960, 1080, d2, true, true
+                end
+                local depth = 120 + 0.35 * n
+                if depth < 15 then return 960, 1080, d2, false, true end
+                local sx = 960 + 540 * e / depth
+                local sy = 500 + 360 * n / depth
+                local d3 = math.sqrt(d2 * d2 + 2.0 * 2.0)
+                return sx, sy, d3, true, false
+            end
+        ''')
+        l_env.globals()['_reg12SecVal'] = m_env.NewSecret('navXY')
+        m_env.SetNavProjector(l_env.globals()._reg12Project, 2)
+
+        # Seed existing waypoint (0.2, 0.2) + tracked quest 42 + spy CommitManualPin & PlaySoundFile
+        l_env.execute('''
+            C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(1411, 0.2, 0.2))
+            C_SuperTrack.SetSuperTrackedQuestID(42)
+            _G._reg12Commits = {}
+            _G._reg12SolveSounds = 0
+            local wa = kkowoUI.Modules.Get("waypointAutoTrack")
+            local origCommit = wa.CommitManualPin
+            wa.CommitManualPin = function(self, mapID, x, y)
+                _G._reg12Commits[#_G._reg12Commits + 1] = { mapID = mapID, x = x, y = y }
+                return origCommit(self, mapID, x, y)
+            end
+            local origSound = _G.PlaySoundFile
+            _G.PlaySoundFile = function(...)
+                if wa._groundSolving then _G._reg12SolveSounds = _G._reg12SolveSounds + 1 end
+                return origSound(...)
+            end
+        ''')
+
+        # (a) Target ground point (e=65, n=42) -> screen (sx, sy)
+        target_e, target_n = 65.0, 42.0
+        depth = 120.0 + 0.35 * target_n
+        tx = 960.0 + 540.0 * target_e / depth
+        ty = 500.0 + 360.0 * target_n / depth
+        m_env.SetCursorPosition(tx, ty)
+        m_env.SetMouseFoci(l_env.table_from([l_env.globals().WorldFrame]))
+
+        l_env.execute('kkowoUI_GroundPin_OnKey("down")')
+        for _ in range(55):
+            m_env.StepTime(0.016, 1)
+
+        conv = l_env.eval('''(function()
+            local c = _G._reg12Commits
+            local last = c[#c]
+            local errYd = 999
+            if last then
+                local e = (last.x - 0.5) * 1000
+                local n = (0.5 - last.y) * 1000
+                errYd = math.sqrt((e - 65) ^ 2 + (n - 42) ^ 2)
+            end
+            return { nCommits = #c, errYd = errYd, solveSounds = _G._reg12SolveSounds }
+        end)()''')
+        assert int(conv.nCommits) == 1 and float(conv.errYd) <= 1.0 and int(conv.solveSounds) == 0, (
+            f'GroundPin 2帧延迟透视收敛或静默门控失败: {conv}'
+        )
+
+        # (b) Failure restore: out-of-range / sky + secret geometry must restore (0.2, 0.2) & quest 42
+        l_env.execute('''
+            C_Map.SetUserWaypoint(UiMapPoint.CreateFromCoordinates(1411, 0.2, 0.2))
+            C_SuperTrack.SetSuperTrackedQuestID(42)
+            _G._reg12Sky = true
+        ''')
+        m_env.SetCursorPosition(960, 1060)  # Sky / clamped!
+        l_env.execute('kkowoUI_GroundPin_OnKey("down")')
+        for _ in range(110):
+            m_env.StepTime(0.016, 1)
+        m_env.StepTime(0.05, 1)
+        rest_sky = l_env.eval('''(function()
+            local wp = C_Map.GetUserWaypoint()
+            return {
+                x = wp and wp.position.x or -1,
+                y = wp and wp.position.y or -1,
+                qid = C_SuperTrack.GetSuperTrackedQuestID(),
+            }
+        end)()''')
+        assert abs(float(rest_sky.x) - 0.2) < 0.001 and abs(float(rest_sky.y) - 0.2) < 0.001 and int(rest_sky.qid) == 42, (
+            f'指向天空失败后未完整恢复原路点与追踪任务: {rest_sky}'
+        )
+
+        l_env.execute('_G._reg12Sky = false; _G._reg12SecretProj = true')
+        m_env.SetCursorPosition(tx, ty)
+        l_env.execute('kkowoUI_GroundPin_OnKey("down")')
+        for _ in range(15):
+            m_env.StepTime(0.016, 1)
+        m_env.StepTime(0.05, 1)
+        rest_sec = l_env.eval('''(function()
+            local wp = C_Map.GetUserWaypoint()
+            return {
+                x = wp and wp.position.x or -1,
+                y = wp and wp.position.y or -1,
+                qid = C_SuperTrack.GetSuperTrackedQuestID(),
+            }
+        end)()''')
+        assert abs(float(rest_sec.x) - 0.2) < 0.001 and abs(float(rest_sec.y) - 0.2) < 0.001 and int(rest_sec.qid) == 42, (
+            f'机密几何失败后未完整恢复原路点与追踪任务: {rest_sec}'
+        )
+        l_env.execute('_G._reg12SecretProj = false')
+
+        # (c) Rejection checks: combat / UI / Minimap / instance
+        def last_ui_err():
+            return str(l_env.eval('UIErrorsFrame._messages[#UIErrorsFrame._messages] or ""'))
+
+        m_env.SetInCombat(True)
+        l_env.execute('kkowoUI_GroundPin_OnKey("down")')
+        assert '战斗中' in last_ui_err(), f'战斗中未拒绝: {last_ui_err()}'
+        m_env.SetInCombat(False)
+
+        m_env.SetMouseFoci(l_env.table_from([l_env.globals().GameMenuFrame]))
+        l_env.execute('kkowoUI_GroundPin_OnKey("down")')
+        assert '3D 游戏地面' in last_ui_err(), f'鼠标在 UI 上未拒绝: {last_ui_err()}'
+
+        m_env.SetMouseFoci(l_env.table_from([l_env.globals().Minimap]))
+        l_env.execute('kkowoUI_GroundPin_OnKey("down")')
+        assert '小地图' in last_ui_err(), f'鼠标在小地图上未提示: {last_ui_err()}'
+
+        m_env.SetMouseFoci(l_env.table_from([l_env.globals().WorldFrame]))
+        m_env.SetInstanceMode(True, 'party', '死亡矿井')
+        l_env.execute('kkowoUI_GroundPin_OnKey("down")')
+        assert '副本内' in last_ui_err(), f'副本内未拒绝: {last_ui_err()}'
+        m_env.SetInstanceMode(False, 'none', 'Kalimdor')
+
+        # (d) /kk navprobe writes kkowoUIDB._navprobe
+        m_env.SetCursorPosition(tx, ty)
+        m_env.RunSlash('/kk', 'navprobe')
+        for _ in range(90):
+            m_env.StepTime(0.016, 1)
+        m_env.StepTime(0.05, 1)
+        probe_res = l_env.eval('''(function()
+            local np = _G.kkowoUIDB and _G.kkowoUIDB._navprobe
+            return {
+                has = np ~= nil,
+                hasFrameWithWp = np and np.hasFrameWithWp == true,
+                suggestedK = np and np.suggestedK or 0,
+                nHeights = np and np.heights and #np.heights or 0,
+                trialOk = np and np.trial and np.trial.ok == true,
+            }
+        end)()''')
+        assert probe_res.has and probe_res.hasFrameWithWp and int(probe_res.suggestedK) >= 2 and int(probe_res.nHeights) == 4 and probe_res.trialOk, (
+            f'/kk navprobe 探针结果异常: {probe_res}'
+        )
+        return f'2帧延迟透视收敛(误差{float(conv.errYd):.2f}yd/0杂音) + 天空/机密恢复 + 4类拒绝 + /kk navprobe 全部通过'
+
+    check('综合回归-12：GroundPin 求解器、无损恢复、拒绝条件与 /kk navprobe', t_reg_12_groundpin_solver_and_rejects)
+
+    # 42. 综合回归-13：任务 8 条形质感/流光(fx_barFlow)/治疗扫光/55%滑入/2px按键/Q12快照/1200事件实机回放
+    def t_reg_13_bar_flow_and_motion_upgrade():
+        import struct
+
+        # (a) Validate all 5 generated TGA files: POT 32-bit + zero-alpha border edges for glow/sheen textures
+        tex_dir = ADDON_BASE / 'kkowoUI_Media' / 'Media' / 'Textures'
+        for fname in ('BarFillShaded.tga', 'BarFillSeamless.tga', 'SparkSoft.tga', 'BarFlowSheen.tga', 'BarEdgeBloom.tga'):
+            p = tex_dir / fname
+            assert p.is_file(), f'缺失贴图: {fname}'
+            raw = p.read_bytes()
+            img_type = raw[2]
+            w, h, bpp = struct.unpack_from('<HHB', raw, 12)
+            assert img_type == 2 and bpp == 32 and (w & (w - 1)) == 0 and (h & (h - 1)) == 0, (
+                f'非合法 2 的幂 32 位 TGA: {fname} ({w}x{h}, {bpp}bpp)'
+            )
+            assert len(raw) == 18 + w * h * 4, f'TGA 字节长度不匹配: {fname}'
+            if fname in ('SparkSoft.tga', 'BarFlowSheen.tga', 'BarEdgeBloom.tga'):
+                # Check all 4 border edges have alpha == 0
+                pixels = memoryview(raw)[18:]
+                for x in range(w):
+                    assert pixels[(0 * w + x) * 4 + 3] == 0, f'{fname} 顶边存在非零透明度'
+                    assert pixels[((h - 1) * w + x) * 4 + 3] == 0, f'{fname} 底边存在非零透明度'
+                for y in range(h):
+                    assert pixels[(y * w + 0) * 4 + 3] == 0, f'{fname} 左边存在非零透明度'
+                    assert pixels[(y * w + (w - 1)) * 4 + 3] == 0, f'{fname} 右边存在非零透明度'
+
+        # (b) fx_barFlow loopAnim registration, 0 extra OnUpdate, instant off stop/hide, heal sweep, 55% + slide, 2px press, wing auraFeel
+        l_env, m_env, load_fn = create_env()
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(1.0, 2)
+
+        pre_ou = len(list(m_env.GetActiveOnUpdates().values()))
+        flow_chk = l_env.eval('''(function()
+            local M = kkowoUI.Motion
+            local mdb = kkowoUI.Modules.Get("motionFX"):GetDB()
+            local hpFlow = _G.kkowoUI_CoreHUD._hpWing._flow
+            local ppFlow = _G.kkowoUI_CoreHUD._ppWing._flow
+            local tgtFlow = _G.kkowoUI_TopTargetHUD._hpBar._flow
+            local onOk = hpFlow._ag:IsPlaying() and M.IsLoopAnimRegistered(hpFlow._ag)
+                and ppFlow._ag:IsPlaying() and M.IsLoopAnimRegistered(ppFlow._ag)
+                and tgtFlow ~= nil
+
+            -- Turn off fx_barFlow -> must stop & hide immediately
+            mdb.fx_barFlow = false
+            kkowoUI.Modules.Get("motionFX"):Refresh()
+            local offFlow = (not hpFlow._ag:IsPlaying()) and (not M.IsLoopAnimRegistered(hpFlow._ag)) and (not hpFlow._clip:IsShown())
+
+            -- Re-enable fx_barFlow, then set intensity="off" -> must also stop & hide
+            mdb.fx_barFlow = true
+            kkowoUI.Modules.Get("motionFX"):Refresh()
+            local reOn = hpFlow._ag:IsPlaying() and hpFlow._clip:IsShown()
+            mdb.intensity = "off"
+            kkowoUI.Modules.Get("motionFX"):Refresh()
+            local offInten = (not hpFlow._ag:IsPlaying()) and (not hpFlow._clip:IsShown())
+
+            -- Restore standard
+            mdb.intensity = "standard"
+            kkowoUI.Modules.Get("motionFX"):Refresh()
+
+            -- Heal sweep wave check
+            local sb = _G.kkowoUI_CoreHUD._hpWing._bar
+            M.TriggerBarHitFlash(sb, "heal", { maskHost = _G.kkowoUI_CoreHUD._hpWing, radius = 6, reverse = true })
+            local sweepShown = false
+            for _, ch in ipairs({ sb:GetChildren() }) do
+                if ch:IsShown() and ch:DoesClipChildren() then
+                    for _, r in ipairs({ ch:GetRegions() }) do
+                        if r.GetTexture and r:GetTexture() == kkowoUI.StyleTokens.TEX.BAR_FLOW_SHEEN and r:IsShown() then
+                            sweepShown = true
+                        end
+                    end
+                end
+            end
+
+            -- Secret HP target switch still plays 8px frame arrive slide with 0 errors
+            UnitExists = function(u) return u == "player" or u == "target" end
+            UnitHealth = function(u) return u == "target" and _G._reg13Sec or 1000 end
+            UnitHealthMax = function() return 1000 end
+            return { onOk = onOk, offFlow = offFlow, reOn = reOn, offInten = offInten, sweepShown = sweepShown }
+        end)()''')
+        l_env.globals()['_reg13Sec'] = m_env.NewSecret('tgt_hp_13')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        post_ou = len(list(m_env.GetActiveOnUpdates().values()))
+        assert flow_chk.onOk and flow_chk.offFlow and flow_chk.reOn and flow_chk.offInten and flow_chk.sweepShown, (
+            f'任务 8 条内流光/治疗扫光校验失败: {flow_chk}'
+        )
+        assert post_ou <= pre_ou, f'fx_barFlow 不应新增常驻 OnUpdate: pre={pre_ou}, post={post_ou}'
+
+        # (c) Verify BFD 1,200-event real recording offline replay passes with 0 errors
+        rec_path = pathlib.Path(r'D:\code\wow\review\recordings\20261128_211255\recording.json')
+        assert rec_path.is_file(), f'缺失黑暗深渊实机录像文件: {rec_path}'
+        rec_data = json.loads(rec_path.read_text(encoding='utf-8'))
+        sessions = rec_data.get('sessions') if isinstance(rec_data.get('sessions'), list) else [rec_data]
+        total_events = sum(len(s.get('entries') or s.get('events') or []) for s in sessions)
+        assert total_events >= 1000, f'黑暗深渊录像事件数异常: {total_events}'
+        from replay import replay_session
+        for sess in sessions:
+            rep = replay_session(sess, create_env, LOAD_ORDER)
+            assert rep.get('passed') is True and not rep.get('luaErrors') and not rep.get('protectedViolations'), (
+                f'黑暗深渊 1200 事件离线回放失败: {rep}'
+            )
+
+        return f'5张POT贴图零硬边 + fx_barFlow注册/0OnUpdate/关即停 + 治疗扫光/机密滑入 + 黑暗深渊({total_events}事件)0报错回放通过'
+
+    check('综合回归-13：任务 8 质感流光升级与黑暗深渊 1200 事件回放', t_reg_13_bar_flow_and_motion_upgrade)
+
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0
 
