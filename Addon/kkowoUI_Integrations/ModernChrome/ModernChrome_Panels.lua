@@ -1256,7 +1256,20 @@ do
         if not IsSafeObj(root) or depth > 5 or root == _G.kkowoUI_CharHeroCard then return end
         local rname = root.GetName and F.PlainString(root:GetName(), nil) or nil
         if rname and rname:sub(1, 8) == "kkowoUI_" then return end
-        local otype = root.GetObjectType and root:GetObjectType()
+        local otype = root.GetObjectType and F.PlainString(root:GetObjectType(), nil) or nil
+        -- 跳过 EditBox 输入框/搜索框（如法术书/天赋/拍卖行/收藏/地下城手册搜索栏），
+        -- 绝不对其内部提示文字（Instructions）执行 ShiftAnchorY 导致打开后延迟下移错位
+        if otype == "EditBox" then
+            if not want and root.GetRegions then
+                for _, reg in ipairs({ root:GetRegions() }) do
+                    if IsSafeObj(reg) and reg.GetObjectType and F.PlainString(reg:GetObjectType(), nil) == "FontString" then
+                        if origAnchor[reg] then ShiftAnchorY(reg, -5, false, -2) end
+                        if origHeight[reg] ~= nil then GuardFontStringHeight(reg, false) end
+                    end
+                end
+            end
+            return
+        end
         -- 跳过 ScrollBox 虚拟化行池本身（避免破坏暴雪滚动布局），但处理常规 ScrollFrame
         if root.ScrollTarget then return end
         if otype == "ScrollFrame" then
@@ -1273,7 +1286,7 @@ do
         if root.GetRegions then
             local clips = root.DoesClipChildren and root:DoesClipChildren()
             for _, reg in ipairs({ root:GetRegions() }) do
-                if IsSafeObj(reg) and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                if IsSafeObj(reg) and reg.GetObjectType and F.PlainString(reg:GetObjectType(), nil) == "FontString" then
                     GuardFontStringHeight(reg, want)
                     if clips or origAnchor[reg] then
                         ShiftAnchorY(reg, -5, want, -2)
@@ -1285,6 +1298,145 @@ do
             for _, ch in ipairs({ root:GetChildren() }) do
                 GuardWindowTree(ch, want, depth + 1)
             end
+        end
+    end
+
+    -- 法术书（PlayerSpellsFrame.SpellBookFrame）右侧搜索框防位移与防顶栏挤压守卫：
+    -- 1) 同步在打开瞬间计算最右侧可见标签（兼容 DungeonsForeverSpell 新增的 ∞ / 锤 两枚标签），
+    --    直接一步落位搜索框宽度，消除打开后 0.05~0.20s 晚到缩窄造成的肉眼位移跳动；
+    -- 2) 将搜索框及筛选下拉按钮与标签栏垂直对齐，避免紧贴右上角「+ / ×」窗口按钮。
+    local spellBookGuardHooked = setmetatable({}, { __mode = "k" })
+    local spellSearchOrigW = setmetatable({}, { __mode = "k" })
+    local spellSearchOrigPts = setmetatable({}, { __mode = "k" })
+    local spellSearchBusy = false
+
+    local function FindRightmostSpellTab(sb)
+        local rightmost = nil
+        local maxR = -1e9
+        local function consider(btn)
+            if not IsSafeObj(btn) then return end
+            if btn.IsShown then
+                local okS, s = pcall(btn.IsShown, btn)
+                if not okS or F.IsSecret(s) or not s then return end
+            end
+            local r = btn.GetRight and F.PlainNumber(btn:GetRight(), nil) or nil
+            if r and r > maxR then
+                maxR = r
+                rightmost = btn
+            end
+        end
+        local tabSys = sb and sb.CategoryTabSystem
+        if IsSafeObj(tabSys) and tabSys.GetChildren then
+            local okC, kids = pcall(function() return { tabSys:GetChildren() } end)
+            if okC and type(kids) == "table" then
+                for _, ch in ipairs(kids) do consider(ch) end
+            end
+        end
+        consider(_G.DungeonsForeverSpellBookTab)
+        consider(_G.DungeonsForeverWeaponBookTab)
+        return rightmost, (maxR > -1e8) and maxR or nil
+    end
+
+    local function StabilizeSpellBookSearchBox(want)
+        if spellSearchBusy then return end
+        if _G.InCombatLockdown and _G.InCombatLockdown() then return end
+        local psf = _G.PlayerSpellsFrame
+        local sb = psf and psf.SpellBookFrame
+        local box = sb and sb.SearchBox
+        if not IsSafeObj(box) then return end
+
+        spellSearchBusy = true
+        if not want then
+            local ow = spellSearchOrigW[box]
+            if ow and box.SetWidth then pcall(box.SetWidth, box, ow) end
+            spellSearchOrigW[box] = nil
+            local op = spellSearchOrigPts[box]
+            if op then
+                SetAllPoints(box, op)
+                spellSearchOrigPts[box] = nil
+            end
+            spellSearchBusy = false
+            return
+        end
+
+        if sb.IsShown then
+            local okS, shown = pcall(sb.IsShown, sb)
+            if not okS or F.IsSecret(shown) or not shown then
+                spellSearchBusy = false
+                return
+            end
+        end
+
+        if spellSearchOrigW[box] == nil and box.GetWidth then
+            spellSearchOrigW[box] = F.PlainNumber(box:GetWidth(), nil)
+        end
+        if spellSearchOrigPts[box] == nil then
+            local pts = ReadAllPoints(box)
+            if #pts > 0 then spellSearchOrigPts[box] = pts end
+        end
+
+        local rightmost, tabRight = FindRightmostSpellTab(sb)
+        local boxRight = box.GetRight and F.PlainNumber(box:GetRight(), nil) or nil
+        if tabRight and boxRight then
+            local avail = math_floor(boxRight - tabRight - 10 + 0.5)
+            local wantW = math_max(76, math_min(260, avail))
+            local curW = F.PlainNumber(box.GetWidth and box:GetWidth(), 0) or 0
+            if math_abs(curW - wantW) >= 1 and box.SetWidth then
+                pcall(box.SetWidth, box, wantW)
+            end
+        end
+
+        -- 垂直对齐到标签行中心，避开右上角最大化(+) / 关闭(×) 按钮
+        local refTab = rightmost or (sb.CategoryTabSystem and sb.CategoryTabSystem)
+        local tabCy = nil
+        if IsSafeObj(refTab) then
+            local tTop = refTab.GetTop and F.PlainNumber(refTab:GetTop(), nil) or nil
+            local tBot = refTab.GetBottom and F.PlainNumber(refTab:GetBottom(), nil) or nil
+            if tTop and tBot then tabCy = (tTop + tBot) * 0.5 end
+        end
+        local boxTop = box.GetTop and F.PlainNumber(box:GetTop(), nil) or nil
+        local boxBot = box.GetBottom and F.PlainNumber(box:GetBottom(), nil) or nil
+        if tabCy and boxTop and boxBot then
+            local boxCy = (boxTop + boxBot) * 0.5
+            local dy = tabCy - boxCy
+            if math_abs(dy) >= 2 and math_abs(dy) <= 36 then
+                local pts = ReadAllPoints(box)
+                if #pts > 0 then
+                    local adj = {}
+                    for i, p in ipairs(pts) do
+                        adj[i] = { p[1], p[2], p[3], p[4], (p[5] or 0) + dy }
+                    end
+                    SetAllPoints(box, adj)
+                end
+            end
+        end
+        spellSearchBusy = false
+    end
+
+    local function EnsureSpellBookSearchBoxGuard()
+        local psf = _G.PlayerSpellsFrame
+        local sb = psf and psf.SpellBookFrame
+        if not IsSafeObj(sb) or spellBookGuardHooked[sb] then return end
+        spellBookGuardHooked[sb] = true
+        local function Sync()
+            local on = mod._active and mod:GetDB().harmonyFontGuard ~= false
+            StabilizeSpellBookSearchBox(on)
+        end
+        local function SyncDeferred()
+            Sync()
+            if C_Timer and C_Timer.After then
+                C_Timer.After(0, Sync)
+            end
+        end
+        if sb.HookScript then sb:HookScript("OnShow", SyncDeferred) end
+        if type(sb.ResizeSearchBox) == "function" then
+            _G.hooksecurefunc(sb, "ResizeSearchBox", Sync)
+        end
+        if type(sb.SetTab) == "function" then
+            _G.hooksecurefunc(sb, "SetTab", SyncDeferred)
+        end
+        if IsSafeObj(psf) and psf.HookScript then
+            psf:HookScript("OnSizeChanged", SyncDeferred)
         end
     end
 
@@ -1325,6 +1477,8 @@ do
         local want = mod._active and mod:GetDB().harmonyFontGuard ~= false
         PolishNamedHeaders(want)
         PolishSkillsDetailDescription(want)
+        EnsureSpellBookSearchBoxGuard()
+        StabilizeSpellBookSearchBox(want)
         local sf = _G.SkillsFrame
         if IsSafeObj(sf) and type(sf.ScrollBox) == "table" and not skillsBoxHooked and type(sf.ScrollBox.Update) == "function" then
             skillsBoxHooked = true

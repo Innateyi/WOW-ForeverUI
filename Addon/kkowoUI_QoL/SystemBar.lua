@@ -53,7 +53,8 @@ local BUTTON_DEFS = {
     { id = "Character",   file = "Character.blp",    label = "角色面板",     native = "CharacterMicroButton",    bindings = { "TOGGLECHARACTER0" } },
     { id = "Social",      file = "Social.blp",       label = "好友与社交",   native = "QuickJoinToastButton",    badge = "friends", socialGroup = true, bindings = { "TOGGLESOCIAL" } },
     { id = "Profession",  file = "Profession.blp",   label = "专业技能",     native = "ProfessionMicroButton",   bindings = { "TOGGLEPROFESSIONBOOK" } },
-    { id = "PlayerSpells",file = "PlayerSpells.blp", label = "天赋与法术",   native = "TalentMicroButton",       fallback = "PlayerSpellsMicroButton", badge = "talents", bindings = { "TOGGLETALENTS", "TOGGLESPELLBOOK" } },
+    { id = "SpellBook",   file = "SpellBook.blp",    label = "法术书",       native = "EUI_SpellbookRoute",      fallback = "SpellbookMicroButton", fallback2 = "PlayerSpellsMicroButton", bindings = { "TOGGLESPELLBOOK" } },
+    { id = "PlayerSpells",file = "Talents.blp",      label = "天赋",         native = "TalentMicroButton",       fallback = "PlayerSpellsMicroButton", badge = "talents", bindings = { "TOGGLETALENTS" } },
     { id = "Legacy",      file = "Achievement.blp",  label = "传承与成就",   native = "LegacyMicroButton",       fallback = "AchievementMicroButton",  badge = "legacy",  bindings = { "TOGGLEACHIEVEMENT" } },
     { id = "Guild",       file = "Guild.blp",        label = "公会与社区",   native = "GuildMicroButton",        badge = "guild", socialGroup = true, bindings = { "TOGGLEGUILDTAB" } },
     { id = "LFD",         file = "LFD.blp",          label = "队伍查找器",   native = "LFDMicroButton",          bindings = { "TOGGLEGROUPFINDER", "TOGGLELFGPARENT" } },
@@ -63,6 +64,8 @@ local BUTTON_DEFS = {
 }
 
 local MICRO_ALERT_OWNER_MAP = {
+    SpellbookMicroButton    = "SpellBook",
+    EUI_SpellbookRoute      = "SpellBook",
     TalentMicroButton       = "PlayerSpells",
     PlayerSpellsMicroButton = "PlayerSpells",
     CharacterMicroButton    = "Character",
@@ -104,6 +107,9 @@ local function ResolveNativeButton(def)
     end
     if def.fallback and _G[def.fallback] then
         return _G[def.fallback]
+    end
+    if def.fallback2 and _G[def.fallback2] then
+        return _G[def.fallback2]
     end
     return nil
 end
@@ -1580,6 +1586,8 @@ function mod:OnEnable()
         ScheduleLateMinimapButtonSync()
         C_Timer.After(0.8, function()
             if not mod._active then return end
+            BindSecureButtons()
+            LayoutBar()
             SuppressBlizzardMicroHelpTips(false)
             UpdateBadges(true)
         end)

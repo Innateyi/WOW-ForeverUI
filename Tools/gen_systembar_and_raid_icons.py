@@ -24,6 +24,7 @@ from PIL import Image
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LUCIDE_OUT = os.path.join(REPO_ROOT, "Addon", "kkowoUI_Media", "Media", "SystemBar", "Lucide")
+GAMEICONS_OUT = os.path.join(REPO_ROOT, "Addon", "kkowoUI_Media", "Media", "SystemBar", "GameIcons")
 MARK_DIR = os.path.join(REPO_ROOT, "Addon", "kkowoUI_Media", "Media", "MarkBar")
 WOW_TARGETING_DIR = os.environ.get(
     "WOW_TARGETING_DIR",
@@ -223,21 +224,99 @@ def sdf_profession(x, y):
     return np.minimum.reduce([head, face, shaft_clipped])
 
 
-def sdf_player_spells(x, y):
-    # Lucide book-open: crisp symmetrical open tome with smooth curved top/bottom spines
-    s = SW * 0.95
+def sdf_spellbook(x, y):
+    # Lucide open grimoire with crisp symmetrical 4-point concave arcane sparkle (✦) above spine
+    # Unified stroke weight with Character / Profession / Talents / Achievement
+    s = SW * 0.94
     ax = np.abs(x)
-    # Outer vertical edge
-    outer_v = sd_segment(ax, y, 0.75, -0.50, 0.75, 0.48) - s
-    # Center spine vertical seam
-    spine_v = sd_segment(ax, y, 0.0, -0.32, 0.0, 0.56) - s
-    # Top page curve (smooth arch from outer edge down into center spine)
-    top_edge = sd_segment(ax, y, 0.28, -0.52, 0.73, -0.52) - s
-    top_curve = sd_bezier_quad(ax, y, (0.28, -0.52), (0.04, -0.52), (0.0, -0.30)) - s
-    # Bottom page curve (smooth arch meeting cleanly at center spine without pointy spike)
-    bot_edge = sd_segment(ax, y, 0.28, 0.48, 0.73, 0.48) - s
-    bot_curve = sd_bezier_quad(ax, y, (0.28, 0.48), (0.08, 0.48), (0.0, 0.58)) - s
-    return np.minimum.reduce([outer_v, spine_v, top_edge, top_curve, bot_edge, bot_curve])
+    # Open tome in lower ~70% with spacious top room for the magic sparkle
+    outer_v = sd_segment(ax, y, 0.74, -0.22, 0.74, 0.60) - s
+    spine_v = sd_segment(ax, y, 0.0, -0.04, 0.0, 0.68) - s
+    top_edge = sd_segment(ax, y, 0.28, -0.24, 0.72, -0.24) - s
+    top_curve = sd_bezier_quad(ax, y, (0.28, -0.24), (0.04, -0.24), (0.0, -0.03)) - s
+    bot_edge = sd_segment(ax, y, 0.28, 0.60, 0.72, 0.60) - s
+    bot_curve = sd_bezier_quad(ax, y, (0.28, 0.60), (0.08, 0.60), (0.0, 0.70)) - s
+    # Crisp page text accents (two short clean lines on each page, clearly legible at 20px)
+    page_l1 = sd_segment(ax, y, 0.24, 0.08, 0.52, 0.08) - (SW * 0.68)
+    page_l2 = sd_segment(ax, y, 0.24, 0.34, 0.46, 0.34) - (SW * 0.68)
+    # Symmetrical concave 4-point arcane sparkle (✦) above spine (0.0, -0.57) — unmistakably magic!
+    sy = y + 0.57
+    rx, ry = 0.27, 0.25
+    u = np.abs(x) / rx
+    v = np.abs(sy) / ry
+    # Astroid-like concave 4-point star SDF approximation (exact smooth flare, never looks like a cross)
+    p = 0.56
+    f = (np.maximum(u, 1e-6) ** p + np.maximum(v, 1e-6) ** p) ** (1.0 / p)
+    sparkle = (f - 1.0) * 0.14
+    return np.minimum.reduce([
+        outer_v, spine_v, top_edge, top_curve, bot_edge, bot_curve,
+        page_l1, page_l2, sparkle,
+    ])
+
+
+def sdf_talents(x, y):
+    # Lucide symmetrical 3-branch skill/talent tree (root -> 3 upper talent nodes)
+    # Instantly distinguishable from SpellBook and matching Lucide stroke weight & proportions
+    s = SW * 0.94
+    ax = np.abs(x)
+    # Node centers & radii
+    r_root = 0.175
+    r_top = 0.175
+    r_side = 0.165
+    y_root = 0.54
+    y_top = -0.54
+    x_side, y_side = 0.54, -0.15
+
+    # Hollow circular talent nodes
+    n_root = np.abs(sd_circle(x, y, 0.0, y_root, r_root)) - s
+    n_top = np.abs(sd_circle(x, y, 0.0, y_top, r_top)) - s
+    n_side = np.abs(sd_circle(ax, y, x_side, y_side, r_side)) - s
+
+    # Central trunk connecting root rim cleanly up to top apex rim
+    trunk = sd_segment(x, y, 0.0, y_root - r_root, 0.0, y_top + r_top) - s
+
+    # Smooth symmetrical branches curving from trunk junction (0, 0.18) out to side nodes (0.54, -0.15)
+    # Clipped cleanly outside the side node interior so lines meet the ring cleanly!
+    branch_raw = sd_bezier_quad(ax, y, (0.0, 0.18), (0.36, 0.18), (x_side, y_side + r_side)) - s
+    inside_side = sd_circle(ax, y, x_side, y_side, r_side - 0.01) < 0.0
+    branch = np.where(inside_side, 1.0, branch_raw)
+
+    return np.minimum.reduce([n_root, n_top, n_side, trunk, branch])
+
+
+def sdf_player_spells(x, y):
+    # Legacy alias kept in sync with redesigned Talents icon
+    return sdf_talents(x, y)
+
+
+def sdf_gameicon_spellbook(x, y):
+    # Matching solid-silhouette GameIcons variant for SpellBook
+    ax = np.abs(x)
+    # Left/right filled page silhouettes separated by a crisp dark spine gap
+    top_y = -0.28 + 0.18 * np.exp(-((ax / 0.22) ** 2))
+    bot_y = 0.56 + 0.10 * np.exp(-((ax / 0.22) ** 2))
+    d_x = np.maximum(0.055 - ax, ax - 0.74)
+    d_y = np.maximum(top_y - y, y - bot_y)
+    page_body = np.maximum(d_x, d_y) - 0.02
+    # Carve two clean rune bars out of each page for crisp readability
+    cut1 = sd_segment(ax, y, 0.24, 0.02, 0.54, 0.02) - 0.042
+    cut2 = sd_segment(ax, y, 0.24, 0.26, 0.48, 0.26) - 0.042
+    pages = np.maximum(page_body, -np.minimum(cut1, cut2))
+    # Solid 4-point arcane star above spine
+    sy = y + 0.56
+    star_d = (np.abs(x) ** 0.72 + np.abs(sy) ** 0.72) ** (1.0 / 0.72) - 0.22
+    return np.minimum(pages, star_d)
+
+
+def sdf_gameicon_talents(x, y):
+    # Matching solid-silhouette GameIcons variant for Talents (filled nodes + bold stems)
+    ax = np.abs(x)
+    n_root = sd_circle(x, y, 0.0, 0.54, 0.21)
+    n_top = sd_circle(x, y, 0.0, -0.54, 0.21)
+    n_side = sd_circle(ax, y, 0.54, -0.15, 0.195)
+    trunk = sd_segment(x, y, 0.0, 0.48, 0.0, -0.48) - 0.072
+    branch = sd_bezier_quad(ax, y, (0.0, 0.18), (0.36, 0.18), (0.54, -0.05)) - 0.068
+    return np.minimum.reduce([n_root, n_top, n_side, trunk, branch])
 
 
 def sdf_achievement(x, y):
@@ -380,6 +459,8 @@ LUCIDE_SPECS = [
     ("Character",    sdf_character),
     ("Social",       sdf_social),
     ("Profession",   sdf_profession),
+    ("SpellBook",    sdf_spellbook),
+    ("Talents",      sdf_talents),
     ("PlayerSpells", sdf_player_spells),
     ("Achievement",  sdf_achievement),
     ("Guild",        sdf_guild),
@@ -387,6 +468,12 @@ LUCIDE_SPECS = [
     ("Collections",  sdf_collections),
     ("Hearthstone",  sdf_hearthstone),
     ("MainMenu",     sdf_main_menu),
+]
+
+GAMEICON_SPECS = [
+    ("SpellBook",    sdf_gameicon_spellbook),
+    ("Talents",      sdf_gameicon_talents),
+    ("PlayerSpells", sdf_gameicon_talents),
 ]
 
 
@@ -538,6 +625,15 @@ def generate_lucide_icons():
     preview_path = os.path.join(PREVIEW_DIR, "lucide_hd_preview.png")
     sheet.save(preview_path)
     print(f"Saved preview: {preview_path}")
+
+    # Also generate matching solid-silhouette GameIcons for SpellBook & Talents
+    os.makedirs(GAMEICONS_OUT, exist_ok=True)
+    for name, fn in GAMEICON_SPECS:
+        master = render_sdf_to_rgba(fn)
+        mips = build_mipmaps_rgba(master, 64)
+        out_path = os.path.join(GAMEICONS_OUT, f"{name}.blp")
+        write_blp2_bgra(out_path, mips)
+        print(f"GameIcons BLP2: {name}.blp  ({os.path.getsize(out_path)} bytes, {len(mips)} mips)")
 
 
 # ---------------------------------------------------------------------------
