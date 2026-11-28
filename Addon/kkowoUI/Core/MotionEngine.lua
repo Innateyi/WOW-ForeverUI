@@ -1368,3 +1368,90 @@ function M.AttachHealPrediction(healthBar, opts)
     end
     return ctrl
 end
+
+----------------------------------------------------------------------
+--  7) PlayBarArriveGlide：换目标轻快入场滑动（2b）
+--     • 明文血量：先 Immediate 设至 80%（柔和 90%），下一帧用原生平滑滑至当前值
+--     • 机密血量：不做算术，直接跳过滑动保留淡入
+--     • 快速连续切换目标时按代数取消旧回调，拖尾绝不露出伪影
+----------------------------------------------------------------------
+local arriveState = setmetatable({}, { __mode = "k" })
+
+function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
+    if not bar then return false end
+    local override = opts and opts.override
+    if not (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_targetArrive", override)) then
+        return false
+    end
+    if F.IsSecret(cur) or F.IsSecret(maxVal) then
+        return false
+    end
+    local hp = F.PlainNumber(cur, nil)
+    local mx = F.PlainNumber(maxVal, nil)
+    if not (hp and mx and mx > 0 and hp > 0) then
+        return false
+    end
+    if opts and opts.unit and IsUnitDeadPlain(opts.unit) then
+        return false
+    end
+
+    local ratio = (ST.GetFXIntensity(override) == "soft") and 0.90 or 0.80
+    local startVal = hp * ratio
+
+    local st = arriveState[bar]
+    if not st then
+        st = { gen = 0 }
+        arriveState[bar] = st
+    end
+    st.gen = st.gen + 1
+    st.targetVal = hp
+    st.targetMax = mx
+    st.trail = trailCtrl
+    st.override = override
+    st.unit = opts and opts.unit or nil
+
+    M.SetBarMinMax(bar, 0, mx)
+    M.SetBarValue(bar, startVal, {
+        fxKey = "fx_smoothMain",
+        override = override,
+        instant = true,
+    })
+    -- 拖尾同步到起点值，确保向上滑入期间不会露出假掉血段
+    if trailCtrl and trailCtrl.SetValue then
+        trailCtrl:SetValue(startVal, mx, true)
+    end
+
+    if not st.fn then
+        st.fn = function()
+            if not bar:IsVisible() then return end
+            M.SetBarValue(bar, st.targetVal, {
+                fxKey = "fx_smoothMain",
+                override = st.override,
+                unit = st.unit,
+                instant = false,
+            })
+            if st.trail and st.trail.SetValue then
+                st.trail:SetValue(st.targetVal, st.targetMax, true)
+            end
+        end
+    end
+    local myGen = st.gen
+    if not st.pending then
+        st.pending = true
+        C_Timer.After(0, function()
+            st.pending = false
+            if st.gen == myGen then
+                st.fn()
+            end
+        end)
+    else
+        -- 已有待执行回调，直接更新目标值，下一帧以最新目标滑入（避免叠加）
+        local latestGen = st.gen
+        C_Timer.After(0, function()
+            if st.gen == latestGen then
+                st.fn()
+            end
+        end)
+    end
+    return true
+end

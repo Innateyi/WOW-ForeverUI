@@ -291,7 +291,7 @@ local function UpdateTargetOfTarget(instant)
     tot._nameText:SetTextColor(CH.UnitNameColor("targettarget", 0.90, 0.92, 0.96))
 end
 
-local function UpdateTopTargetHUD(instant)
+local function UpdateTopTargetHUD(instant, isTargetSwitch)
     if CH.topTargetFrame then
         local db = mod:GetDB()
         local exists = UnitExistsSafe("target")
@@ -310,12 +310,19 @@ local function UpdateTopTargetHUD(instant)
             local mx = _G.UnitHealthMax and _G.UnitHealthMax("target")
             if type(mx) == "nil" then mx = 1 end
             local hpBar = CH.topTargetFrame._hpBar._bar
-            SetHUDMainBar(hpBar, hp, mx, "target", instant)
-            UpdateBarSparkVis(CH.topTargetFrame._hpBar, hp, mx)
-            if CH.topTargetFrame._hpBar._trail then
-                CH.topTargetFrame._hpBar._trail:SetEnabled(db.showTrail ~= false)
-                CH.topTargetFrame._hpBar._trail:SetValue(hp, mx, instant)
+            local trail = CH.topTargetFrame._hpBar._trail
+            if trail then
+                trail:SetEnabled(db.showTrail ~= false)
             end
+            local didArrive = isTargetSwitch == true
+                and M.PlayBarArriveGlide(hpBar, hp, mx, trail, { unit = "target" })
+            if not didArrive then
+                SetHUDMainBar(hpBar, hp, mx, "target", instant)
+                if trail then
+                    trail:SetValue(hp, mx, instant)
+                end
+            end
+            UpdateBarSparkVis(CH.topTargetFrame._hpBar, hp, mx)
             if CH.topTargetFrame._hpBar._healPred then
                 CH.topTargetFrame._hpBar._healPred:QueueUpdate("target", instant)
             end
@@ -1208,7 +1215,7 @@ function mod:OnEnable()
         QueuePetHideSync()
     end)
     self:RegisterEvent("PLAYER_TARGET_CHANGED", function()
-        UpdateTopTargetHUD(true)
+        UpdateTopTargetHUD(true, true)
         UpdateUpperRightClassPower()
         SyncHiddenEUIFrames()
         UpdateIdleFade(false)
