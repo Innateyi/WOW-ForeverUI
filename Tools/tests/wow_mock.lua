@@ -14,6 +14,8 @@ local _locale = "zhCN"
 local _eventListeners = {}
 local _timers = {}
 local _tickers = {}
+local _activeAnimGroups = {}
+local _mockHealPred = {}
 local _cvars = {
     UnitNameFriendlyPlayerName = "0",
     nameplateShowFriends = "0",
@@ -281,6 +283,23 @@ function RegionProto:IsVisible()
 end
 function RegionProto:SetAlpha(a) self._alpha = a or 1 end
 function RegionProto:GetAlpha() return self._alpha or 1 end
+function RegionProto:SetAlphaFromBoolean(boolVal, trueAlpha, falseAlpha)
+    local ta = trueAlpha ~= nil and trueAlpha or 1
+    local fa = falseAlpha ~= nil and falseAlpha or 0
+    self._lastAlphaFromBool = { val = boolVal, trueAlpha = ta, falseAlpha = fa }
+    if _secretSentinels[boolVal] then
+        self._alpha = ta
+    else
+        self._alpha = boolVal and ta or fa
+    end
+end
+function RegionProto:SetVertexColorFromBoolean(boolVal, trueCol, falseCol)
+    self._lastVertexColorFromBool = { val = boolVal, trueCol = trueCol, falseCol = falseCol }
+    local c = (_secretSentinels[boolVal] or boolVal) and trueCol or falseCol
+    if type(c) == "table" and c.r then
+        self._vertexColor = { c.r, c.g, c.b, c.a or 1 }
+    end
+end
 function RegionProto:GetEffectiveAlpha()
     local acc = 1
     local cur = self
@@ -300,9 +319,18 @@ function RegionProto:SetScale(s)
 end
 function RegionProto:GetScale() return self._scale or 1 end
 function RegionProto:GetEffectiveScale() return self._scale or 1 end
-function RegionProto:SetWidth(w) self._w = w or 0 end
-function RegionProto:SetHeight(h) self._h = h or 0 end
-function RegionProto:SetSize(w, h) self._w, self._h = w or 0, h or w or 0 end
+function RegionProto:SetWidth(w)
+    if self._protected then recordProtected("SetWidth", self) end
+    self._w = w or 0
+end
+function RegionProto:SetHeight(h)
+    if self._protected then recordProtected("SetHeight", self) end
+    self._h = h or 0
+end
+function RegionProto:SetSize(w, h)
+    if self._protected then recordProtected("SetSize", self) end
+    self._w, self._h = w or 0, h or w or 0
+end
 function RegionProto:GetWidth() return self._w or 0 end
 function RegionProto:GetHeight() return self._h or 0 end
 function RegionProto:GetSize() return self._w or 0, self._h or 0 end
@@ -450,43 +478,101 @@ function RegionProto:CreateLine(name) return newRegion("Line", name, self) end
 function RegionProto:CreateAnimationGroup()
     local ag = newRegion("AnimationGroup", nil, self)
     ag._playing = false
+    ag._elapsed = 0
+    ag._looping = "NONE"
+    ag._anims = {}
+    ag._toFinalAlpha = false
+    local function calcTotalDuration(group)
+        local byOrder = {}
+        for _, anim in ipairs(group._anims) do
+            local ord = anim._order or 1
+            local span = (anim._startDelay or 0) + (anim._duration or 0) + (anim._endDelay or 0)
+            if not byOrder[ord] or span > byOrder[ord] then
+                byOrder[ord] = span
+            end
+        end
+        local total = 0
+        for _, span in pairs(byOrder) do
+            total = total + span
+        end
+        return total
+    end
     function ag:CreateAnimation(kind)
         local a = newRegion("Animation", nil, self)
-        function a:SetFromAlpha() end
-        function a:SetToAlpha() end
-        function a:SetDuration() end
-        function a:SetSmoothing() end
-        function a:SetOrder() end
-        function a:SetOffset() end
-        function a:SetScale() end
-        function a:SetScaleFrom() end
-        function a:SetScaleTo() end
-        function a:SetDegrees() end
+        a._kind = kind
+        a._order = 1
+        a._duration = 0
+        a._startDelay = 0
+        a._endDelay = 0
+        function a:SetFromAlpha(v) self._fromAlpha = v end
+        function a:SetToAlpha(v) self._toAlpha = v end
+        function a:SetDuration(d) self._duration = d or 0 end
+        function a:GetDuration() return self._duration or 0 end
+        function a:SetSmoothing(s) self._smoothing = s end
+        function a:SetOrder(o) self._order = o or 1 end
+        function a:SetOffset(x, y) self._dx, self._dy = x or 0, y or 0 end
+        function a:SetScale(x, y) self._sx, self._sy = x, y end
+        function a:SetScaleFrom(x, y) self._sfX, self._sfY = x, y end
+        function a:SetScaleTo(x, y) self._stX, self._stY = x, y end
+        function a:SetDegrees(d) self._deg = d end
         function a:SetOrigin() end
-        function a:SetStartDelay() end
-        function a:SetEndDelay() end
-        function a:GetSmoothProgress() return 0.5 end
+        function a:SetStartDelay(d) self._startDelay = d or 0 end
+        function a:SetEndDelay(d) self._endDelay = d or 0 end
+        function a:GetSmoothProgress()
+            local tot = calcTotalDuration(ag)
+            if tot <= 0 then return 1 end
+            return math.min(1, math.max(0, (ag._elapsed or 0) / tot))
+        end
+        ag._anims[#ag._anims + 1] = a
         return a
     end
     function ag:Play()
         self._playing = true
+        self._elapsed = 0
+        self._totalDur = calcTotalDuration(self)
+        _activeAnimGroups[self] = true
         if self._scripts.OnPlay then self._scripts.OnPlay(self) end
     end
     function ag:Stop()
+        local was = self._playing
         self._playing = false
-        if self._scripts.OnStop then self._scripts.OnStop(self) end
+        self._elapsed = 0
+        _activeAnimGroups[self] = nil
+        if was and self._scripts.OnStop then self._scripts.OnStop(self) end
     end
     function ag:Restart()
         self:Stop()
         self:Play()
     end
-    function ag:Pause() self._playing = false end
+    function ag:Pause()
+        self._playing = false
+        _activeAnimGroups[self] = nil
+    end
     function ag:IsPlaying() return self._playing end
-    function ag:SetLooping() end
-    function ag:SetToFinalAlpha() end
-    function ag:SetAnimationSpeedMultiplier() end
-    function ag:GetProgress() return 0.5 end
+    function ag:SetLooping(mode) self._looping = mode or "NONE" end
+    function ag:GetLooping() return self._looping or "NONE" end
+    function ag:SetToFinalAlpha(v) self._toFinalAlpha = v == true end
+    function ag:SetAnimationSpeedMultiplier(m) self._speedMul = m or 1 end
+    function ag:GetProgress()
+        local tot = self._totalDur or calcTotalDuration(self)
+        if tot <= 0 then return 0.5 end
+        return math.min(1, math.max(0, (self._elapsed or 0) / tot))
+    end
     return ag
+end
+function RegionProto:AddAuraShownAnimation(ag)
+    self._auraShownAnims = self._auraShownAnims or {}
+    self._auraShownAnims[ag] = true
+end
+function RegionProto:RemoveAuraShownAnimation(ag)
+    if self._auraShownAnims then self._auraShownAnims[ag] = nil end
+end
+function RegionProto:SetButtonState(state, locked)
+    self._buttonState = state or "NORMAL"
+    self._buttonStateLocked = locked == true
+end
+function RegionProto:GetButtonState()
+    return self._buttonState or "NORMAL"
 end
 function RegionProto:SetTexture(t) self._texture = t; return true end
 function RegionProto:GetTexture()
@@ -497,11 +583,23 @@ end
 function RegionProto:SetAtlas(a) self._atlas = a; return true end
 function RegionProto:GetAtlas() return self._atlas end
 function RegionProto:SetColorTexture(r, g, b, a) self._colorTex = { r, g, b, a }; self._colorTexture = true end
-function RegionProto:SetVertexColor() end
+function RegionProto:SetVertexColor(r, g, b, a) self._vertexColor = { r, g, b, a or 1 } end
+function RegionProto:GetVertexColor()
+    local c = self._vertexColor
+    if c then return c[1], c[2], c[3], c[4] end
+    return 1, 1, 1, 1
+end
 function RegionProto:SetDesaturated() end
-function RegionProto:SetBlendMode() end
-function RegionProto:SetTexCoord() end
-function RegionProto:GetTexCoord() return 0, 1, 0, 1 end
+function RegionProto:SetBlendMode(m) self._blendMode = m end
+function RegionProto:GetBlendMode() return self._blendMode or "BLEND" end
+function RegionProto:SetTexCoord(l, r, t, b, ...)
+    self._texCoord = { l or 0, r or 1, t or 0, b or 1 }
+end
+function RegionProto:GetTexCoord()
+    local c = self._texCoord
+    if c then return c[1], c[2], c[3], c[4] end
+    return 0, 1, 0, 1
+end
 function RegionProto:SetRotation() end
 function RegionProto:SetDrawLayer(layer, sub) self._drawLayer = layer or "ARTWORK"; self._drawSublevel = sub or 0 end
 function RegionProto:GetDrawLayer() return self._drawLayer or "ARTWORK", self._drawSublevel or 0 end
@@ -569,16 +667,46 @@ function RegionProto:GetStatusBarTexture()
 end
 function RegionProto:SetStatusBarColor() end
 function RegionProto:GetStatusBarColor() return 1, 1, 1, 1 end
-function RegionProto:SetMinMaxValues(mn, mx) self._min, self._max = mn or 0, mx or 100 end
+function RegionProto:SetMinMaxValues(mn, mx)
+    self._min, self._max = mn or 0, mx or 100
+    self._minMaxCount = (self._minMaxCount or 0) + 1
+end
 function RegionProto:GetMinMaxValues() return self._min or 0, self._max or 100 end
-function RegionProto:SetValue(v) self._val = v or 0 end
+function RegionProto:SetValue(...)
+    local argc = select("#", ...)
+    local v, interp = select(1, ...), select(2, ...)
+    self._val = v or 0
+    self._lastSetValueArgc = argc
+    self._lastInterp = interp
+    self._timerDuration = nil
+end
 function RegionProto:GetValue() return self._val or 0 end
+function RegionProto:SetTimerDuration(durObj, interp, dir)
+    self._timerDuration = durObj
+    self._timerInterp = interp
+    self._timerDir = dir
+    self._timerSetCount = (self._timerSetCount or 0) + 1
+    if type(durObj) == "table" and durObj.GetTotalDuration then
+        local okT, tot = pcall(durObj.GetTotalDuration, durObj)
+        local okR, rem = pcall(durObj.GetRemainingDuration, durObj)
+        if okT and not _secretSentinels[tot] and type(tot) == "number" and tot > 0 then
+            self._min, self._max = 0, tot
+            if okR and not _secretSentinels[rem] and type(rem) == "number" then
+                local isRem = (Enum and Enum.StatusBarTimerDirection and dir == Enum.StatusBarTimerDirection.RemainingTime)
+                self._val = isRem and rem or math.max(0, tot - rem)
+            end
+        end
+    end
+end
+function RegionProto:SetToTargetValue() end
 function RegionProto:SetValueStep() end
 function RegionProto:SetObeyStepOnDrag() end
 function RegionProto:ClearLines() end
 function RegionProto:GetFading() return false end
-function RegionProto:SetOrientation() end
-function RegionProto:SetReverseFill() end
+function RegionProto:SetOrientation(o) self._orientation = o or "HORIZONTAL" end
+function RegionProto:GetOrientation() return self._orientation or "HORIZONTAL" end
+function RegionProto:SetReverseFill(v) self._reverseFill = v == true end
+function RegionProto:GetReverseFill() return self._reverseFill == true end
 function RegionProto:SetCooldown() end
 function RegionProto:Clear() self._messages = {} end
 function RegionProto:SetAutoFocus() end
@@ -848,6 +976,223 @@ function UnitChannelInfo()
     end
     return
 end
+
+-- 12.x DurationObject & C_DurationUtil（行为参照 EUI SwingTimer / LootRolls / CastBar，待实机录像进一步校准）
+local function newDurationObj(startSec, durSec, isSecret)
+    local d = {
+        _start = startSec or 0,
+        _dur = durSec or 0,
+        _secret = isSecret == true,
+    }
+    function d:SetTimeFromStart(startTime, duration)
+        self._start = startTime or _now
+        self._dur = duration or 0
+        self._secret = _secretSentinels[startTime] == true or _secretSentinels[duration] == true
+    end
+    function d:SetTimeSpan(startTime, endTime)
+        self._start = startTime or _now
+        if _secretSentinels[startTime] or _secretSentinels[endTime] then
+            self._dur = newSecretSentinel("durSpan")
+            self._end = endTime
+            self._secret = true
+        else
+            self._end = endTime or self._start
+            self._dur = math.max(0, self._end - self._start)
+            self._secret = false
+        end
+    end
+    function d:GetStartTime()
+        if self._secret then return newSecretSentinel("durStart") end
+        return self._start
+    end
+    function d:GetEndTime()
+        if self._secret then return newSecretSentinel("durEnd") end
+        return self._end or (self._start + self._dur)
+    end
+    function d:GetTotalDuration()
+        if self._secret then return newSecretSentinel("durTotal") end
+        return self._dur
+    end
+    function d:GetElapsedDuration()
+        if self._secret then return newSecretSentinel("durElapsed") end
+        return math.max(0, math.min(self._dur, _now - self._start))
+    end
+    function d:GetRemainingDuration()
+        if self._secret then return newSecretSentinel("durRemain") end
+        local e = self._end or (self._start + self._dur)
+        return math.max(0, e - _now)
+    end
+    function d:IsZero()
+        if self._secret then return newSecretSentinel("durIsZero") end
+        return (self._dur or 0) <= 0
+    end
+    function d:EvaluateRemainingPercent(curve)
+        if self._secret then return newSecretSentinel("durRemPct") end
+        local pct = (self._dur > 0) and (self:GetRemainingDuration() / self._dur) or 0
+        if curve and curve.Evaluate then return curve:Evaluate(pct) end
+        return pct
+    end
+    function d:EvaluateElapsedPercent(curve)
+        if self._secret then return newSecretSentinel("durElPct") end
+        local pct = (self._dur > 0) and (self:GetElapsedDuration() / self._dur) or 0
+        if curve and curve.Evaluate then return curve:Evaluate(pct) end
+        return pct
+    end
+    return d
+end
+
+C_DurationUtil = {
+    CreateDuration = function()
+        return newDurationObj(_now, 0, false)
+    end,
+}
+
+function UnitCastingDuration(unit)
+    if _zeroReturnAPIs.UnitCastingDuration then return end
+    if _secretAPIs.UnitCastingDuration then
+        return newDurationObj(_now, 2.0, true)
+    end
+    local name, _, _, st, en = UnitCastingInfo(unit)
+    if type(name) == "nil" then return nil end
+    if _secretSentinels[st] or _secretSentinels[en] then
+        return newDurationObj(_now, 2.0, true)
+    end
+    local s = (st or 0) / 1000
+    local e = (en or 0) / 1000
+    return newDurationObj(s, math.max(0.01, e - s), false)
+end
+
+function UnitChannelDuration(unit)
+    if _zeroReturnAPIs.UnitChannelDuration then return end
+    if _secretAPIs.UnitChannelDuration then
+        return newDurationObj(_now, 3.0, true)
+    end
+    local name, _, _, st, en = UnitChannelInfo(unit)
+    if type(name) == "nil" then return nil end
+    if _secretSentinels[st] or _secretSentinels[en] then
+        return newDurationObj(_now, 3.0, true)
+    end
+    local s = (st or 0) / 1000
+    local e = (en or 0) / 1000
+    return newDurationObj(s, math.max(0.01, e - s), false)
+end
+
+function UnitEmpoweredChannelDuration(unit)
+    return UnitChannelDuration(unit)
+end
+
+-- 12.x 治疗预估与吸收计算器（参照 EUI AbsorbGlow / RaidFrames_Absorb，待实机录像进一步校准）
+function UnitGetIncomingHeals(unit)
+    if _secretAPIs.UnitGetIncomingHeals then return newSecretSentinel("incomingHeals") end
+    local info = _mockHealPred[unit or "player"]
+    return info and info.heals or 0
+end
+
+function UnitGetTotalAbsorbs(unit)
+    if _secretAPIs.UnitGetTotalAbsorbs then return newSecretSentinel("totalAbsorbs") end
+    local info = _mockHealPred[unit or "player"]
+    return info and info.absorbs or 0
+end
+
+function UnitGetTotalHealAbsorbs(unit)
+    if _secretAPIs.UnitGetTotalHealAbsorbs then return newSecretSentinel("healAbsorbs") end
+    local info = _mockHealPred[unit or "player"]
+    return info and info.healAbsorbs or 0
+end
+
+function CreateUnitHealPredictionCalculator()
+    local calc = {
+        _absorbClamp = 0,
+        _healClamp = 0,
+        _overflow = 1.0,
+        _maxMode = 0,
+        _heals = 0,
+        _absorbs = 0,
+        _overshield = false,
+        _healAbsorbs = 0,
+    }
+    function calc:SetDamageAbsorbClampMode(m) self._absorbClamp = m end
+    function calc:SetIncomingHealClampMode(m) self._healClamp = m end
+    function calc:SetIncomingHealOverflowPercent(p) self._overflow = p or 1.0 end
+    function calc:SetMaximumHealthMode(m) self._maxMode = m end
+    function calc:GetIncomingHeals() return self._heals end
+    function calc:GetDamageAbsorbs() return self._absorbs, self._overshield end
+    function calc:GetHealAbsorbs() return self._healAbsorbs end
+    return calc
+end
+
+function UnitGetDetailedHealPrediction(unit, _healer, calc)
+    if type(calc) ~= "table" then return end
+    if _secretAPIs.HealPrediction then
+        calc._heals = newSecretSentinel("calcHeals")
+        calc._absorbs = newSecretSentinel("calcAbsorbs")
+        calc._overshield = newSecretSentinel("calcOvershield")
+        calc._healAbsorbs = newSecretSentinel("calcHealAbsorbs")
+        return
+    end
+    local hp = UnitHealth(unit)
+    local mx = UnitHealthMax(unit)
+    local rawHeals = UnitGetIncomingHeals(unit)
+    local rawAbs = UnitGetTotalAbsorbs(unit)
+    local rawHealAbs = UnitGetTotalHealAbsorbs(unit)
+    if _secretSentinels[hp] or _secretSentinels[mx] or _secretSentinels[rawHeals] or _secretSentinels[rawAbs] then
+        calc._heals = newSecretSentinel("calcHeals")
+        calc._absorbs = newSecretSentinel("calcAbsorbs")
+        calc._overshield = newSecretSentinel("calcOvershield")
+        calc._healAbsorbs = newSecretSentinel("calcHealAbsorbs")
+        return
+    end
+    local missing = math.max(0, (mx or 1) - (hp or 0))
+    local maxHeal = missing + (mx or 1) * math.max(0, (calc._overflow or 1) - 1)
+    calc._heals = math.min(rawHeals or 0, maxHeal)
+    if calc._absorbClamp == 0 then
+        calc._absorbs = math.min(rawAbs or 0, missing)
+        calc._overshield = (rawAbs or 0) > missing
+    else
+        calc._absorbs = rawAbs or 0
+        calc._overshield = (hp or 0) + (rawAbs or 0) > (mx or 1)
+    end
+    calc._healAbsorbs = rawHealAbs or 0
+end
+
+-- 12.x C_CurveUtil & UnitHealthPercent
+C_CurveUtil = {
+    CreateCurve = function()
+        local cv = { _type = 0, _pts = {} }
+        function cv:SetType(t) self._type = t or 0 end
+        function cv:AddPoint(x, y)
+            self._pts[#self._pts + 1] = { x = x, y = y }
+            table.sort(self._pts, function(a, b) return a.x < b.x end)
+        end
+        function cv:Evaluate(x)
+            if _secretSentinels[x] then return newSecretSentinel("curveEval") end
+            if #self._pts == 0 then return x end
+            if x <= self._pts[1].x then return self._pts[1].y end
+            if x >= self._pts[#self._pts].x then return self._pts[#self._pts].y end
+            for i = 1, #self._pts - 1 do
+                local a, b = self._pts[i], self._pts[i + 1]
+                if x >= a.x and x <= b.x then
+                    if self._type == 1 or b.x == a.x then return a.y end
+                    local t = (x - a.x) / (b.x - a.x)
+                    return a.y + (b.y - a.y) * t
+                end
+            end
+            return self._pts[#self._pts].y
+        end
+        return cv
+    end,
+}
+
+function UnitHealthPercent(unit, scaleTo100, curve)
+    local hp = UnitHealth(unit)
+    local mx = UnitHealthMax(unit)
+    if _secretSentinels[hp] or _secretSentinels[mx] then
+        return newSecretSentinel("healthPct")
+    end
+    local frac = (mx and mx > 0) and (hp / mx) or 0
+    if curve and curve.Evaluate then return curve:Evaluate(frac) end
+    return scaleTo100 and (frac * 100) or frac
+end
 function GetRaidTargetIndex() return nil end
 function IsInGroup() return false end
 function IsInRaid() return false end
@@ -915,7 +1260,8 @@ C_Timer = {
         return t
     end,
     NewTicker = function(interval, fn, iters)
-        local tk = { interval = interval or 1, fn = fn, cancelled = false, iters = iters }
+        local iv = interval or 1
+        local tk = { interval = iv, fn = fn, cancelled = false, iters = iters, nextAt = _now + iv, runs = 0 }
         function tk:Cancel() self.cancelled = true end
         function tk:IsCancelled() return self.cancelled end
         _tickers[#_tickers + 1] = tk
@@ -1007,6 +1353,12 @@ Enum = {
     UITextureSliceMode = { Stretched = 0, Tiled = 1 },
     SuperTrackingType = { UserWaypoint = 2 },
     ItemQuality = { Poor = 0, Common = 1, Uncommon = 2, Rare = 3, Epic = 4 },
+    StatusBarInterpolation = { Immediate = 0, ExponentialEaseOut = 1 },
+    StatusBarTimerDirection = { ElapsedTime = 0, RemainingTime = 1 },
+    UnitDamageAbsorbClampMode = { MissingHealth = 0, MaximumHealth = 1 },
+    UnitIncomingHealClampMode = { MissingHealth = 0, MaximumHealth = 1 },
+    UnitMaximumHealthMode = { Default = 0, WithAbsorbs = 1 },
+    CurveType = { Linear = 0, Step = 1 },
 }
 
 -- LibStub + LibSharedMedia-3.0 mock
@@ -1162,6 +1514,14 @@ function M.SetZeroReturnAPIs(map)
     end
 end
 function M.NewSecret(label) return newSecretSentinel(label) end
+function M.NewSecretDuration(startTime, dur) return newDurationObj(startTime or _now, dur or 2.0, true) end
+function M.SetMockHealPrediction(unit, tbl)
+    if unit == nil then
+        _mockHealPred = {}
+    else
+        _mockHealPred[unit] = tbl
+    end
+end
 function M.SetMouseFoci(list) _mouseFoci = type(list) == "table" and list or {} end
 function M.SetActiveRolls(map)
     _activeRolls = {}
@@ -1179,6 +1539,7 @@ function M.ResetScenario()
     _zeroReturnAPIs = {}
     _mouseFoci = {}
     _activeRolls = {}
+    _mockHealPred = {}
     _protectedViolations = {}
 end
 function M.GetProtectedViolations() return _protectedViolations end
@@ -1246,7 +1607,8 @@ function M.FireEvent(ev, ...)
     end
 end
 function M.AdvanceTime(dt)
-    _now = _now + (dt or 0.1)
+    local delta = dt or 0.1
+    _now = _now + delta
     local ran = true
     local guard = 0
     while ran and guard < 20 do
@@ -1263,6 +1625,45 @@ function M.AdvanceTime(dt)
         for _, t in ipairs(due) do
             ran = true
             t.fn()
+        end
+    end
+    -- 推进所有活跃中的 C_Timer.NewTicker
+    local snapTk = {}
+    for i = 1, #_tickers do snapTk[i] = _tickers[i] end
+    for _, tk in ipairs(snapTk) do
+        if not tk.cancelled and tk.nextAt and tk.nextAt <= _now then
+            local iv = (tk.interval and tk.interval > 0) and tk.interval or 0.1
+            tk.nextAt = _now + iv
+            tk.runs = (tk.runs or 0) + 1
+            tk.fn(tk)
+            if tk.iters and tk.runs >= tk.iters then
+                tk.cancelled = true
+            end
+        end
+    end
+    -- 推进所有播放中的 AnimationGroup，非循环组到期后触发 OnFinished
+    local snapAG = {}
+    for ag in pairs(_activeAnimGroups) do snapAG[#snapAG + 1] = ag end
+    for _, ag in ipairs(snapAG) do
+        if ag._playing then
+            ag._elapsed = (ag._elapsed or 0) + delta
+            local tot = ag._totalDur or 0
+            local loop = ag._looping or "NONE"
+            if loop == "REPEAT" or loop == "BOUNCE" then
+                if tot > 0 and ag._elapsed >= tot then
+                    ag._elapsed = ag._elapsed % tot
+                end
+            else
+                if ag._elapsed >= tot then
+                    ag._playing = false
+                    _activeAnimGroups[ag] = nil
+                    if ag._scripts and ag._scripts.OnFinished then
+                        ag._scripts.OnFinished(ag)
+                    end
+                end
+            end
+        else
+            _activeAnimGroups[ag] = nil
         end
     end
 end
