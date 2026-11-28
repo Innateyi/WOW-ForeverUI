@@ -10,12 +10,16 @@
 --      - 同步 EUI 小地图 customTooltipScale 与全局字号倍率，彻底告别 10px 过小模糊字
 --    • 若玩家手动关闭 PrettyTooltip，自动启用轻量零跳动黑曜石回退皮肤（含职业色目标的目标）
 ----------------------------------------------------------------------
+local _, ptNS = ...
 local _G = _G
 local F = _G.kkowoUI
 if not F then return end
-local ipairs, math_floor, math_max, math_min, pcall, setmetatable, type =
-    ipairs, math.floor, math.max, math.min, pcall, setmetatable, type
-local string_format = string.format
+local ipairs, math_floor, math_max, math_min, pairs, pcall, setmetatable, type =
+    ipairs, math.floor, math.max, math.min, pairs, pcall, setmetatable, type
+local string_format, string_lower = string.format, string.lower
+if type(ptNS) == "table" and ptNS._yielded then
+    ptNS = nil
+end
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 local GameTooltip = _G.GameTooltip
@@ -140,12 +144,301 @@ local BALANCED_PRETTY_SIZES = {
     -- 装备/技能/物件/光环/任务信息正文同步均衡放大
     subtitle = 14, header = 13, damage = 13, stats = 14,
     equipEffects = 14, enchants = 14, effects = 14, flavor = 13,
-    setItems = 13, setBonuses = 13, footer = 12, extras = 11, disenchant = 11,
+    setItems = 13, setBonuses = 13, footer = 13, extras = 13, disenchant = 12,
     spellBadges = 13, spellText = 14, spellDetails = 13,
     objectKind = 13, objectDetails = 14, objectQuests = 14, objectLoot = 13, objectPrices = 13,
     auraBadges = 13, auraText = 14, auraTime = 13,
     questInfo = 13, questBadges = 13, questText = 14, questObjectives = 14,
 }
+
+----------------------------------------------------------------------
+--  1b) PrettyTooltip 物品扩展钩子（零侵入 Vendor/ 与第三方插件）：
+--      • 去重 Auctionator「商人」行（仅在页脚已显示 sellPrice 时过滤，保留拍卖/来源/Scales）
+--      • 统一行内金币与插件图标尺寸、基线偏移（:0:1）与数字间距
+--      • 清理 Scales "   DPS" 错位前导空格与右侧尾随空格，放大附加区行距
+----------------------------------------------------------------------
+local itemExtInstalled = false
+local origPTFormatMoney = nil
+
+local function StripColorTags(s)
+    if F.IsSecret(s) or type(s) ~= "string" then return "" end
+    local clean = s:gsub("|c%x%x%x%x%x%x%x%x", "")
+    clean = clean:gsub("|cn[^:]+:", "")
+    clean = clean:gsub("|r", "")
+    clean = clean:gsub("|T[^|]*|t", "")
+    clean = clean:gsub("|A[^|]*|a", "")
+    return clean:match("^%s*(.-)%s*$") or ""
+end
+
+local function NormalizeInlineIcons(text, fontSize, isMoney)
+    if F.IsSecret(text) or type(text) ~= "string" or text == "" then
+        return text
+    end
+    local fsz = (type(fontSize) == "number" and fontSize > 0) and fontSize or 13
+    local coinSz = math_max(11, math_floor(fsz * 0.92 + 0.5))
+    local iconSz = math_max(11, math_floor(fsz + 0.5))
+    local arrowSz = math_max(10, iconSz - 1)
+
+    local s = text
+    -- 1) 规范化 |Tpath:...|t 贴图尺寸与基线（xoff=0, yoff=1，消除硬币与箭头下沉及右缘错位）
+    s = s:gsub("|T([^:|]+)[^|]*|t", function(path)
+        local low = string_lower(path)
+        if low:find("moneyframe", 1, true)
+            and (low:find("goldicon", 1, true) or low:find("silvericon", 1, true) or low:find("coppericon", 1, true)) then
+            return string_format("|T%s:%d:%d:0:1|t", path, coinSz, coinSz)
+        end
+        if low:find("arrow", 1, true) then
+            return string_format("|T%s:%d:%d:0:1|t", path, arrowSz, arrowSz)
+        end
+        return string_format("|T%s:%d:%d:0:1|t", path, iconSz, iconSz)
+    end)
+
+    -- 2) 规范化 |A:atlas:...|a 图集尺寸与基线（硬币 / 箭头 / 插件图标）
+    s = s:gsub("|A:([^:|]+)[^|]*|a", function(atlas)
+        local low = string_lower(atlas)
+        if low:find("^coin%-") then
+            return string_format("|A:%s:%d:%d:0:1|a", atlas, coinSz, coinSz)
+        end
+        if low:find("arrow", 1, true) then
+            return string_format("|A:%s:%d:%d:0:1|a", atlas, arrowSz, arrowSz)
+        end
+        return string_format("|A:%s:%d:%d:0:1|a", atlas, iconSz, iconSz)
+    end)
+
+    -- 3) 补足数字与硬币图标之间的单半角空格，统一多组硬币间距并去掉尾随空格
+    if isMoney or s:find("MoneyFrame", 1, true) or s:find("|A:coin%-", 1, false) then
+        s = s:gsub("(%d)(|TInterface[\\/]MoneyFrame[\\/]UI%-)", "%1 %2")
+        s = s:gsub("(%d|r)(|TInterface[\\/]MoneyFrame[\\/]UI%-)", "%1 %2")
+        s = s:gsub("(%d)(|A:coin%-)", "%1 %2")
+        s = s:gsub("(%d|r)(|A:coin%-)", "%1 %2")
+        s = s:gsub("(|t)(%d)", "%1 %2")
+        s = s:gsub("(|a)(%d)", "%1 %2")
+        s = s:gsub("  +(|TInterface[\\/]MoneyFrame[\\/]UI%-)", " %1")
+        s = s:gsub("  +(|A:coin%-)", " %1")
+    end
+
+    -- 清理行尾多余空白（含 |cffffffff未知  |r 这类包裹在颜色码内的尾部空格）
+    s = s:gsub("%s+(|r)$", "%1")
+    s = s:gsub("%s+$", "")
+    return s
+end
+
+local function TrimLeadingSpacesPreserveColor(text)
+    if F.IsSecret(text) or type(text) ~= "string" or text == "" then
+        return text
+    end
+    local s = text:gsub("^%s+", "")
+    s = s:gsub("^(|c%x%x%x%x%x%x%x%x)%s+", "%1")
+    return s
+end
+
+local function MatchesVendorPrefix(plainLeft, label)
+    if type(label) ~= "string" or label == "" then return false end
+    local lLen = #label
+    if plainLeft:sub(1, lLen) ~= label then return false end
+    local rest = plainLeft:sub(lLen + 1)
+    if rest == "" then return true end
+    -- 允许后缀：空格 / (x5) / ×5 / x5 / 数字 / 冒号
+    local c1 = rest:sub(1, 1)
+    if c1 == " " or c1 == "(" or c1 == ":" or c1 == "x" or c1 == "X" or (c1 >= "0" and c1 <= "9") then
+        return true
+    end
+    -- 全角括号/冒号/乘号 UTF-8 前缀（不用字符类避免切坏多字节汉字）
+    if rest:sub(1, 3) == "\239\188\136" or rest:sub(1, 3) == "\239\188\154" or rest:sub(1, 2) == "\195\151" then
+        return true
+    end
+    return false
+end
+
+local function IsAuctionatorVendorRow(row)
+    if type(row) ~= "table" or row.blank then return false end
+    local left = row.left
+    local right = row.right
+    if F.IsSecret(left) or F.IsSecret(right) then return false end
+    if type(left) ~= "string" or type(right) ~= "string" or right == "" then
+        return false
+    end
+    local plainLeft = StripColorTags(left)
+    if plainLeft == "" then return false end
+
+    local isVendorLabel = false
+    local aucL = _G.Auctionator and _G.Auctionator.L
+    local aucVendor = type(aucL) == "table" and F.PlainString(aucL.VENDOR, nil) or nil
+    if aucVendor and MatchesVendorPrefix(plainLeft, aucVendor) then
+        isVendorLabel = true
+    elseif MatchesVendorPrefix(plainLeft, "商人") then
+        isVendorLabel = true
+    elseif MatchesVendorPrefix(string_lower(plainLeft), "vendor") then
+        isVendorLabel = true
+    end
+    if not isVendorLabel then return false end
+
+    -- 右列须包含货币图标或有效价格文本，避免误伤非价格信息行
+    local lowRight = string_lower(right)
+    if lowRight:find("ui%-goldicon", 1, false)
+        or lowRight:find("ui%-silvericon", 1, false)
+        or lowRight:find("ui%-coppericon", 1, false)
+        or lowRight:find("coin%-", 1, false) then
+        return true
+    end
+    local plainRight = StripColorTags(right)
+    return plainRight:find("%d") ~= nil
+end
+
+local function ModelHasFooterSellPrice(model)
+    if type(model) ~= "table" or type(model.footerRight) ~= "table" then return false end
+    for _, r in ipairs(model.footerRight) do
+        if type(r) == "table" and r.sellPrice == true then
+            return true
+        end
+    end
+    return false
+end
+
+local function DedupeVendorExtraRows(model)
+    if type(model) ~= "table" or type(model.extras) ~= "table" or #model.extras == 0 then
+        return
+    end
+    local sellPriceOpt = true
+    if ptNS and type(ptNS.option) == "function" then
+        local okO, optVal = pcall(ptNS.option, "sellPrice")
+        if okO and optVal == false then sellPriceOpt = false end
+    end
+    if not (sellPriceOpt and ModelHasFooterSellPrice(model)) then
+        return
+    end
+
+    local kept = {}
+    local removedAny = false
+    for _, row in ipairs(model.extras) do
+        if IsAuctionatorVendorRow(row) then
+            removedAny = true
+        else
+            kept[#kept + 1] = row
+        end
+    end
+    if not removedAny then return end
+
+    -- 剔除过滤后残留的首尾孤立空行
+    while #kept > 0 and kept[1] and kept[1].blank == true do
+        table.remove(kept, 1)
+    end
+    while #kept > 0 and kept[#kept] and kept[#kept].blank == true do
+        kept[#kept] = nil
+    end
+    model.extras = kept
+end
+
+local function FormatItemViewLayout(view, model, ctx)
+    if type(view) ~= "table" or type(model) ~= "table" then return end
+    local styles = ctx and ctx.styles
+    local footerSize = (styles and styles.footer and F.PlainNumber(styles.footer.size, 13)) or 13
+    local extraStyle = styles and styles.extras
+    local disStyle = styles and styles.disenchant
+
+    -- 1) 规范化页脚卖店价金币尺寸、间距与基线（在 footerWidth / drawFooter 之前完成，测宽与绘制 100% 一致）
+    if type(model.footerRight) == "table" then
+        for _, row in ipairs(model.footerRight) do
+            if type(row) == "table" and row.sellPrice == true then
+                if type(row.left) == "string" and not F.IsSecret(row.left) then
+                    row.left = NormalizeInlineIcons(row.left, footerSize, true)
+                end
+                if type(row.right) == "string" and not F.IsSecret(row.right) then
+                    row.right = NormalizeInlineIcons(row.right, footerSize, true)
+                end
+            end
+        end
+    end
+
+    -- 2) 规范化附加区（Auctionator / Scales / 来源等）与分解价值区排版
+    if type(view.sections) == "table" then
+        for _, sec in ipairs(view.sections) do
+            if type(sec) == "table" and sec.kind == "rows" and type(sec.rows) == "table" then
+                if extraStyle and sec.style == extraStyle then
+                    sec.gap = 3
+                    local fsz = F.PlainNumber(sec.style.size, 13) or 13
+                    for _, row in ipairs(sec.rows) do
+                        if type(row) == "table" and not row.blank then
+                            if type(row.left) == "string" and not F.IsSecret(row.left) then
+                                row.left = NormalizeInlineIcons(TrimLeadingSpacesPreserveColor(row.left), fsz, false)
+                            end
+                            if type(row.right) == "string" and not F.IsSecret(row.right) then
+                                row.right = NormalizeInlineIcons(row.right, fsz, true)
+                            end
+                        end
+                    end
+                elseif disStyle and sec.style == disStyle then
+                    local fsz = F.PlainNumber(sec.style.size, 12) or 12
+                    for _, row in ipairs(sec.rows) do
+                        if type(row) == "table" and not row.blank then
+                            if type(row.left) == "string" and not F.IsSecret(row.left) then
+                                row.left = NormalizeInlineIcons(row.left, fsz, false)
+                            end
+                            if type(row.right) == "string" and not F.IsSecret(row.right) then
+                                row.right = NormalizeInlineIcons(row.right, fsz, true)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function SetPrettyMoneyWrapper(on)
+    if not (ptNS and type(ptNS.ui) == "table") then return end
+    if on then
+        if not origPTFormatMoney and type(ptNS.ui.formatMoney) == "function" then
+            origPTFormatMoney = ptNS.ui.formatMoney
+            ptNS.ui.formatMoney = function(copper)
+                local raw = origPTFormatMoney(copper)
+                if not mod._active then return raw end
+                return NormalizeInlineIcons(raw, 13, true)
+            end
+        end
+    elseif origPTFormatMoney then
+        ptNS.ui.formatMoney = origPTFormatMoney
+        origPTFormatMoney = nil
+    end
+end
+
+local function InstallPrettyItemExtension()
+    if itemExtInstalled or not (ptNS and type(ptNS.TooltipTypes) == "table") then return end
+    local itemTypeKey = (_G.Enum and _G.Enum.TooltipDataType and _G.Enum.TooltipDataType.Item) or 0
+    local desc = ptNS.TooltipTypes[itemTypeKey]
+    if type(desc) ~= "table" then return end
+    itemExtInstalled = true
+
+    local prevExt = type(desc.extension) == "table" and desc.extension or {}
+    local prevAfterRead = prevExt.afterRead
+    local prevExtendView = prevExt.extendView
+
+    local ext = {}
+    for k, v in pairs(prevExt) do ext[k] = v end
+    ext.afterRead = function(model, context)
+        if type(prevAfterRead) == "function" then
+            prevAfterRead(model, context)
+        end
+        if mod._active then
+            DedupeVendorExtraRows(model)
+        end
+    end
+    ext.extendView = function(view, model, ctx)
+        if type(prevExtendView) == "function" then
+            prevExtendView(view, model, ctx)
+        end
+        if mod._active then
+            FormatItemViewLayout(view, model, ctx)
+        end
+    end
+    desc.extension = ext
+end
+
+-- 暴露只读工具供回归测试直接验证（不向 _G 写任何全局）
+mod._NormalizeInlineIcons = NormalizeInlineIcons
+mod._DedupeVendorExtraRows = DedupeVendorExtraRows
+mod._FormatItemViewLayout = FormatItemViewLayout
+mod._BALANCED_PRETTY_SIZES = BALANCED_PRETTY_SIZES
 
 local function SyncPrettyTooltipSettings()
     if not mod._active then return end
@@ -1885,6 +2178,8 @@ function mod:OnEnable()
     end
 
     SuppressEUITooltipConflict(true)
+    InstallPrettyItemExtension()
+    SetPrettyMoneyWrapper(true)
     SyncPrettyTooltipSettings()
     SyncBlizzTooltipFontObjects()
     SetupTooltipHooks()
@@ -1927,6 +2222,7 @@ end
 
 function mod:OnDisable()
     SuppressEUITooltipConflict(false)
+    SetPrettyMoneyWrapper(false)
     RestoreTooltipFontObjects()
     RefreshAllEUICards()
     RefreshAllPrettyPanels()
