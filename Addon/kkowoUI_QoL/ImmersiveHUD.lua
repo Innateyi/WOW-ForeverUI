@@ -71,6 +71,12 @@ do
         alphaGuardBusy = false
     end
 
+    local function SafeIsMouseOver(frame)
+        if not (frame and frame.IsMouseOver) then return false end
+        local ok, over = pcall(frame.IsMouseOver, frame)
+        return ok and not F.IsSecret(over) and over == true
+    end
+
     -- 零污染防瞬闪护栏：过图/切换子区域时 EUI 任务追踪器等框体会在 ZONE_CHANGED 里调用 SetAlpha(1)，
     -- 钩住全部已接管框体的 SetAlpha，脱战淡隐态且未悬停时当帧立即压回目标淡隐值（0 闪屏、覆盖全框体）
     local function EnsureAlphaGuard(frame)
@@ -82,7 +88,7 @@ do
             local want = desiredAlpha[self]
             if not want then return end
             local numA = F.PlainNumber(a, nil)
-            if numA and numA > want + 0.03 and not (self.IsMouseOver and self:IsMouseOver()) then
+            if numA and numA > want + 0.03 and not SafeIsMouseOver(self) then
                 SafeSetManagedAlpha(self, want)
             end
         end)
@@ -260,46 +266,12 @@ do
     end
 
     local function IsInCombatInstance()
-        if not _G.GetInstanceInfo then return false end
+        if not _G.GetInstanceInfo then return false, "none", false end
         local ok, _, rawType = pcall(_G.GetInstanceInfo)
+        local isSec = ok and F.IsSecret(rawType) or false
         local iType = ok and F.PlainString(rawType, nil) or nil
-        return iType == "party" or iType == "raid" or iType == "scenario" or iType == "arena" or iType == "pvp"
-    end
-
-    local function IsPlayerVitalHealthy(db)
-        if _G.UnitHealth and _G.UnitHealthMax then
-            local okH, rawHp = pcall(_G.UnitHealth, "player")
-            local okM, rawMax = pcall(_G.UnitHealthMax, "player")
-            -- K5：血量读取失败或为保密值时按「不健康」处理，绝不误淡出 HUD
-            if not okH or not okM or F.IsSecret(rawHp) or F.IsSecret(rawMax) then
-                return false
-            end
-            local hp = F.PlainNumber(rawHp, nil)
-            local hpMax = F.PlainNumber(rawMax, nil)
-            if hp and hpMax and hpMax > 0 and (hp / hpMax * 100) < (db.hpThreshold or 95) then
-                return false
-            end
-        end
-        local pType = 0
-        if _G.UnitPowerType then
-            local okPT, rawPT = pcall(_G.UnitPowerType, "player")
-            if not okPT or F.IsSecret(rawPT) then return false end
-            pType = F.PlainNumber(rawPT, 0) or 0
-        end
-        -- 仅对蓝条（MANA = 0）检查回蓝不满；怒气/能量/集中值平时为 0 或自回，不触发常亮
-        if pType == 0 and _G.UnitPower and _G.UnitPowerMax then
-            local okP, rawMp = pcall(_G.UnitPower, "player", 0)
-            local okPM, rawMpMax = pcall(_G.UnitPowerMax, "player", 0)
-            if not okP or not okPM or F.IsSecret(rawMp) or F.IsSecret(rawMpMax) then
-                return false
-            end
-            local mp = F.PlainNumber(rawMp, nil)
-            local mpMax = F.PlainNumber(rawMpMax, nil)
-            if mp and mpMax and mpMax > 0 and (mp / mpMax * 100) < (db.powerThreshold or 85) then
-                return false
-            end
-        end
-        return true
+        local inInst = iType == "party" or iType == "raid" or iType == "scenario" or iType == "arena" or iType == "pvp"
+        return inInst, iType or (isSec and "<secret>" or "none"), isSec
     end
 
     local function SafeBoolCall(fn, ...)
@@ -309,31 +281,84 @@ do
         return val == true
     end
 
-    -- K5：用于判定「是否处于忙碌状态（进战/有目标）」——若 API 返回保密值或失败，宁可按忙碌处理也不误淡出
-    local function SafeBoolCallBusy(fn, ...)
-        if type(fn) ~= "function" then return false end
-        local ok, val = pcall(fn, ...)
-        if not ok or F.IsSecret(val) then return true end
-        return val == true
+    local function SafeHasCast(fn, unit)
+        if type(fn) ~= "function" then return false, false end
+        local ok, name = pcall(fn, unit)
+        if not ok then return false, false end
+        return type(name) ~= "nil", F.IsSecret(name)
     end
 
-    local function SafeHasCast(fn, unit)
-        if type(fn) ~= "function" then return false end
-        local ok, name = pcall(fn, unit)
-        return ok and type(name) ~= "nil"
+    -- 脱战后的血量/蓝量健康检查：
+    -- 12.x / 无限服在脱战状态下 UnitHealth/UnitPower 也可能返回机密值；
+    -- 战斗锁定已前置拦截，这里读到机密值或读取失败时跳过该项（绝不把"读不到"当作"永远不健康"挡死淡隐）。
+    local function IsPlayerVitalHealthy(db)
+        if _G.UnitHealth and _G.UnitHealthMax then
+            local okH, rawHp = pcall(_G.UnitHealth, "player")
+            local okM, rawMax = pcall(_G.UnitHealthMax, "player")
+            if okH and okM and not F.IsSecret(rawHp) and not F.IsSecret(rawMax) then
+                local hp = F.PlainNumber(rawHp, nil)
+                local hpMax = F.PlainNumber(rawMax, nil)
+                if hp and hpMax and hpMax > 0 and (hp / hpMax * 100) < (db.hpThreshold or 95) then
+                    return false
+                end
+            end
+        end
+        local pType = nil
+        if _G.UnitPowerType then
+            local okPT, rawPT = pcall(_G.UnitPowerType, "player")
+            if okPT and not F.IsSecret(rawPT) then
+                pType = F.PlainNumber(rawPT, nil)
+            end
+        end
+        -- 仅对蓝条（MANA = 0）检查回蓝不满；怒气/能量/集中值平时为 0 或自回，不触发常亮
+        if pType == 0 and _G.UnitPower and _G.UnitPowerMax then
+            local okP, rawMp = pcall(_G.UnitPower, "player", 0)
+            local okPM, rawMpMax = pcall(_G.UnitPowerMax, "player", 0)
+            if okP and okPM and not F.IsSecret(rawMp) and not F.IsSecret(rawMpMax) then
+                local mp = F.PlainNumber(rawMp, nil)
+                local mpMax = F.PlainNumber(rawMpMax, nil)
+                if mp and mpMax and mpMax > 0 and (mp / mpMax * 100) < (db.powerThreshold or 85) then
+                    return false
+                end
+            end
+        end
+        return true
+    end
+
+    local function IsPlayerCombatBusy(inCombatInstance)
+        -- 1) InCombatLockdown 永不为机密值，是战斗判定的首要依据
+        if _G.InCombatLockdown and _G.InCombatLockdown() then
+            return true
+        end
+        -- 2) UnitAffectingCombat("player")：明文 true 必为战斗；副本内若读到机密/失败保守按战斗防误淡（P3-25）
+        if type(_G.UnitAffectingCombat) == "function" then
+            local ok, val = pcall(_G.UnitAffectingCombat, "player")
+            if ok and not F.IsSecret(val) then
+                if val == true then return true end
+            elseif inCombatInstance then
+                return true
+            end
+        end
+        -- 3) 副本首领战期间（即使短暂脱锁）保持清晰
+        if _G.C_InstanceEncounter and type(_G.C_InstanceEncounter.IsEncounterInProgress) == "function" then
+            if SafeBoolCall(_G.C_InstanceEncounter.IsEncounterInProgress) then
+                return true
+            end
+        end
+        return false
     end
 
     local function ShouldImmerse()
         if not mod._active then return false end
         local db = mod:GetDB()
         if _G.EllesmereUI and _G.EllesmereUI._unlockActive then return false end
-        if _G.InCombatLockdown and _G.InCombatLockdown() then return false end
-        if SafeBoolCallBusy(_G.UnitAffectingCombat, "player") then return false end
-        if SafeBoolCallBusy(_G.UnitExists, "target") then return false end
+        local inInst = IsInCombatInstance()
+        if IsPlayerCombatBusy(inInst) then return false end
+        if SafeBoolCall(_G.UnitExists, "target") then return false end
         if SafeHasCast(_G.UnitCastingInfo, "player") then return false end
         if SafeHasCast(_G.UnitChannelInfo, "player") then return false end
-        if db.disableInInstance ~= false and IsInCombatInstance() then return false end
-        if _G.WorldMapFrame and _G.WorldMapFrame:IsShown() then return false end
+        if db.disableInInstance ~= false and inInst then return false end
+        if _G.WorldMapFrame and SafeBoolCall(_G.WorldMapFrame.IsShown, _G.WorldMapFrame) then return false end
         if not IsPlayerVitalHealthy(db) then return false end
         return true
     end
@@ -417,7 +442,7 @@ do
             activeSetBuf[f] = true
             managed[f] = true
             local rest = restAlpha[f] or 1.0
-            local over = f.IsMouseOver and f:IsMouseOver()
+            local over = SafeIsMouseOver(f)
             FadeFrameTo(f, over and rest or math_min(rest, idleA), instant)
         end
         -- 被用户在选项中取消勾选（或已隐藏 / 被父框体代淡 / 交还 EUI 隐藏或悬停控制）的框体立即交还
@@ -451,7 +476,7 @@ do
                 for f in pairs(managed) do
                     if f and not (f.IsForbidden and f:IsForbidden()) and f.IsShown and f:IsShown() then
                         local rest = restAlpha[f] or 1.0
-                        local over = f.IsMouseOver and f:IsMouseOver()
+                        local over = SafeIsMouseOver(f)
                         local want = over and rest or math_min(rest, a)
                         local curGoal = animTargets[f]
                         local curA = F.PlainNumber(f:GetAlpha(), 1)

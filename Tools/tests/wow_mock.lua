@@ -367,7 +367,7 @@ function RegionProto:IsMovable() return self._movable == true end
 function RegionProto:SetResizable() end
 function RegionProto:SetUserPlaced() end
 function RegionProto:IsUserPlaced() return false end
-function RegionProto:IsMouseOver() return false end
+function RegionProto:IsMouseOver() return self._mouseOver == true end
 function RegionProto:IsMouseEnabled() return self._mouseClick == true or self._mouseMotion == true end
 function RegionProto:StartMoving()
     if self._protected then recordProtected("StartMoving", self) end
@@ -822,7 +822,10 @@ function UnitPowerMax()
     if _secretAPIs.UnitPowerMax then return newSecretSentinel("UnitPowerMax") end
     return 3000
 end
-function UnitPowerType() return 0, "MANA" end
+function UnitPowerType()
+    if _secretAPIs.UnitPowerType then return newSecretSentinel("UnitPowerType"), newSecretSentinel("UnitPowerToken") end
+    return 0, "MANA"
+end
 function UnitXP() return 1000 end
 function UnitXPMax() return 10000 end
 function GetXPExhaustion() return 500 end

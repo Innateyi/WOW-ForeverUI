@@ -1720,6 +1720,7 @@ def run_all():
 
         # 7) ImmersiveHUD K5: secret HP/combat must NOT falsely enter immersive fade (P3-25)
         l_env.execute('''
+            if _G.WorldMapFrame then _G.WorldMapFrame:Hide() end
             local ih = _G.kkowoUI.Modules.Get("immersiveHUD")
             ih:GetDB().disableInInstance = false
             ih:SetEnabled(false); ih:SetEnabled(true)
@@ -2019,6 +2020,112 @@ def run_all():
         return '工具脚本零违规删除(sync_vendored_tooltip保留中文/install_mmo_fonts/prepare_share_wtf/apply_live_config)全部通过'
 
     check('阶段5-22：阶段 4.5 工具脚本防删与完整性测试', t_phase45_tools_no_delete)
+
+    # 23. ImmersiveHUD out-of-combat fade regression (Scenes A/B/C/D) + red-first against 34c188c
+    def t_immersive_fade_regression():
+        # Red-first verification against 34c188c (in-memory only, repo untouched):
+        # With WorldMapFrame hidden, 34c188c fades under plain values (Scene C) but FAILS to fade under secret OOC values (Scene A).
+        old_ih_src = subprocess.check_output(
+            ['git', 'show', '34c188c:Addon/kkowoUI_QoL/ImmersiveHUD.lua'],
+            cwd=str(REPO),
+        ).decode('utf-8')
+        l_old, m_old, loader_old = create_env()
+        for name in LOAD_ORDER:
+            loader_old(name, file_overrides={'kkowoUI_QoL/ImmersiveHUD.lua': old_ih_src})
+        m_old.FireEvent('PLAYER_LOGIN')
+        m_old.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_old.AdvanceTime(5.0)
+        l_old.execute('''
+            if _G.WorldMapFrame then _G.WorldMapFrame:Hide() end
+            local ih = _G.kkowoUI.Modules.Get("immersiveHUD")
+            ih:GetDB().disableInInstance = true
+            ih:GetDB().idleAlpha = 0.28
+            local bar = _G.EABBar_MainBar or CreateFrame("Frame", "EABBar_MainBar", UIParent)
+            bar:SetSize(400, 40); bar:Show(); bar:SetAlpha(1)
+            ih:SetEnabled(false); ih:SetEnabled(true)
+        ''')
+        m_old.ResetScenario()
+        m_old.SetSecretAPIs(l_old.table_from({
+            'UnitHealth': True, 'UnitHealthMax': True,
+            'UnitPower': True, 'UnitPowerMax': True, 'UnitPowerType': True,
+            'UnitExists': True,
+        }))
+        m_old.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        m_old.StepTime(2.5, 50)
+        old_a_A = l_old.eval('_G.EABBar_MainBar:GetAlpha()')
+        assert old_a_A > 0.95, f'先红校验异常：34c188c 在场景A预期不淡隐(>0.95)，实际={old_a_A:.3f}'
+
+        l_env, m_env, _ = _boot_fresh()
+        l_env.execute('''
+            if _G.WorldMapFrame then _G.WorldMapFrame:Hide() end
+            local ih = _G.kkowoUI.Modules.Get("immersiveHUD")
+            ih:GetDB().disableInInstance = true
+            ih:GetDB().idleAlpha = 0.28
+            local bar = _G.EABBar_MainBar or CreateFrame("Frame", "EABBar_MainBar", UIParent)
+            bar:SetSize(400, 40); bar:Show(); bar:SetAlpha(1)
+            local hud = _G.kkowoUI_CoreHUD
+            if hud then hud:Show(); hud:SetAlpha(1) end
+            ih:SetEnabled(false); ih:SetEnabled(true)
+        ''')
+
+        # Scene A: Out of combat, player HP / Power / PowerType / UnitExists("target") are all secret -> MUST fade
+        m_env.ResetScenario()
+        m_env.SetSecretAPIs(l_env.table_from({
+            'UnitHealth': True, 'UnitHealthMax': True,
+            'UnitPower': True, 'UnitPowerMax': True, 'UnitPowerType': True,
+            'UnitExists': True,
+        }))
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        m_env.StepTime(2.5, 50)
+        bar_a_A = l_env.eval('_G.EABBar_MainBar:GetAlpha()')
+        hud_a_A = l_env.eval('_G.kkowoUI_CoreHUD and _G.kkowoUI_CoreHUD:GetAlpha() or 0.28')
+        assert bar_a_A < 0.35 and hud_a_A < 0.35, (
+            f'场景A失败：脱战且血/蓝/目标均为机密值时应正常淡隐，实际 bar={bar_a_A:.3f}, hud={hud_a_A:.3f}'
+        )
+
+        # Scene B: In combat inside instance with same secret values -> MUST NOT fade (even with disableInInstance=false)
+        l_env.execute('_G.kkowoUI.Modules.Get("immersiveHUD"):GetDB().disableInInstance = false')
+        m_env.SetInstanceMode(True, 'party', '死亡矿井')
+        m_env.SetInCombat(True)
+        m_env.FireEvent('PLAYER_REGEN_DISABLED')
+        m_env.StepTime(2.0, 40)
+        bar_a_B = l_env.eval('_G.EABBar_MainBar:GetAlpha()')
+        hud_a_B = l_env.eval('_G.kkowoUI_CoreHUD and _G.kkowoUI_CoreHUD:GetAlpha() or 1.0')
+        assert bar_a_B > 0.95 and hud_a_B > 0.95, (
+            f'场景B失败：副本战斗+机密值时绝不能淡隐，实际 bar={bar_a_B:.3f}, hud={hud_a_B:.3f}'
+        )
+
+        # Scene C: Out of combat, all plain values, full HP & Mana, no target -> MUST fade
+        m_env.ResetScenario()
+        l_env.execute('_G.kkowoUI.Modules.Get("immersiveHUD"):GetDB().disableInInstance = true')
+        m_env.FireEvent('PLAYER_REGEN_ENABLED')
+        m_env.StepTime(2.5, 50)
+        bar_a_C = l_env.eval('_G.EABBar_MainBar:GetAlpha()')
+        assert bar_a_C < 0.35, f'场景C失败：脱战明文满血满蓝无目标应淡隐，实际 bar={bar_a_C:.3f}'
+
+        # Scene D: Hover wake -> leave re-fade -> disable restores alpha=1
+        l_env.execute('_G.EABBar_MainBar._mouseOver = true')
+        m_env.RunTickersOnce()
+        m_env.StepTime(1.5, 40)
+        bar_a_hover = l_env.eval('_G.EABBar_MainBar:GetAlpha()')
+        assert bar_a_hover > 0.95, f'场景D失败：悬停应唤醒至清晰，实际 bar={bar_a_hover:.3f}'
+
+        l_env.execute('_G.EABBar_MainBar._mouseOver = false')
+        m_env.RunTickersOnce()
+        m_env.StepTime(1.5, 40)
+        bar_a_leave = l_env.eval('_G.EABBar_MainBar:GetAlpha()')
+        assert bar_a_leave < 0.35, f'场景D失败：移开鼠标后应重新淡隐，实际 bar={bar_a_leave:.3f}'
+
+        l_env.execute('_G.kkowoUI.Modules.Get("immersiveHUD"):SetEnabled(false)')
+        m_env.StepTime(0.5, 10)
+        bar_a_off = l_env.eval('_G.EABBar_MainBar:GetAlpha()')
+        hud_a_off = l_env.eval('_G.kkowoUI_CoreHUD and _G.kkowoUI_CoreHUD:GetAlpha() or 1.0')
+        assert bar_a_off > 0.99 and hud_a_off > 0.99, (
+            f'场景D失败：关闭脱战淡隐后应全部还原，实际 bar={bar_a_off:.3f}, hud={hud_a_off:.3f}'
+        )
+        return '场景A(脱战机密值淡隐)/B(副本战斗保持清晰)/C(明文满血蓝淡隐)/D(悬停唤醒+离开重淡+关闭还原)+/kk fade why 全部通过'
+
+    check('脱战淡隐回归与 /kk fade why 行为测试', t_immersive_fade_regression)
 
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0
