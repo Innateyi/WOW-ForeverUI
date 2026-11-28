@@ -58,14 +58,23 @@ do
     local managed = setmetatable({}, { __mode = "k" })   -- frame -> true（本模块已接管过透明度）
     local restAlpha = setmetatable({}, { __mode = "k" }) -- frame -> 恢复时的透明度（EUI 动作条按其自身设置，其余 1.0）
     local desiredAlpha = setmetatable({}, { __mode = "k" }) -- frame -> 本模块期望维持的淡隐透明度（用于拦住外部瞬闪）
+    local trackedAlpha = setmetatable({}, { __mode = "k" }) -- frame -> Lua 侧记录的当前透明度（2g：不读回 GetAlpha）
     local alphaHooked = setmetatable({}, { __mode = "k" })
     local alphaGuardBusy = false
-    local animTargets = {}                                -- frame -> targetAlpha
+    local animTargets = {}                                -- frame -> targetAlpha（保持纯数字，与悬停恢复逻辑完全兼容）
+    local animCurves = {}                                 -- frame -> { from, to, dur, elapsed }（2g smoothstep 曲线状态）
     local hoverTicker = nil
     local isImmersiveNow = false
     local unlockHooked = false
+    local BASE_FADE_DUR = 0.45
+
+    local function UseSmoothstepFade()
+        local ST = F.StyleTokens
+        return ST ~= nil and type(ST.IsFXEnabled) == "function" and ST.IsFXEnabled("fx_fadeCurve") == true
+    end
 
     local function SafeSetManagedAlpha(frame, val)
+        trackedAlpha[frame] = val
         alphaGuardBusy = true
         pcall(frame.SetAlpha, frame, val)
         alphaGuardBusy = false
@@ -99,20 +108,43 @@ do
     animFrame:Hide()
     animFrame:SetScript("OnUpdate", function(self, elapsed)
         local anyActive = false
-        local step = math_min(1, (elapsed or 0.016) * 6.5)
+        local dtRaw = elapsed or 0.016
+        local dtClamped = (dtRaw > 0.1) and 0.1 or dtRaw
+        local legacyStep = math_min(1, dtRaw * 6.5)
         for frame, goal in pairs(animTargets) do
-            if frame and frame.GetAlpha and frame.SetAlpha then
-                local cur = F.PlainNumber(frame:GetAlpha(), goal)
-                local diff = goal - cur
-                if math_abs(diff) <= 0.015 then
-                    SafeSetManagedAlpha(frame, goal)
-                    animTargets[frame] = nil
+            if frame and frame.SetAlpha then
+                local curve = animCurves[frame]
+                if curve then
+                    -- 2g：smoothstep 曲线 + 距离缩放时长 + 单帧 dt<=0.1s 截断 + 纯 Lua 侧透明度追踪（不读 GetAlpha）
+                    curve.elapsed = curve.elapsed + dtClamped
+                    local p = (curve.dur > 0) and (curve.elapsed / curve.dur) or 1
+                    if p >= 1 then
+                        SafeSetManagedAlpha(frame, curve.to)
+                        animTargets[frame] = nil
+                        animCurves[frame] = nil
+                    else
+                        local s = p * p * (3 - 2 * p)
+                        local curA = curve.from + (curve.to - curve.from) * s
+                        SafeSetManagedAlpha(frame, curA)
+                        anyActive = true
+                    end
+                elseif frame.GetAlpha then
+                    -- fx_fadeCurve 关闭时严格走改动前的旧指数逼近路径
+                    local cur = F.PlainNumber(frame:GetAlpha(), goal)
+                    local diff = goal - cur
+                    if math_abs(diff) <= 0.015 then
+                        SafeSetManagedAlpha(frame, goal)
+                        animTargets[frame] = nil
+                    else
+                        SafeSetManagedAlpha(frame, cur + diff * legacyStep)
+                        anyActive = true
+                    end
                 else
-                    SafeSetManagedAlpha(frame, cur + diff * step)
-                    anyActive = true
+                    animTargets[frame] = nil
                 end
             else
                 animTargets[frame] = nil
+                animCurves[frame] = nil
             end
         end
         if not anyActive then
@@ -126,6 +158,49 @@ do
             desiredAlpha[frame] = goal
             EnsureAlphaGuard(frame)
         end
+        if UseSmoothstepFade() then
+            -- 仅在 Lua 侧追踪当前透明度，绝不调用 GetAlpha（兼容机密透明度）
+            local cur = trackedAlpha[frame]
+            if cur == nil then
+                cur = restAlpha[frame] or 1
+                trackedAlpha[frame] = cur
+            end
+            if instant then
+                animTargets[frame] = nil
+                animCurves[frame] = nil
+                if math_abs(cur - goal) > 0.005 then
+                    SafeSetManagedAlpha(frame, goal)
+                else
+                    trackedAlpha[frame] = goal
+                end
+                return
+            end
+            local dist = math_abs(goal - cur)
+            if dist <= 0.005 then
+                animTargets[frame] = nil
+                animCurves[frame] = nil
+                if dist > 0.001 then
+                    SafeSetManagedAlpha(frame, goal)
+                end
+                return
+            end
+            local existing = animCurves[frame]
+            if existing and math_abs(existing.to - goal) <= 0.005 then
+                return
+            end
+            local dur = BASE_FADE_DUR * math_max(0.25, math_min(1.0, dist))
+            animTargets[frame] = goal
+            animCurves[frame] = {
+                from = cur,
+                to = goal,
+                dur = dur,
+                elapsed = 0,
+            }
+            animFrame:Show()
+            return
+        end
+
+        animCurves[frame] = nil
         local cur = F.PlainNumber(frame.GetAlpha and frame:GetAlpha(), goal)
         if instant then
             animTargets[frame] = nil
@@ -479,7 +554,7 @@ do
                         local over = SafeIsMouseOver(f)
                         local want = over and rest or math_min(rest, a)
                         local curGoal = animTargets[f]
-                        local curA = F.PlainNumber(f:GetAlpha(), 1)
+                        local curA = UseSmoothstepFade() and (trackedAlpha[f] or rest) or F.PlainNumber(f:GetAlpha(), 1)
                         if (curGoal and math_abs(curGoal - want) > 0.02)
                             or (not curGoal and math_abs(curA - want) > 0.02) then
                             FadeFrameTo(f, want, false)
