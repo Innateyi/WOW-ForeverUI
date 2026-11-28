@@ -83,6 +83,10 @@ local targetCastSpark = nil
 local castState = {
     active = false,
     isChannel = false,
+    isEmpower = false,
+    nativeTimer = false,
+    secretTime = false,
+    durationObj = nil,
     castGUID = nil,
     spellName = "",
     spellID = nil,
@@ -93,7 +97,89 @@ local castState = {
     sentTime = 0,
     latency = 0,
     uninterruptible = false,
+    lastTimeTenths = -1,
 }
+
+local CAST_TICK_KEY = "kkowoUI_CastbarTime"
+
+local function CanUseNativeCastTimer(bar)
+    if not ST.IsFXEnabled("fx_castTimer") then return false end
+    if not (bar and type(bar.SetTimerDuration) == "function") then return false end
+    local dirEnum = _G.Enum and _G.Enum.StatusBarTimerDirection
+    if not (dirEnum and dirEnum.ElapsedTime ~= nil and dirEnum.RemainingTime ~= nil) then
+        return false
+    end
+    return type(_G.UnitCastingDuration) == "function" or type(_G.UnitChannelDuration) == "function"
+end
+
+local function FetchCastDurationObj(isChannel, isEmpower)
+    if isEmpower and type(_G.UnitEmpoweredChannelDuration) == "function" then
+        local okE, durE = pcall(_G.UnitEmpoweredChannelDuration, "player", true)
+        if okE and type(durE) ~= "nil" then return durE end
+    end
+    if isChannel then
+        if type(_G.UnitChannelDuration) == "function" then
+            local okC, durC = pcall(_G.UnitChannelDuration, "player")
+            if okC and type(durC) ~= "nil" then return durC end
+        end
+    else
+        if type(_G.UnitCastingDuration) == "function" then
+            local okS, durS = pcall(_G.UnitCastingDuration, "player")
+            if okS and type(durS) ~= "nil" then return durS end
+        end
+    end
+    -- 若施法时间明文可用且客户端有 C_DurationUtil，兜底构造 duration 对象
+    if not castState.secretTime and castState.duration > 0.05
+        and _G.C_DurationUtil and type(_G.C_DurationUtil.CreateDuration) == "function" then
+        local okD, d = pcall(_G.C_DurationUtil.CreateDuration)
+        if okD and d and d.SetTimeFromStart then
+            pcall(d.SetTimeFromStart, d, castState.startTime, castState.duration)
+            return d
+        end
+    end
+    return nil
+end
+
+local function UpdateNativeCastText()
+    if not (mod._active and castState.active and castState.nativeTimer and overlay) then
+        return false
+    end
+    local d = castState.durationObj
+    if not d then return false end
+    if not castState.secretTime then
+        local now = GetTime()
+        local dur = castState.duration
+        local dispVal = castState.isChannel and math_max(0, castState.endTime - now) or math_max(0, math_min(dur, now - castState.startTime))
+        local tenths = math_floor(dispVal * 10 + 0.5)
+        if tenths ~= castState.lastTimeTenths then
+            castState.lastTimeTenths = tenths
+            overlay._timeFS:SetText(string_format("%.1f / %.1f", tenths * 0.1, dur))
+        end
+        return true
+    end
+    -- 机密时长：优先直接读 durationObj 剩余时间，明文或机密均可交由 C 端 SetFormattedText 格式化
+    if d.GetRemainingDuration then
+        local okR, rawRem = pcall(d.GetRemainingDuration, d)
+        if okR and type(rawRem) ~= "nil" then
+            if F.IsSecret(rawRem) then
+                if overlay._timeFS.SetFormattedText then
+                    local okF = pcall(overlay._timeFS.SetFormattedText, overlay._timeFS, "%.1f", rawRem)
+                    if not okF then overlay._timeFS:SetText("") end
+                else
+                    overlay._timeFS:SetText("")
+                end
+            else
+                local remNum = F.PlainNumber(rawRem, 0) or 0
+                local tenths = math_floor(math_max(0, remNum) * 10 + 0.5)
+                if tenths ~= castState.lastTimeTenths then
+                    castState.lastTimeTenths = tenths
+                    overlay._timeFS:SetText(string_format("%.1f", tenths * 0.1))
+                end
+            end
+        end
+    end
+    return true
+end
 
 local function CleanSpellName(name)
     local plain = F.PlainString(name, "") or ""
@@ -512,7 +598,7 @@ end
 
 local function LayoutLatencyZone()
     if not overlay then return end
-    if mod:GetDB().showLatency == false or castState.duration <= 0.05 then
+    if mod:GetDB().showLatency == false or castState.secretTime or castState.duration <= 0.05 then
         overlay._latency:Hide()
         return
     end
@@ -682,7 +768,35 @@ local function OnCastUpdate(self)
     overlay._bar:SetValue(prog)
 end
 
-local function StartCast(isChannel)
+local function ApplySecretUninterruptibleOverlay(notInt)
+    if not (overlay and overlay._bar) then return end
+    -- 仅对机密不可打断标志准备安全 C 端布尔透明叠层（玩家自身读条明文时保持现有逻辑不变）
+    if not F.IsSecret(notInt) then
+        if overlay._lockTex then overlay._lockTex:Hide() end
+        return
+    end
+    if not overlay._lockTex then
+        local fillTex = overlay._bar:GetStatusBarTexture()
+        local lt = overlay._bar:CreateTexture(nil, "ARTWORK", nil, 3)
+        lt:SetTexture(ST.TEX.FLAT)
+        lt:SetVertexColor(0.56, 0.58, 0.64, 0.55)
+        if fillTex then lt:SetAllPoints(fillTex) else lt:SetAllPoints(overlay._bar) end
+        local h = F.PlainNumber(overlay._barHost:GetHeight(), 14) or 14
+        local rad = math_min(ST.GetCornerRadius(6), math_max(2, math_floor(h * 0.48)))
+        if rad > 0 then ST.MaskTexture(overlay._bar, lt, rad) end
+        overlay._lockTex = lt
+    end
+    if overlay._lockTex.SetAlphaFromBoolean then
+        local okA = pcall(overlay._lockTex.SetAlphaFromBoolean, overlay._lockTex, notInt, 0.55, 0)
+        if okA then
+            overlay._lockTex:Show()
+            return
+        end
+    end
+    overlay._lockTex:Hide()
+end
+
+local function StartCast(isChannel, isEmpower)
     BuildCastbarOverlay()
     local fn = isChannel and _G.UnitChannelInfo or _G.UnitCastingInfo
     if not fn then return end
@@ -700,10 +814,42 @@ local function StartCast(isChannel)
 
     local sMS = F.PlainNumber(startMS, nil)
     local eMS = F.PlainNumber(endMS, nil)
-    if not (sMS and eMS and eMS > sMS) then
-        -- 12.x 保密值导致无法读取起止时间时临时恢复原生/EUI 施法条显示，避免既无覆盖条又静音原生条
+    local hasPlainTime = (sMS ~= nil and eMS ~= nil and eMS > sMS)
+    local wantNative = CanUseNativeCastTimer(overlay._bar)
+
+    castState.isChannel = isChannel == true
+    castState.isEmpower = isEmpower == true
+    castState.secretTime = not hasPlainTime
+    if hasPlainTime then
+        castState.startTime = sMS / 1000
+        castState.endTime = eMS / 1000
+        castState.duration = math_max(0.05, castState.endTime - castState.startTime)
+    else
+        castState.startTime = 0
+        castState.endTime = 0
+        castState.duration = 0
+    end
+
+    local durObj = wantNative and FetchCastDurationObj(isChannel, isEmpower) or nil
+    local useNative = false
+    if wantNative and durObj ~= nil then
+        local dirEnum = _G.Enum.StatusBarTimerDirection
+        local dir = (isChannel and not isEmpower) and dirEnum.RemainingTime or dirEnum.ElapsedTime
+        local imm = _G.Enum.StatusBarInterpolation and _G.Enum.StatusBarInterpolation.Immediate or nil
+        local okT = pcall(overlay._bar.SetTimerDuration, overlay._bar, durObj, imm, dir)
+        if okT then
+            if overlay._bar.SetToTargetValue then pcall(overlay._bar.SetToTargetValue, overlay._bar) end
+            useNative = true
+        end
+    end
+
+    if not useNative and not hasPlainTime then
+        -- 旧路径或 SetTimerDuration 不可用且起止时间为机密值：兜底退回宿主条
         castState.active = false
+        castState.nativeTimer = false
+        castState.durationObj = nil
         castState.secretFallback = true
+        M.UnregisterTextTick(CAST_TICK_KEY)
         if overlay then
             overlay:SetScript("OnUpdate", nil)
             overlay:Hide()
@@ -715,15 +861,13 @@ local function StartCast(isChannel)
 
     local now = GetTime()
     castState.active = true
+    castState.nativeTimer = useNative
+    castState.durationObj = useNative and durObj or nil
     castState.lastTimeTenths = -1
-    castState.isChannel = isChannel == true
     castState.castGUID = (type(castID) ~= "nil" and not F.IsSecret(castID)) and castID or nil
-    castState.spellName = CleanSpellName(name)
+    castState.spellName = F.IsSecret(name) and "" or CleanSpellName(name)
     castState.spellID = F.PlainNumber(spellID, nil)
     castState.icon = (type(tex) ~= "nil" and not F.IsSecret(tex)) and tex or nil
-    castState.startTime = sMS / 1000
-    castState.endTime = eMS / 1000
-    castState.duration = math_max(0.05, castState.endTime - castState.startTime)
     castState.uninterruptible = (not F.IsSecret(notInt)) and (notInt == true) or false
     if castState.sentTime > 0 and (now - castState.sentTime) < 1.2 then
         castState.latency = now - castState.sentTime
@@ -738,19 +882,34 @@ local function StartCast(isChannel)
         M.StopFrameAnims(ghostFrame)
         ghostFrame:Hide()
     end
-    if castState.icon then overlay._iconTex:SetTexture(castState.icon) end
-    overlay._nameFS:SetText(castState.spellName)
+    if type(tex) ~= "nil" then
+        pcall(overlay._iconTex.SetTexture, overlay._iconTex, tex)
+    end
+    if F.IsSecret(name) then
+        pcall(overlay._nameFS.SetText, overlay._nameFS, name)
+    else
+        overlay._nameFS:SetText(castState.spellName)
+    end
     PaintCastFillColor()
+    ApplySecretUninterruptibleOverlay(notInt)
     LayoutLatencyZone()
     if isChannel then
         LayoutChannelTicks(castState.spellID, castState.spellName)
     else
         for i = 1, 15 do overlay._ticks[i]:Hide() end
     end
+    if overlay._spark then overlay._spark:SyncAnchor() end
 
     overlay:Show()
-    overlay:SetScript("OnUpdate", OnCastUpdate)
-    OnCastUpdate(overlay)
+    if useNative then
+        overlay:SetScript("OnUpdate", nil)
+        UpdateNativeCastText()
+        M.RegisterTextTick(CAST_TICK_KEY, 0.05, UpdateNativeCastText)
+    else
+        M.UnregisterTextTick(CAST_TICK_KEY)
+        overlay:SetScript("OnUpdate", OnCastUpdate)
+        OnCastUpdate(overlay)
+    end
 end
 
 local function StopCast(feedbackKind, eventCastGUID)
@@ -764,8 +923,12 @@ local function StopCast(feedbackKind, eventCastGUID)
         return
     end
     castState.active = false
+    castState.nativeTimer = false
+    castState.durationObj = nil
+    M.UnregisterTextTick(CAST_TICK_KEY)
     if overlay then
         overlay:SetScript("OnUpdate", nil)
+        if overlay._lockTex then overlay._lockTex:Hide() end
         overlay:Hide()
     end
     if feedbackKind then
@@ -825,10 +988,17 @@ function mod:OnEnable()
     self:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player", function()
         castState.sentTime = GetTime()
     end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_START", "player", function() StartCast(false) end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_DELAYED", "player", function() if castState.active and not castState.isChannel then StartCast(false) end end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player", function() StartCast(true) end)
-    self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_UPDATE", "player", function() if castState.active and castState.isChannel then StartCast(true) end end)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_START", "player", function() StartCast(false, false) end)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_DELAYED", "player", function() if castState.active and not castState.isChannel then StartCast(false, false) end end)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player", function() StartCast(true, false) end)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_UPDATE", "player", function() if castState.active and castState.isChannel then StartCast(true, castState.isEmpower) end end)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_START", "player", function() StartCast(true, true) end)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_UPDATE", "player", function() if castState.active and castState.isEmpower then StartCast(true, true) end end)
+    self:RegisterUnitEvent("UNIT_SPELLCAST_EMPOWER_STOP", "player", function()
+        if castState.active and castState.isEmpower then
+            StopCast("success", nil)
+        end
+    end)
     self:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player", function(_, _, _, castGUID, spellID)
         -- 只认当前读条的法术：无限服读条信息可能不带 castGUID，此时自动射击等别的法术的成功事件
         -- 不能把正在读的瞄准射击提前判成「施法成功」
@@ -888,8 +1058,12 @@ function mod:OnDisable()
         pcall(EUI.UnregisterUnlockModeListener, EUI, "kkowoUI_CastbarMotion")
     end
     castState.active = false
+    castState.nativeTimer = false
+    castState.durationObj = nil
+    M.UnregisterTextTick(CAST_TICK_KEY)
     if overlay then
         overlay:SetScript("OnUpdate", nil)
+        if overlay._lockTex then overlay._lockTex:Hide() end
         overlay:Hide()
     end
     if ghostFrame then
