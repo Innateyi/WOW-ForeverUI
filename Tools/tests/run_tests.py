@@ -12,6 +12,7 @@ kkowoUI 离线 Lua 5.1 自动化回归测试套件（基于 lupa + wow_mock.lua�
   8. 旧版 v1.5.1 存档迁移兼容性验证（KkowoUIDB -> kkowoUIDB、保留配置、不丢键）
 """
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -2319,6 +2320,82 @@ def run_all():
         return '首次自动待录/野外不消耗/进本开录/副本内重载续录/离本即停/不再自动录/手动on-off-mark-clear/零返回与机密打包 全部通过'
 
     check('实机录制器「只录一次」状态机与命令行为测试', t_live_recorder)
+
+    # 25. Offline Replay Framework: Red-first against 7813558 RollBars + Roundtrip Record->Save->Parse->Replay + Auto-discover review/recordings
+    def t_offline_replay_framework():
+        sys.path.insert(0, str(HERE))
+        import replay as rp
+
+        # A) Red-first on sample dungeon roll recording: 7813558 RollBars MUST fail with click blocker; current HEAD MUST pass & be repeatable
+        sample = rp.build_sample_dungeon_roll_recording()
+        sess0 = sample['sessions'][0]
+        old_rb_src = subprocess.check_output(
+            ['git', 'show', '7813558:Addon/kkowoUI_QoL/RollBars.lua'],
+            cwd=str(REPO),
+        ).decode('utf-8')
+        res_old = rp.replay_session(
+            sess0, create_env, LOAD_ORDER,
+            file_overrides={'kkowoUI_QoL/RollBars.lua': old_rb_src},
+            check_disable_restore=False,
+        )
+        old_blockers = res_old['kkowoBlockers'] + res_old['blizzRollBlockers']
+        assert not res_old['passed'] and len(old_blockers) >= 1, (
+            f'先红校验失败：7813558 RollBars 回放样例录像应复现挡点击问题，实际 passed={res_old["passed"]}, blockers={old_blockers}'
+        )
+
+        res_new1 = rp.replay_session(sess0, create_env, LOAD_ORDER)
+        res_new2 = rp.replay_session(sess0, create_env, LOAD_ORDER)
+        assert res_new1['passed'], f'当前版回放样例录像失败: {res_new1}'
+        assert res_new1 == res_new2, '同一份录像连续回放两次结果不一致（不可重复）'
+        assert len(res_new1['markComparisons']) == 1 and res_new1['markComparisons'][0]['note'] == '掷点弹出检查'
+
+        diffs = rp.calibrate_mock_diff(sample['sessions'])
+        assert len(diffs) >= 3, f'mock 校准差异分析输出过少: {diffs}'
+
+        # B) Full end-to-end roundtrip: LiveRecorder records dungeon -> serialize SV -> scrub PII -> parse back -> replay!
+        l_rec, m_rec, _ = _boot_fresh()
+        m_rec.SetInstanceMode(True, 'party', '哀嚎洞穴')
+        m_rec.FireEvent('PLAYER_ENTERING_WORLD', False, False)
+        l_rec.execute('''
+            _G.GetLootRollItemInfo = function() return 135489, "尖牙护腿", 1, 3, true, true, true, false end
+            _G.GetLootRollTimeLeft = function() return 45000 end
+        ''')
+        m_rec.SetInCombat(True)
+        m_rec.FireEvent('PLAYER_REGEN_DISABLED')
+        m_rec.FireEvent('START_LOOT_ROLL', 601, 60000)
+        m_rec.RunSlash('/kk', 'rec mark 端到端闭环标记')
+        m_rec.FireEvent('PLAYER_ENTERING_WORLD', False, True)  # reload mid-dungeon
+        m_rec.SetInCombat(False)
+        m_rec.FireEvent('PLAYER_REGEN_ENABLED')
+        m_rec.FireEvent('CANCEL_LOOT_ROLL', 601)
+        m_rec.ResetScenario()
+        m_rec.FireEvent('PLAYER_ENTERING_WORLD', False, False)  # leave dungeon -> finalize
+
+        py_rec_db = rp.lua_table_to_python(l_rec.globals().kkowoUIRecordDB)
+        assert py_rec_db and len(py_rec_db.get('sessions', [])) == 1, '端到端录制未产出 1 段完整会话'
+        sv_lua_text = 'kkowoUIRecordDB = ' + rp.serialize_lua_table(py_rec_db) + '\n'
+        parsed_back = rp.parse_record_db_from_sv_text(sv_lua_text)
+        scrubbed = rp.scrub_recording_data(parsed_back, {'TestPlayer', 'TestRealm'})
+        assert 'Player-95-' not in json.dumps(scrubbed, ensure_ascii=False), '清洗后的录像残留 GUID'
+        res_rt = rp.replay_session(scrubbed['sessions'][0], create_env, LOAD_ORDER)
+        assert res_rt['passed'], f'端到端录制的录像回放失败: {res_rt}'
+
+        # C) Auto-discover real recordings under D:\code\wow\review\recordings\ (skip gracefully if none yet)
+        real_files = rp.discover_recordings()
+        real_info = '尚无实机录像（跳过，放置到 review/recordings/ 后自动回放）'
+        if real_files:
+            replayed_real = 0
+            for rf in real_files:
+                rdata = json.loads(rf.read_text(encoding='utf-8'))
+                for rsess in (rdata.get('sessions') or []):
+                    rres = rp.replay_session(rsess, create_env, LOAD_ORDER)
+                    assert rres['passed'], f'实机录像 {rf.name} 回放失败: {rres}'
+                    replayed_real += 1
+            real_info = f'已自动回放 {len(real_files)} 份共 {replayed_real} 段真实录像全过'
+
+        return f'7813558先红检出{len(old_blockers)}处→当前版可重复通过 + 录制/落盘/清洗/回放闭环全过 + 真实录像:{real_info}'
+
+    check('离线回放框架（7813558先红后绿 / 闭环回放 / 实机录像自动发现）', t_offline_replay_framework)
 
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0

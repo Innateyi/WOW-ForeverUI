@@ -839,14 +839,14 @@ function UnitCastingInfo()
     if _secretAPIs.UnitCastingInfo then
         return "稳固射击", "稳固射击", 132213, newSecretSentinel("castStart"), newSecretSentinel("castEnd"), false, newSecretSentinel("castGUID"), false, newSecretSentinel("castSpellID")
     end
-    return nil
+    return
 end
 function UnitChannelInfo()
     if _zeroReturnAPIs.UnitChannelInfo then return end
     if _secretAPIs.UnitChannelInfo then
         return "乱射", "乱射", 132222, newSecretSentinel("chanStart"), newSecretSentinel("chanEnd"), false, false, newSecretSentinel("chanSpellID")
     end
-    return nil
+    return
 end
 function GetRaidTargetIndex() return nil end
 function IsInGroup() return false end
