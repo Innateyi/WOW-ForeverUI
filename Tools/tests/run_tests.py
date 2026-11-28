@@ -2675,6 +2675,547 @@ def run_all():
 
     check('第一批条形动效升级（1.0~1.5 行为 + 机密值 + Q12 布局快照）', t_batch1_motion_fx)
 
+    # 27. Batch 2 Motion & Texture Upgrades behavioral tests (2a~2h + 2-T + off-parity + Q12 snapshot)
+    def t_batch2_motion_fx():
+        import hashlib
+        import struct
+
+        l_env, m_env, load_fn = create_env()
+        l_env.execute('''
+            -- Mock EUI action bar button (protected!)
+            local abBar = CreateFrame("Frame", "EABBar_MainBar", UIParent)
+            abBar:SetSize(480, 40); abBar:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 20)
+            local abBtn = CreateFrame("CheckButton", "ActionButton1", abBar)
+            abBtn:SetSize(36, 36); abBtn:SetPoint("LEFT", abBar, "LEFT", 0, 0)
+            abBtn.action = 1
+            abBtn.icon = abBtn:CreateTexture(nil, "ARTWORK")
+            abBtn.icon:SetPoint("TOPLEFT", abBtn, "TOPLEFT", 1, -1)
+            abBtn.icon:SetPoint("BOTTOMRIGHT", abBtn, "BOTTOMRIGHT", -1, 1)
+            abBtn.icon:SetTexture("Interface\\Icons\\Spell_Fire_FireBolt")
+            abBtn.PushedTexture = abBtn:CreateTexture(nil, "OVERLAY")
+            abBtn.PushedTexture:SetAllPoints(abBtn)
+            abBtn.PushedTexture:Hide()
+            EllesmereUI._ModuleNS.EllesmereUIActionBars = { barButtons = { MainBar = { abBtn } }, _eabFD = {} }
+
+            -- Mock BuffFrame icon (no custom fields allowed on Blizzard button!)
+            local bf = CreateFrame("Frame", "BuffFrame", UIParent)
+            bf.AuraContainer = CreateFrame("Frame", nil, bf)
+            local b1 = CreateFrame("Button", "MockBuff1", bf.AuraContainer)
+            b1:SetSize(30, 30); b1:SetPoint("TOPRIGHT", bf.AuraContainer, "TOPRIGHT", 0, 0)
+            b1.Icon = b1:CreateTexture(nil, "ARTWORK"); b1.Icon:SetAllPoints(b1)
+            b1.Icon:SetTexture("Interface\\Icons\\Spell_Holy_PowerWordShield")
+            b1.buttonInfo = { expirationTime = GetTime() + 4.0, duration = 60, auraInstanceID = 201 }
+            bf.auraFrames = { b1 }
+
+            -- Mock 2 enemy nameplates + 1 forbidden nameplate
+            local function makePlate(name, unit)
+                local p = CreateFrame("Frame", name, UIParent)
+                p:SetSize(130, 14); p:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
+                p.unit = unit
+                p.health = CreateFrame("StatusBar", nil, p); p.health:SetSize(130, 14); p.health:SetAllPoints(p)
+                p.health:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
+                p.health:SetMinMaxValues(0, 1000); p.health:SetValue(1000)
+                p.name = p:CreateFontString(nil, "OVERLAY")
+                return p
+            end
+            EllesmereUI._ModuleNS.EllesmereUINameplates.plates["nameplate1"] = makePlate("MockNP1", "nameplate1")
+            EllesmereUI._ModuleNS.EllesmereUINameplates.plates["nameplate2"] = makePlate("MockNP2", "nameplate2")
+            if WorldMapFrame then WorldMapFrame:Hide() end
+        ''')
+        for name in LOAD_ORDER:
+            load_fn(name)
+        m_env.FireEvent('PLAYER_LOGIN')
+        m_env.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+        m_env.StepTime(2.0, 4)
+
+        # 2a) Heal prediction & shield chain (reverse player + forward target + overshield bool + coalescing + fallback)
+        l_env.execute('''
+            UnitExists = function(u) return u == "player" or u == "target" end
+            UnitHealth = function(u) return u == "player" and 600 or 800 end
+            UnitHealthMax = function() return 1000 end
+            UnitName = function(u) return u == "target" and "测试首领" or "玩家" end
+        ''')
+        m_env.SetMockHealPrediction('player', l_env.table_from({'heals': 250, 'absorbs': 500, 'healAbsorbs': 50}))
+        m_env.SetMockHealPrediction('target', l_env.table_from({'heals': 100, 'absorbs': 100, 'healAbsorbs': 0}))
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.1, 2)
+
+        # Coalescing check: 5 same-frame prediction events -> 1 flush
+        coalesce = l_env.eval('''(function()
+            local hp = _G.kkowoUI_CoreHUD._hpWing._healPred
+            local calls = 0
+            local orig = hp.UpdateFromUnit
+            hp.UpdateFromUnit = function(self, ...) calls = calls + 1; return orig(self, ...) end
+            return { get = function() return calls end, restore = function() hp.UpdateFromUnit = orig end }
+        end)()''')
+        for _ in range(5):
+            m_env.FireEvent('UNIT_HEAL_PREDICTION', 'player')
+            m_env.FireEvent('UNIT_ABSORB_AMOUNT_CHANGED', 'player')
+        m_env.StepTime(0.05, 1)
+        coal_n = coalesce.get()
+        coalesce.restore()
+        assert coal_n == 1, f'2a 同帧多次事件应合并为 1 次更新，实际={coal_n}'
+
+        pred_chk = l_env.eval('''(function()
+            local pPred = _G.kkowoUI_CoreHUD._hpWing._healPred
+            local tPred = _G.kkowoUI_TopTargetHUD._hpBar._healPred
+            local pPt1, pRel1, pRpt1 = pPred._healBar:GetPoint(1)
+            local tPt1, tRel1, tRpt1 = tPred._healBar:GetPoint(1)
+            local pAbsPt, pAbsRel = pPred._absorbBar:GetPoint(1)
+            return {
+                pRev = pPred._healBar:GetReverseFill(),
+                pChain = (pPt1 == "TOPRIGHT" and pRpt1 == "TOPLEFT" and pAbsRel == pPred._healBar:GetStatusBarTexture()),
+                tRev = tPred._healBar:GetReverseFill(),
+                tChain = (tPt1 == "TOPLEFT" and tRpt1 == "TOPRIGHT"),
+                overBool = pPred._overMark._lastAlphaFromBool and pPred._overMark._lastAlphaFromBool.val == true,
+                overAlpha = pPred._overMark:GetAlpha(),
+            }
+        end)()''')
+        assert pred_chk.pRev is True and pred_chk.pChain is True, f'2a 玩家反向血条治疗预估锚点链错误: {pred_chk}'
+        assert pred_chk.tRev is False and pred_chk.tChain is True, f'2a 目标正向血条治疗预估锚点链错误: {pred_chk}'
+        assert pred_chk.overBool is True and pred_chk.overAlpha > 0.5, f'2a 超量护盾应由 SetAlphaFromBoolean 控制显示: {pred_chk}'
+
+        # Calculator missing fallback
+        fb_ok = l_env.eval('''(function()
+            local origCalc = _G.CreateUnitHealPredictionCalculator
+            _G.CreateUnitHealPredictionCalculator = nil
+            local pPred = _G.kkowoUI_CoreHUD._hpWing._healPred
+            pPred._calc = nil
+            pPred:UpdateFromUnit("player", true)
+            local hVal = pPred._healBar:GetValue()
+            local aVal = pPred._absorbBar:GetValue()
+            _G.CreateUnitHealPredictionCalculator = origCalc
+            return hVal == 250 and aVal == 500
+        end)()''')
+        assert fb_ok is True, '2a 缺少 Calculator API 时未正确回退 UnitGetIncomingHeals/Absorbs'
+
+        # 2b) Target arrive: plain starts ~80% Immediate then glides ExponentialEaseOut; secret skips glide; rapid switch cancels old
+        l_env.execute('UnitHealth = function(u) return u == "target" and 1000 or 1000 end')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        arr_start = l_env.eval('''(function()
+            local b = _G.kkowoUI_TopTargetHUD._hpBar._bar
+            return { val = b:GetValue(), interp = b._lastInterp }
+        end)()''')
+        assert abs(float(arr_start.val) - 800.0) < 1.0 and arr_start.interp == 0, f'2b 换目标明文应先 Immediate 设至 ~80%(800)，实际={arr_start}'
+        m_env.StepTime(0.05, 1)
+        arr_end = l_env.eval('''(function()
+            local b = _G.kkowoUI_TopTargetHUD._hpBar._bar
+            return { val = b:GetValue(), interp = b._lastInterp }
+        end)()''')
+        assert abs(float(arr_end.val) - 1000.0) < 1.0 and arr_end.interp == 1, f'2b 换目标下一帧应 ExponentialEaseOut 滑至 1000，实际={arr_end}'
+        # Rapid target switch: second switch cancels first without stacking
+        l_env.execute('UnitHealth = function(u) return u == "target" and 500 or 1000 end')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        l_env.execute('UnitHealth = function(u) return u == "target" and 900 or 1000 end')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.05, 1)
+        arr_rapid = l_env.eval('_G.kkowoUI_TopTargetHUD._hpBar._bar:GetValue()')
+        assert abs(float(arr_rapid) - 900.0) < 1.0, f'2b 快速连续换目标应重置不叠加并落到 900，实际={arr_rapid}'
+        # Secret HP target switch -> 0 errors, skips 80% math
+        l_env.globals()._T2_SEC = m_env.NewSecret('tgt_hp')
+        l_env.execute('UnitHealth = function(u) return u == "target" and _G._T2_SEC or 1000 end')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.05, 1)
+        l_env.execute('UnitHealth = function() return 1000 end')
+
+        # 2c) XP gain segment + level-up snap to 0 before glide + off-switch 1-arg
+        l_env.execute('''
+            local xpMod = kkowoUI.Modules.Get("xpBar")
+            xpMod:GetDB().hideAtMaxLevel = false
+            UnitLevel = function() return 45 end
+            UnitXP = function() return 5000 end
+            UnitXPMax = function() return 10000 end
+            xpMod:Refresh()
+        ''')
+        l_env.execute('UnitXP = function() return 6800 end')
+        m_env.FireEvent('PLAYER_XP_UPDATE', 'player')
+        xp_gain_chk = l_env.eval('''(function()
+            local f = _G.kkowoUI_XPBar
+            local sbs = {}
+            for _, ch in ipairs({ f:GetChildren() }) do
+                if ch.GetObjectType and ch:GetObjectType() == "StatusBar" then sbs[#sbs + 1] = ch end
+            end
+            -- sbs: 1=restedBar, 2=questBar, 3=gainBar, 4=xpBar
+            return { gainShown = sbs[3]:IsShown(), gainVal = sbs[3]:GetValue(), xpInterp = sbs[4]._lastInterp, xpVal = sbs[4]:GetValue() }
+        end)()''')
+        assert xp_gain_chk.gainShown is True and xp_gain_chk.gainVal == 6800 and xp_gain_chk.xpInterp == 1, f'2c 获得经验应显示增益段并平滑推进: {xp_gain_chk}'
+        # Level up: snap to 0 Immediate first, then next frame glides to 400
+        l_env.execute('UnitLevel = function() return 46 end; UnitXP = function() return 400 end; UnitXPMax = function() return 12000 end')
+        m_env.FireEvent('PLAYER_XP_UPDATE', 'player')
+        lvl_snap = l_env.eval('''(function()
+            local sbs = {}
+            for _, ch in ipairs({ _G.kkowoUI_XPBar:GetChildren() }) do
+                if ch.GetObjectType and ch:GetObjectType() == "StatusBar" then sbs[#sbs + 1] = ch end
+            end
+            return { val = sbs[4]:GetValue(), interp = sbs[4]._lastInterp }
+        end)()''')
+        assert lvl_snap.val == 0 and lvl_snap.interp == 0, f'2c 升级时应先 Immediate 跳到 0，绝不倒滑: {lvl_snap}'
+        m_env.StepTime(0.05, 1)
+        lvl_after = l_env.eval('''(function()
+            local sbs = {}
+            for _, ch in ipairs({ _G.kkowoUI_XPBar:GetChildren() }) do
+                if ch.GetObjectType and ch:GetObjectType() == "StatusBar" then sbs[#sbs + 1] = ch end
+            end
+            return { val = sbs[4]:GetValue(), interp = sbs[4]._lastInterp }
+        end)()''')
+        assert lvl_after.val == 400 and lvl_after.interp == 1, f'2c 升级归零后下一帧应平滑滑向新经验 400: {lvl_after}'
+
+        # 2d) Timer bars: RollBars (0 per-bar OnUpdate, secret timeLeft K5 safe, preview unified, K12 clean), WeaponProcs, SoulstoneAlert
+        m_env.SetActiveRolls(l_env.table_from({
+            91: l_env.table_from({'name': '风剑碎片', 'quality': 5, 'tex': 135489, 'endAt': 200.0})
+        }))
+        m_env.SetSecretAPIs(l_env.table_from({'GetLootRollTimeLeft': True}))
+        m_env.FireEvent('START_LOOT_ROLL', 91, 60000)
+        m_env.StepTime(1.0, 2)
+        rb_chk = l_env.eval('''(function()
+            local c = _G.kkowoUI_RollBars
+            local shownBar = nil
+            for _, ch in ipairs({ c:GetChildren() }) do
+                if ch:IsShown() and ch.status then shownBar = ch; break end
+            end
+            return {
+                hasBar = shownBar ~= nil,
+                hasOU = shownBar and (shownBar:GetScript("OnUpdate") ~= nil) or false,
+                timerSet = shownBar and (shownBar.status._timerSetCount or 0) or 0,
+            }
+        end)()''')
+        assert rb_chk.hasBar and (not rb_chk.hasOU) and rb_chk.timerSet >= 1, f'2d RollBars 机密剩余时间不应误关条且必须用客户端计时0OnUpdate: {rb_chk}'
+        m_env.SetSecretAPIs(l_env.table())
+        m_env.SetActiveRolls(l_env.table())
+        m_env.FireEvent('CANCEL_LOOT_ROLL', 91)
+        # Preview uses same client timer path
+        l_env.execute('kkowoUI.Modules.Get("rollBars"):ShowPreview()')
+        rb_prev = l_env.eval('''(function()
+            local c = _G.kkowoUI_RollBars
+            for _, ch in ipairs({ c:GetChildren() }) do
+                if ch:IsShown() and ch.status then
+                    return { hasOU = ch:GetScript("OnUpdate") ~= nil, timerSet = ch.status._timerSetCount or 0 }
+                end
+            end
+            return nil
+        end)()''')
+        assert rb_prev and (not rb_prev.hasOU) and rb_prev.timerSet >= 1, f'2d RollBars 预览应与实机走同一 SetTimerDuration 路径: {rb_prev}'
+        l_env.execute('kkowoUI.Modules.Get("rollBars"):OnCancelRoll(nil, nil)')
+        # K12 check after RollBars closed + idle 0 active text ticks
+        rb_k12 = l_env.eval('''(function()
+            local c = _G.kkowoUI_RollBars
+            local anyShown = false
+            for _, ch in ipairs({ c:GetChildren() }) do
+                if ch:IsShown() then anyShown = true end
+            end
+            return { anyShown = anyShown, containerClick = c:IsMouseClickEnabled() }
+        end)()''')
+        assert (not rb_k12.anyShown) and (not rb_k12.containerClick), f'2d RollBars 结束后不得有残留显示条或容器挡点击(K12): {rb_k12}'
+
+        # WeaponProcs custom row uses SetTimerDuration with 0 per-row OnUpdate (1-hour enchant!)
+        l_env.execute('''
+            GetWeaponEnchantInfo = function() return true, 3540000, 0, 1, false, 0, 0, 0 end
+            local wp = kkowoUI.Modules.Get("weaponProcs")
+            wp:GetDB().useEngineMode = false
+            wp:GetDB().enchantMode = "always"
+            wp:Refresh()
+        ''')
+        m_env.StepTime(0.1, 2)
+        wp_chk = l_env.eval('''(function()
+            local f = _G.kkowoUI_WeaponEnchantBars
+            if not f then return { hasRow = false } end
+            for _, rowF in ipairs({ f:GetChildren() }) do
+                if rowF:IsShown() then
+                    for _, sub in ipairs({ rowF:GetChildren() }) do
+                        if sub.GetObjectType and sub:GetObjectType() == "StatusBar" then
+                            return { hasRow = true, hasOU = rowF:GetScript("OnUpdate") ~= nil, timerSet = sub._timerSetCount or 0 }
+                        end
+                    end
+                end
+            end
+            return { hasRow = false }
+        end)()''')
+        assert wp_chk.hasRow and (not wp_chk.hasOU) and wp_chk.timerSet >= 1, f'2d WeaponProcs 1小时附魔条应走客户端 SetTimerDuration 且 0 OnUpdate: {wp_chk}'
+        l_env.execute('GetWeaponEnchantInfo = function() return false, 0, 0, 0, false, 0, 0, 0 end; kkowoUI.Modules.Get("weaponProcs"):Refresh()')
+        m_env.StepTime(0.1, 1)
+
+        # SoulstoneAlert preview uses client timer
+        l_env.execute('kkowoUI.Modules.Get("soulstoneAlert"):ShowPreview("active")')
+        ss_timer = l_env.eval('''(function()
+            local c = _G.kkowoUI_SoulstoneAlert
+            for _, ch in ipairs({ c:GetChildren() }) do
+                if ch:IsShown() and ch._bar then return ch._bar._timerSetCount or 0 end
+            end
+            return 0
+        end)()''')
+        assert ss_timer >= 1, f'2d 灵魂石条应使用客户端 SetTimerDuration 计时，实际={ss_timer}'
+        l_env.execute('kkowoUI.Modules.Get("soulstoneAlert"):DismissPreview()')
+
+        # 2e) Action bar button press: icon dips 1 physical pixel, releases cleanly, ZERO protected calls on button in combat!
+        m_env.SetInCombat(True)
+        m_env.ClearProtectedViolations()
+        btn_chk = l_env.eval('''(function()
+            local btn = _G.ActionButton1
+            btn._protected = true
+            local _, _, _, _, y0 = btn.icon:GetPoint(1)
+            btn:SetButtonState("PUSHED")
+            local _, _, _, _, yDown = btn.icon:GetPoint(1)
+            btn:SetButtonState("NORMAL")
+            local _, _, _, _, yUp = btn.icon:GetPoint(1)
+            btn._protected = false
+            return { y0 = y0, yDown = yDown, yUp = yUp }
+        end)()''')
+        btn_viols = list(m_env.GetProtectedViolations().values())
+        m_env.SetInCombat(False)
+        assert not btn_viols, f'2e 战斗中按键反馈不得对按钮本身产生受保护调用: {btn_viols}'
+        assert btn_chk.yDown < btn_chk.y0 and abs(float(btn_chk.yUp) - float(btn_chk.y0)) < 0.01, f'2e 按下应下移图标纹理 1px 且松开复位: {btn_chk}'
+
+        # 2f) Aura feel: native AddAuraShownAnimation registered, expiring <=5s activates glow/pulse, 0 per-icon OnUpdate, 0 taint fields on MockBuff1
+        aura_chk = l_env.eval('''(function()
+            local b = _G.MockBuff1
+            kkowoUI.Modules.Get("auraBarSkin"):Refresh()
+            local hasShownAnim = type(b._auraShownAnims) == "table" and next(b._auraShownAnims) ~= nil
+            local hasOU = b:GetScript("OnUpdate") ~= nil
+            local customField = false
+            for k in pairs(b) do
+                if type(k) == "string" and k:find("^_kk") then customField = true end
+            end
+            -- Verify expiring pulse active (expirationTime = now + 4.0 <= 5.0)
+            local glowShown = false
+            for _, ch in ipairs({ b:GetChildren() }) do
+                for _, reg in ipairs({ ch:GetRegions() }) do
+                    if reg.GetBlendMode and reg:GetBlendMode() == "ADD" and reg:IsShown() then
+                        glowShown = true
+                    end
+                end
+            end
+            return { hasShownAnim = hasShownAnim, hasOU = hasOU, customField = customField, glowShown = glowShown }
+        end)()''')
+        assert aura_chk.hasShownAnim and (not aura_chk.hasOU) and (not aura_chk.customField) and aura_chk.glowShown, f'2f Buff 滑入/快到期/零污染/0OnUpdate 校验失败: {aura_chk}'
+
+        # 2g) ImmersiveHUD smoothstep curve: monotonic, dt clamped <= 0.1s, NEVER calls GetAlpha during fade
+        l_env.execute('''
+            UnitExists = function(u) return u == "player" end
+            UnitHealth = function() return 1000 end
+            UnitHealthMax = function() return 1000 end
+            UnitPower = function() return 1000 end
+            UnitPowerMax = function() return 1000 end
+            UnitPowerType = function() return 0 end
+        ''')
+        m_env.SetInCombat(True); m_env.FireEvent('PLAYER_REGEN_DISABLED'); m_env.StepTime(0.6, 6)
+        fade_mon = l_env.eval('''(function()
+            local bar = _G.EABBar_MainBar
+            local getAlphaCount = 0
+            local origGA = bar.GetAlpha
+            bar.GetAlpha = function(self) getAlphaCount = getAlphaCount + 1; return origGA(self) end
+            return {
+                reset = function() getAlphaCount = 0 end,
+                count = function() return getAlphaCount end,
+                alpha = function() return bar._alpha end,
+                restore = function() bar.GetAlpha = origGA end,
+            }
+        end)()''')
+        m_env.SetInCombat(False)
+        m_env.FireEvent('PLAYER_REGEN_ENABLED')
+        m_env.AdvanceTime(0.15)  # fire debounce -> triggers FadeFrameTo
+        fade_mon.reset()
+        # Huge single-frame dt = 5.0 -> clamped to 0.1s, so MUST NOT jump straight to 0.28!
+        m_env.TickOnUpdates(5.0)
+        a1 = float(fade_mon.alpha())
+        m_env.TickOnUpdates(0.1)
+        a2 = float(fade_mon.alpha())
+        m_env.TickOnUpdates(0.3)
+        a3 = float(fade_mon.alpha())
+        ga_calls = int(fade_mon.count())
+        fade_mon.restore()
+        assert a1 > 0.35 and a1 >= a2 >= a3 and ga_calls == 0, f'2g 淡隐应单调、截断单帧dt且不调用GetAlpha: a1={a1:.3f}, a2={a2:.3f}, a3={a3:.3f}, getAlpha={ga_calls}'
+
+        # 2h) Nameplate target outline draw: forbidden skipped, left-to-right growth + TexCoord crop, target switch resets, driver sleeps when done
+        l_env.execute('''
+            UnitExists = function(u) return u == "player" or u == "target" end
+            UnitIsUnit = function(a, b) return (a == "nameplate1" and b == "target") or (a == "target" and b == "nameplate1") end
+        ''')
+        forb_np = m_env.CreateForbiddenPlate()
+        l_env.globals().EllesmereUI._ModuleNS.EllesmereUINameplates.plates['nameplate9'] = forb_np
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.15, 3)
+        np_mid = l_env.eval('''(function()
+            local p = _G.MockNP1
+            for _, ch in ipairs({ p.health:GetChildren() }) do
+                if ch._top and ch._bottom then
+                    local l, r = ch._top:GetTexCoord()
+                    return { shown = ch:IsShown(), w = ch._top:GetWidth(), tcR = r }
+                end
+            end
+            return nil
+        end)()''')
+        assert np_mid and np_mid.shown and 0.0 < float(np_mid.tcR) < 1.0, f'2h 描边动画进行中应渐进裁剪 TexCoord: {np_mid}'
+        m_env.StepTime(0.5, 5)
+        np_end = l_env.eval('''(function()
+            local p = _G.MockNP1
+            for _, ch in ipairs({ p.health:GetChildren() }) do
+                if ch._top and ch._bottom then
+                    local l, r = ch._top:GetTexCoord()
+                    return { w = ch._top:GetWidth(), tcR = r }
+                end
+            end
+            return nil
+        end)()''')
+        assert abs(float(np_end.tcR) - 1.0) < 0.01 and abs(float(np_end.w) - 130.0) < 1.0, f'2h 描边完成后应达全宽且 TexCoord=1: {np_end}'
+        # Target switch resets old outline & restarts new outline, then driver sleeps when done
+        l_env.execute('UnitIsUnit = function(a, b) return (a == "nameplate2" and b == "target") or (a == "target" and b == "nameplate2") end')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.12, 2)
+        np_sw = l_env.eval('''(function()
+            local function findOl(p)
+                for _, ch in ipairs({ p.health:GetChildren() }) do
+                    if ch._top and ch._bottom then return ch end
+                end
+                return nil
+            end
+            local o1, o2 = findOl(_G.MockNP1), findOl(_G.MockNP2)
+            local _, r2 = o2._top:GetTexCoord()
+            return { o1Shown = o1:IsShown(), o2Shown = o2:IsShown(), r2 = r2 }
+        end)()''')
+        assert (not np_sw.o1Shown) and np_sw.o2Shown and 0.0 < float(np_sw.r2) < 1.0, f'2h 切换目标应隐藏旧目标并重置新目标描边进度: {np_sw}'
+        m_env.StepTime(0.6, 6)
+        # Clear target -> outline hides and motion driver sleeps
+        l_env.execute('UnitExists = function(u) return u == "player" end; UnitIsUnit = function() return false end')
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        m_env.StepTime(0.2, 2)
+        l_env.globals().EllesmereUI._ModuleNS.EllesmereUINameplates.plates['nameplate9'] = None
+
+        # 2-T) Texture generator determinism, power-of-2 TGA validation, ST.TEX & off-switch revert
+        sys.path.insert(0, str(REPO / 'Tools'))
+        import gen_bar_textures as gbt
+        with tempfile.TemporaryDirectory(prefix='kk_tex_') as td:
+            d1, d2 = pathlib.Path(td) / 'r1', pathlib.Path(td) / 'r2'
+            f1 = gbt.generate_all(d1)
+            f2 = gbt.generate_all(d2)
+            for p1, p2 in zip(f1, f2):
+                b1, b2 = p1.read_bytes(), p2.read_bytes()
+                assert hashlib.sha256(b1).digest() == hashlib.sha256(b2).digest(), f'2-T 贴图生成不确定: {p1.name}'
+                w, h, bpp = struct.unpack_from('<HHB', b1, 12)
+                assert bpp == 32 and (w & (w - 1)) == 0 and (h & (h - 1)) == 0, f'2-T TGA 尺寸非 2 的幂或非 32 位: {p1.name} {w}x{h} {bpp}bpp'
+        tex_dir = ADDON_BASE / 'kkowoUI_Media' / 'Media' / 'Textures'
+        for tname in ('BarFillShaded.tga', 'BarFillSeamless.tga', 'SparkSoft.tga'):
+            assert (tex_dir / tname).is_file(), f'2-T 缺少贴图文件: {tname}'
+        tex_sw = l_env.eval('''(function()
+            local ST = kkowoUI.StyleTokens
+            local onFill, onSpark = ST.GetBarFillTexture(false), ST.GetSparkTexture()
+            kkowoUI.Modules.Get("motionFX"):GetDB().fx_barTexture = false
+            local offFill, offSpark = ST.GetBarFillTexture(false), ST.GetSparkTexture()
+            kkowoUI.Modules.Get("motionFX"):GetDB().fx_barTexture = true
+            return {
+                onOk = (onFill == ST.TEX.BAR_FILL_SHADED and onSpark == ST.TEX.SPARK_SOFT),
+                offOk = (offFill == ST.TEX.FLAT and offSpark == ST.TEX.SPARK_BLADE),
+            }
+        end)()''')
+        assert tex_sw.onOk and tex_sw.offOk, f'2-T 贴图开关切换校验失败: {tex_sw}'
+
+        # Off-switch exact parity sweep for all Batch 2 switches + Q12 layout snapshot re-verification
+        off_b2 = l_env.eval('''(function()
+            local mdb = kkowoUI.Modules.Get("motionFX"):GetDB()
+            local ST = kkowoUI.StyleTokens
+            local keys = { "fx_healPredict", "fx_targetArrive", "fx_xpSmooth", "fx_timerBars", "fx_buttonPress", "fx_auraFeel", "fx_fadeCurve", "fx_plateOutline", "fx_barTexture" }
+            for _, k in ipairs(keys) do mdb[k] = false end
+            kkowoUI.Modules.Get("motionFX"):Refresh()
+            -- 2a off: heal prediction container hidden (not visible!)
+            local hp = _G.kkowoUI_CoreHUD._hpWing._healPred
+            hp:UpdateFromUnit("player", true)
+            local offHeal = (not hp._clip:IsShown()) and (not hp._healBar:IsVisible()) and (not hp._absorbBar:IsVisible())
+            -- 2b off: target switch uses plain 1-arg SetValue without 80% dip
+            UnitExists = function(u) return u == "player" or u == "target" end
+            UnitHealth = function() return 1000 end
+            UnitHealthMax = function() return 1000 end
+            local tbar = _G.kkowoUI_TopTargetHUD._hpBar._bar
+            tbar._lastSetValueArgc = 0
+            -- Trigger target change with fx_targetArrive=false and fx_smoothMain=false
+            mdb.fx_smoothMain = false
+            return {
+                offHeal = offHeal,
+                offTex = (ST.GetBarFillTexture(false) == ST.TEX.FLAT and ST.GetSparkTexture() == ST.TEX.SPARK_BLADE),
+                allOff = (not ST.IsFXEnabled("fx_healPredict")) and (not ST.IsFXEnabled("fx_targetArrive"))
+                    and (not ST.IsFXEnabled("fx_xpSmooth")) and (not ST.IsFXEnabled("fx_timerBars"))
+                    and (not ST.IsFXEnabled("fx_buttonPress")) and (not ST.IsFXEnabled("fx_auraFeel"))
+                    and (not ST.IsFXEnabled("fx_fadeCurve")) and (not ST.IsFXEnabled("fx_plateOutline")),
+            }
+        end)()''')
+        assert off_b2.offHeal and off_b2.offTex and off_b2.allOff, f'第二批分项开关关闭还原校验失败: {off_b2}'
+        # 2b off: target switch direct jump (no 80% dip)
+        m_env.FireEvent('PLAYER_TARGET_CHANGED')
+        off_tgt_val = l_env.eval('_G.kkowoUI_TopTargetHUD._hpBar._bar:GetValue()')
+        assert abs(float(off_tgt_val) - 1000.0) < 0.01, f'2b 关闭时换目标应直接跳至 1000 而非 80%，实际={off_tgt_val}'
+        # 2c off: XP bar uses 1-arg SetValue without gain segment
+        l_env.execute('UnitXP = function() return 7500 end')
+        m_env.FireEvent('PLAYER_XP_UPDATE', 'player')
+        off_xp = l_env.eval('''(function()
+            local sbs = {}
+            for _, ch in ipairs({ _G.kkowoUI_XPBar:GetChildren() }) do
+                if ch.GetObjectType and ch:GetObjectType() == "StatusBar" then sbs[#sbs + 1] = ch end
+            end
+            return { gainShown = sbs[3]:IsShown(), argCnt = sbs[4]._lastSetValueArgc }
+        end)()''')
+        assert (not off_xp.gainShown) and off_xp.argCnt == 1, f'2c 关闭时应隐藏增益段并退回 1 参 SetValue: {off_xp}'
+        # 2e off: button press does not shift icon
+        off_btn = l_env.eval('''(function()
+            local btn = _G.ActionButton1
+            local _, _, _, _, y0 = btn.icon:GetPoint(1)
+            btn:SetButtonState("PUSHED")
+            local _, _, _, _, y1 = btn.icon:GetPoint(1)
+            btn:SetButtonState("NORMAL")
+            return math.abs((y1 or 0) - (y0 or 0))
+        end)()''')
+        assert float(off_btn) < 0.001, f'2e 关闭时按键不应位移图标，实际偏移={off_btn}'
+        # 2d off: RollBars reverts to old OnUpdate path
+        m_env.SetActiveRolls(l_env.table_from({ 92: l_env.table_from({'name': '测试卷轴', 'quality': 3, 'tex': 135489, 'endAt': 200.0}) }))
+        m_env.FireEvent('START_LOOT_ROLL', 92, 60000)
+        off_rb = l_env.eval('''(function()
+            for _, ch in ipairs({ _G.kkowoUI_RollBars:GetChildren() }) do
+                if ch:IsShown() and ch.status then return ch:GetScript("OnUpdate") ~= nil end
+            end
+            return false
+        end)()''')
+        assert off_rb is True, '2d 关闭时 RollBars 应完整回退到旧 OnUpdate 路径'
+        m_env.SetActiveRolls(l_env.table())
+        m_env.FireEvent('CANCEL_LOOT_ROLL', 92)
+
+        # Q12 layout snapshot re-check after full Batch 2 (all ON + all OFF)
+        base_path = pathlib.Path(r'D:\code\wow\review\21_旧行为基线.json')
+        if base_path.is_file():
+            base_layout = json.loads(base_path.read_text(encoding='utf-8')).get('layout_snapshot', {})
+            for mode_label, force_off in [('全开', False), ('全关', True)]:
+                l_snap, m_snap, load_snap = create_env()
+                l_snap.execute('''
+                    local erb = CreateFrame("Frame", "ERB_CastBarFrame", UIParent)
+                    erb:SetSize(240, 18); erb:SetPoint("CENTER", UIParent, "CENTER", 0, -180); erb:Show()
+                    EllesmereUI._ModuleNS.EllesmereUIResourceBars = { ERB = { db = { profile = { castBar = { enabled = true } } } } }
+                    if WorldMapFrame then WorldMapFrame:Hide() end
+                ''')
+                for name in LOAD_ORDER:
+                    load_snap(name)
+                m_snap.FireEvent('PLAYER_LOGIN')
+                m_snap.FireEvent('PLAYER_ENTERING_WORLD', True, False)
+                m_snap.StepTime(2.0, 4)
+                if force_off:
+                    l_snap.execute('kkowoUI.Modules.Get("motionFX"):GetDB().intensity = "off"; kkowoUI.Modules.Get("motionFX"):Refresh()')
+                cur_layout = l_snap.eval('''(function()
+                    local out = {}
+                    for k, v in pairs(_G) do
+                        if type(k) == "string" and k:find("^kkowoUI_") and type(v) == "table" and v.GetSize and v.GetNumPoints then
+                            local w, h = v:GetSize()
+                            out[k] = { w = w or 0, h = h or 0, strata = v:GetFrameStrata() or "MEDIUM" }
+                        end
+                    end
+                    return out
+                end)()''')
+                for fname, binfo in base_layout.items():
+                    cinfo = cur_layout[fname]
+                    assert cinfo is not None, f'Batch2 布局快照({mode_label})缺失框体: {fname}'
+                    assert abs(float(cinfo.w) - float(binfo['w'])) < 0.01 and abs(float(cinfo.h) - float(binfo['h'])) < 0.01, (
+                        f'Batch2 布局快照({mode_label})尺寸变化 {fname}: 旧={binfo["w"]}x{binfo["h"]}, 新={cinfo.w}x{cinfo.h}'
+                    )
+                    assert str(cinfo.strata) == str(binfo['strata']), f'Batch2 布局快照({mode_label})层级变化 {fname}'
+
+        return '2a治疗预估/2b换目标入场/2c经验增益与升级归零/2d三类计时条0OnUpdate与K12/2e按键1px零受保护/2fBuff滑入脉动/2gsmoothstep无GetAlpha/2h姓名板描边绘制/2-T确定性POT贴图/全开关还原/Q12快照 全部通过'
+
+    check('第二批条形动效与贴图升级（2a~2h + 2-T 行为与零污染校验）', t_batch2_motion_fx)
+
     print(f'\n离线测试汇总：通过 {len(passes)} / 失败 {len(failures)}')
     return 1 if failures else 0
 

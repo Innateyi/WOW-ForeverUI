@@ -601,6 +601,10 @@ function RegionProto:GetTexCoord()
     return 0, 1, 0, 1
 end
 function RegionProto:SetRotation() end
+function RegionProto:SetHorizTile(v) self._horizTile = (v == true) end
+function RegionProto:SetVertTile(v) self._vertTile = (v == true) end
+function RegionProto:GetHorizTile() return self._horizTile == true end
+function RegionProto:GetVertTile() return self._vertTile == true end
 function RegionProto:SetDrawLayer(layer, sub) self._drawLayer = layer or "ARTWORK"; self._drawSublevel = sub or 0 end
 function RegionProto:GetDrawLayer() return self._drawLayer or "ARTWORK", self._drawSublevel or 0 end
 function RegionProto:SetGradient() end
