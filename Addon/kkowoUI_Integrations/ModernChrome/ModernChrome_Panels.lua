@@ -1497,29 +1497,37 @@ do
         return false
     end
 
-    local function AlignWidgetCenterY(widget, targetCy, origPtsMap, appliedDyMap)
-        if not (IsSafeObj(widget) and targetCy) then return end
+    local function ReadWidgetCenterY(widget)
+        if not IsSafeObj(widget) then return nil end
+        local top = widget.GetTop and F.PlainNumber(widget:GetTop(), nil) or nil
+        local bot = widget.GetBottom and F.PlainNumber(widget:GetBottom(), nil) or nil
+        if top and bot then return (top + bot) * 0.5 end
+        return nil
+    end
+
+    local function AlignWidgetCenterY(widget, targetCy, origPtsMap, appliedDyMap, preCy, parentShift)
+        if not (IsSafeObj(widget) and targetCy) then return 0 end
         if origPtsMap[widget] == nil then
             local pts = ReadAllPoints(widget)
             if #pts > 0 then origPtsMap[widget] = pts end
         end
         local origPts = origPtsMap[widget]
-        if not (origPts and #origPts > 0) then return end
-        local top = widget.GetTop and F.PlainNumber(widget:GetTop(), nil) or nil
-        local bot = widget.GetBottom and F.PlainNumber(widget:GetBottom(), nil) or nil
-        if not (top and bot) then return end
-        local curCy = (top + bot) * 0.5
-        local diff = targetCy - curCy
-        if math_abs(diff) < 0.5 then return end
+        if not (origPts and #origPts > 0) then return 0 end
+        local curCy = preCy or ReadWidgetCenterY(widget)
+        if not curCy then return 0 end
+        local effCy = curCy + (parentShift or 0)
+        local diff = targetCy - effCy
+        if math_abs(diff) < 0.5 then return 0 end
         local curApplied = appliedDyMap[widget] or 0
         local newDy = curApplied + diff
-        if math_abs(newDy) > 36 then return end
+        if math_abs(newDy) > 36 then return 0 end
         local adj = {}
         for i, p in ipairs(origPts) do
             adj[i] = { p[1], p[2], p[3], p[4], (p[5] or 0) + newDy }
         end
         SetAllPoints(widget, adj)
         appliedDyMap[widget] = newDy
+        return diff
     end
 
     StabilizeSpellBookSearchBox = function(want)
@@ -1602,14 +1610,21 @@ do
         end
         if tabCy then
             local filterBtn = FindSpellBookFilterButton(sb, box, spellSearchOrigPts[box])
+            local boxCy0 = ReadWidgetCenterY(box)
+            local filterCy0 = filterBtn and ReadWidgetCenterY(filterBtn) or nil
+            if filterBtn and spellFilterOrigPts[filterBtn] == nil then
+                local fPts = ReadAllPoints(filterBtn)
+                if #fPts > 0 then spellFilterOrigPts[filterBtn] = fPts end
+            end
             if filterBtn and IsAnchoredTo(spellSearchOrigPts[box], filterBtn) then
-                -- 搜索框锚定在筛选按钮上：先移动筛选按钮，再微调搜索框中心
-                AlignWidgetCenterY(filterBtn, tabCy, spellFilterOrigPts, spellFilterAppliedDy)
-                AlignWidgetCenterY(box, tabCy, spellSearchOrigPts, spellSearchAppliedDy)
+                -- 搜索框锚定在筛选按钮上：先移动筛选按钮，再用预采中心+父级位移消除同帧双移
+                local dFilt = AlignWidgetCenterY(filterBtn, tabCy, spellFilterOrigPts, spellFilterAppliedDy, filterCy0, 0)
+                AlignWidgetCenterY(box, tabCy, spellSearchOrigPts, spellSearchAppliedDy, boxCy0, dFilt)
             else
-                AlignWidgetCenterY(box, tabCy, spellSearchOrigPts, spellSearchAppliedDy)
+                local dBox = AlignWidgetCenterY(box, tabCy, spellSearchOrigPts, spellSearchAppliedDy, boxCy0, 0)
                 if filterBtn then
-                    AlignWidgetCenterY(filterBtn, tabCy, spellFilterOrigPts, spellFilterAppliedDy)
+                    local fOnBox = IsAnchoredTo(spellFilterOrigPts[filterBtn], box)
+                    AlignWidgetCenterY(filterBtn, tabCy, spellFilterOrigPts, spellFilterAppliedDy, filterCy0, fOnBox and dBox or 0)
                 end
             end
         end
