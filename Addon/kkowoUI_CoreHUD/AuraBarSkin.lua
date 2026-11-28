@@ -12,8 +12,10 @@ local ipairs, math_floor, math_max, math_min, pcall, setmetatable, type =
     ipairs, math.floor, math.max, math.min, pcall, setmetatable, type
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
+local GetTime = GetTime
 
 local ST = F.StyleTokens
+local M = F.Motion
 
 local mod = F.RegisterModule("auraBarSkin", {
     title = "增益栏美化",
@@ -26,6 +28,7 @@ local mod = F.RegisterModule("auraBarSkin", {
         radius = 5,
         showShadow = true,
         colorDebuffBorder = true,
+        expireThreshold = 5,
     },
 })
 
@@ -34,6 +37,7 @@ local skinned = setmetatable({}, { __mode = "k" })
 local origBorderAlpha = setmetatable({}, { __mode = "k" })
 local origCountStyle = setmetatable({}, { __mode = "k" })
 local buttonList = {}
+local AURA_EXPIRE_TICK_KEY = "kkowoUI_AuraFeel_Expire"
 
 local BORDER_KEYS = { "Border", "DebuffBorder", "TempEnchantBorder" }
 
@@ -95,6 +99,184 @@ local function ResolveBorderColor(btn, isDebuff)
     return 0.88, 0.26, 0.30, 0.95
 end
 
+-- 2f 增益滑入与快到期柔和脉动（严格零污染：全部状态收在弱表 ov 中，不写任何暴雪按钮字段）
+local function StopAuraFeel(btn, ov)
+    if not ov then return end
+    if ov.nativeShownReg and btn and btn.RemoveAuraShownAnimation and ov.slideAG then
+        pcall(btn.RemoveAuraShownAnimation, btn, ov.slideAG)
+        ov.nativeShownReg = false
+    end
+    if ov.slideAG and ov.slideAG:IsPlaying() then
+        ov.slideAG:Stop()
+    end
+    if ov.expPulseAG then
+        if ov.expPulseAG:IsPlaying() then ov.expPulseAG:Stop() end
+        if M and M.UnregisterLoopAnim then M.UnregisterLoopAnim(ov.expPulseAG) end
+    end
+    if ov.expGlow then
+        ov.expGlow:Hide()
+    end
+    ov.expiring = false
+end
+
+local function EnsureAuraFeelAnims(btn, ov, rad)
+    if not (ov and ov.wrap) then return end
+    local want = mod._active == true and ST.IsFXEnabled("fx_auraFeel")
+    if not want then
+        StopAuraFeel(btn, ov)
+        return
+    end
+
+    -- 1) 滑入动画（Translation + Alpha，不用 Scale 防怪癖 6）
+    local isSoft = ST.GetFXIntensity() == "soft"
+    local dx = isSoft and 4 or 6
+    if not ov.slideAG then
+        local ag = ov.wrap:CreateAnimationGroup()
+        local jump = ag:CreateAnimation("Translation")
+        jump:SetOrder(1)
+        jump:SetOffset(dx, 0)
+        jump:SetDuration(0)
+        local slide = ag:CreateAnimation("Translation")
+        slide:SetOrder(2)
+        slide:SetOffset(-dx, 0)
+        slide:SetDuration(0.18)
+        slide:SetSmoothing("OUT")
+        local fade = ag:CreateAnimation("Alpha")
+        fade:SetOrder(2)
+        fade:SetFromAlpha(0)
+        fade:SetToAlpha(1)
+        fade:SetDuration(0.18)
+        fade:SetSmoothing("OUT")
+        ag:SetScript("OnFinished", function() ov.wrap:SetAlpha(1) end)
+        ag:SetScript("OnStop", function() ov.wrap:SetAlpha(1) end)
+        ag._jump = jump
+        ag._slide = slide
+        ov.slideAG = ag
+    else
+        ov.slideAG._jump:SetOffset(dx, 0)
+        ov.slideAG._slide:SetOffset(-dx, 0)
+    end
+
+    -- 优先交给客户端 AddAuraShownAnimation（按钮受限时仍可播），否则在 OnShow / 新光环实例时触发
+    if type(btn.AddAuraShownAnimation) == "function" and type(btn.RemoveAuraShownAnimation) == "function" then
+        if not ov.nativeShownReg then
+            local okAdd = pcall(btn.AddAuraShownAnimation, btn, ov.slideAG)
+            if okAdd then ov.nativeShownReg = true end
+        end
+    else
+        if not ov.showHooked and btn.HookScript then
+            ov.showHooked = true
+            pcall(btn.HookScript, btn, "OnShow", function(self)
+                local o = skinned[self]
+                if o and o.slideAG and mod._active and ST.IsFXEnabled("fx_auraFeel") then
+                    o.slideAG:Stop()
+                    o.slideAG:Play()
+                end
+            end)
+        end
+        local info = btn.buttonInfo
+        local instID = (type(info) == "table" and not F.IsSecret(info)) and F.PlainNumber(info.auraInstanceID, nil) or nil
+        if instID and ov.lastAuraID ~= instID then
+            local hadPrev = (ov.lastAuraID ~= nil)
+            ov.lastAuraID = instID
+            if hadPrev or btn:IsShown() then
+                ov.slideAG:Stop()
+                ov.slideAG:Play()
+            end
+        end
+    end
+
+    -- 2) 快到期柔光叠加层（不改图标尺寸与间距，BOUNCE 透明度动画 0.6..1.0，周期 ~1.2s）
+    if not ov.expGlow then
+        local glow = ov.wrap:CreateTexture(nil, "OVERLAY", nil, 5)
+        glow:SetAllPoints(ov.wrap)
+        glow:SetTexture(ST.TEX.FLAT)
+        glow:SetBlendMode("ADD")
+        glow:SetVertexColor(1.00, 0.72, 0.28, 1)
+        glow:Hide()
+        ov.expGlow = glow
+        ov.expGlowRad = -1
+    end
+    if rad > 0 and ov.expGlowRad ~= rad then
+        ST.MaskTexture(ov.wrap, ov.expGlow, rad)
+        ov.expGlowRad = rad
+    end
+    local scale = ST.GetFXScale()
+    local minA = 0.20 * scale
+    local maxA = 0.34 * scale
+    ov.expPulseAG = M and M.EnsurePulseAlpha and M.EnsurePulseAlpha(ov.expGlow, minA, maxA, 1.2) or ov.expPulseAG
+end
+
+local function ReadAuraRemainingSeconds(btn, now)
+    local info = btn and btn.buttonInfo
+    if type(info) ~= "table" or F.IsSecret(info) then return nil, false end
+    -- 优先 12.x duration 对象 API（若存在）
+    local instID = F.PlainNumber(info.auraInstanceID, nil)
+    local UA = _G.C_UnitAuras
+    if instID and UA and type(UA.GetAuraDuration) == "function" then
+        local okD, durObj = pcall(UA.GetAuraDuration, "player", instID)
+        if okD and durObj and type(durObj) == "table" and durObj.GetRemainingDuration then
+            local okR, rawRem = pcall(durObj.GetRemainingDuration, durObj)
+            if okR and not F.IsSecret(rawRem) then
+                local rNum = F.PlainNumber(rawRem, nil)
+                if rNum then return rNum, true end
+            end
+        end
+    end
+    local exp = F.PlainNumber(info.expirationTime, nil)
+    local dur = F.PlainNumber(info.duration, nil)
+    if exp and dur and dur > 0 and exp > 0 then
+        return exp - now, true
+    end
+    return nil, false
+end
+
+local function TickExpiringAuras(now)
+    if not (mod._active and ST.IsFXEnabled("fx_auraFeel")) then
+        for _, btn in ipairs(buttonList) do
+            local ov = skinned[btn]
+            if ov and ov.expGlow then
+                if ov.expPulseAG and ov.expPulseAG:IsPlaying() then ov.expPulseAG:Stop() end
+                ov.expGlow:Hide()
+                ov.expiring = false
+            end
+        end
+        return false
+    end
+    local thresh = F.PlainNumber(mod:GetDB().expireThreshold, 5) or 5
+    local anyTimed = false
+    for _, btn in ipairs(buttonList) do
+        if IsSafe(btn) and btn:IsShown() then
+            local ov = skinned[btn]
+            if ov and ov.expGlow then
+                local rem, hasDur = ReadAuraRemainingSeconds(btn, now)
+                if hasDur then
+                    anyTimed = true
+                end
+                local wantPulse = (rem ~= nil and rem > 0 and rem <= thresh)
+                if wantPulse then
+                    ov.expGlow:Show()
+                    if ov.expPulseAG and not ov.expPulseAG:IsPlaying() then
+                        ov.expPulseAG:Play()
+                        if M and M.RegisterLoopAnim then
+                            M.RegisterLoopAnim(ov.expPulseAG, function()
+                                return mod._active and ov.expiring == true and ov.expGlow:IsVisible()
+                            end)
+                        end
+                    end
+                    ov.expiring = true
+                elseif ov.expiring or ov.expGlow:IsShown() then
+                    if ov.expPulseAG and ov.expPulseAG:IsPlaying() then ov.expPulseAG:Stop() end
+                    if M and M.UnregisterLoopAnim and ov.expPulseAG then M.UnregisterLoopAnim(ov.expPulseAG) end
+                    ov.expGlow:Hide()
+                    ov.expiring = false
+                end
+            end
+        end
+    end
+    return anyTimed
+end
+
 local function SkinAuraButton(btn, isDebuff)
     if not IsSafe(btn) then return end
     local icon = btn.Icon or btn.icon
@@ -108,6 +290,7 @@ local function SkinAuraButton(btn, isDebuff)
 
     local ov = skinned[btn]
     if not mod._active then
+        StopAuraFeel(btn, ov)
         if ov and ov.wrap then
             ST.ClearRoundedMask(ov.wrap)
             SetSquareBorder(ov, false)
@@ -229,6 +412,8 @@ local function SkinAuraButton(btn, isDebuff)
         end
         F.Theme.ApplyFont(btn.Count, 11, "OUTLINE", 1, 0.96, 0.80, 1)
     end
+
+    EnsureAuraFeelAnims(btn, ov, rad)
 end
 
 local function VisitContainer(c, isDebuff)
@@ -255,6 +440,15 @@ local function RefreshAllAuras()
             end
         end
     end
+    if mod._active and ST.IsFXEnabled("fx_auraFeel") and M and M.RegisterTextTick then
+        if TickExpiringAuras(GetTime()) then
+            M.RegisterTextTick(AURA_EXPIRE_TICK_KEY, 0.25, TickExpiringAuras)
+        else
+            M.UnregisterTextTick(AURA_EXPIRE_TICK_KEY)
+        end
+    elseif M and M.UnregisterTextTick then
+        M.UnregisterTextTick(AURA_EXPIRE_TICK_KEY)
+    end
 end
 
 local QueueRefresh = F.Debounce(0.10, RefreshAllAuras)
@@ -269,6 +463,9 @@ function mod:OnEnable()
 end
 
 function mod:OnDisable()
+    if M and M.UnregisterTextTick then
+        M.UnregisterTextTick(AURA_EXPIRE_TICK_KEY)
+    end
     for _, btn in ipairs(buttonList) do
         if IsSafe(btn) then
             SkinAuraButton(btn, false)
