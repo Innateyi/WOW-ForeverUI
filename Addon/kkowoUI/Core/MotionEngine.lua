@@ -281,6 +281,36 @@ end
 ----------------------------------------------------------------------
 local trailRegistry = setmetatable({}, { __mode = "k" })
 
+local function ResolveTrailTune(ctrl)
+    local override = ctrl and ctrl._fxOverride
+    local tuned = ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_trailTune", override) or false
+    if not tuned then
+        return false, ctrl._delay or 0.16, ctrl._speed or 7.5, 1.0
+    end
+    local inten = ST.GetFXIntensity(override)
+    if inten == "soft" then
+        return true, 0.24, 9.5, 0.6
+    end
+    -- 标准强度：受击后停顿 ~0.38s 等平滑主条基本到位，再在 ~0.4s 内柔和收完
+    return true, 0.38, 6.8, 1.0
+end
+
+local function ApplyTrailVisualColor(ctrl)
+    if not (ctrl and ctrl._bar) then return end
+    local bc = ctrl._baseColor or ST.COLORS.trail
+    local tuned, _, _, scale = ResolveTrailTune(ctrl)
+    if not tuned then
+        ctrl._bar:SetStatusBarColor(bc[1], bc[2], bc[3], bc[4] or 0.72)
+        return
+    end
+    -- 柔和浅色调 + 约 0.55 透明度（柔和强度乘以 0.6）
+    local r = bc[1] * 0.55 + 0.45
+    local g = bc[2] * 0.55 + 0.45
+    local b = bc[3] * 0.55 + 0.45
+    local a = 0.55 * scale
+    ctrl._bar:SetStatusBarColor(r, g, b, a)
+end
+
 local function TickTrail(ctrl, dt, now)
     if not ctrl._enabled or not ctrl._bar or not ctrl._bar:IsVisible() then
         return false
@@ -296,7 +326,8 @@ local function TickTrail(ctrl, dt, now)
     if now < ctrl._holdUntil then
         return true
     end
-    local k = 1 - math_exp(-(ctrl._speed or 7.5) * dt)
+    local _, _, effSpeed = ResolveTrailTune(ctrl)
+    local k = 1 - math_exp(-effSpeed * dt)
     ctrl._trailVal = ctrl._trailVal + (ctrl._targetVal - ctrl._trailVal) * k
     if ctrl._trailVal <= ctrl._targetVal + 0.001 then
         ctrl._trailVal = ctrl._targetVal
@@ -377,28 +408,62 @@ function M.AttachHealthTrail(healthBar, opts)
     end
 
     local ctrl = {
-        _host       = healthBar,
-        _clip       = clip,
-        _bar        = trailBar,
-        _delay      = opts.delay or 0.16,
-        _speed      = opts.speed or 7.5,
-        _reverse    = opts.reverse,
-        _enabled    = true,
-        _secretMode = false,
-        _trailVal   = 1,
-        _targetVal  = 1,
-        _maxVal     = 1,
-        _holdUntil  = 0,
-        _secretGen  = 0,
-        _tick       = TickTrail,
+        _host          = healthBar,
+        _clip          = clip,
+        _bar           = trailBar,
+        _delay         = opts.delay or 0.16,
+        _speed         = opts.speed or 7.5,
+        _baseColor     = { c[1], c[2], c[3], c[4] or 0.72 },
+        _fxOverride    = opts.fxOverride,
+        _reverse       = opts.reverse,
+        _enabled       = true,
+        _secretMode    = false,
+        _trailVal      = 1,
+        _targetVal     = 1,
+        _maxVal        = 1,
+        _holdUntil     = 0,
+        _secretGen     = 0,
+        _secretPending = false,
+        _secretDueAt   = 0,
+        _secretLastCur = nil,
+        _tick          = TickTrail,
     }
 
+    -- 机密分支复用单一回调 + 代数计数与截止时间，每次血量事件 0 闭包分配
+    local function RunSecretCatchup()
+        ctrl._secretPending = false
+        if not ctrl._enabled then return end
+        local now = GetTime()
+        if ctrl._secretDueAt > now + 0.01 then
+            ctrl._secretPending = true
+            C_Timer.After(ctrl._secretDueAt - now, RunSecretCatchup)
+            return
+        end
+        local unit = ctrl._unit
+        local liveCur = (unit and _G.UnitHealth) and _G.UnitHealth(unit)
+        if type(liveCur) == "nil" then liveCur = ctrl._secretLastCur end
+        if type(liveCur) == "nil" then return end
+        local interp = GetInterpEnum()
+        if interp and interp.ExponentialEaseOut ~= nil then
+            pcall(ctrl._bar.SetValue, ctrl._bar, liveCur, interp.ExponentialEaseOut)
+        else
+            pcall(ctrl._bar.SetValue, ctrl._bar, liveCur)
+        end
+    end
+    ctrl._secretCatchupFn = RunSecretCatchup
+
     function ctrl:SetColor(r, g, b, a)
-        self._bar:SetStatusBarColor(r, g, b, a or 0.72)
+        self._baseColor = { r, g, b, a or 0.72 }
+        ApplyTrailVisualColor(self)
+    end
+
+    function ctrl:RefreshStyle()
+        ApplyTrailVisualColor(self)
     end
 
     function ctrl:SetDelay(d)
         self._delay = math_max(0.04, math_min(0.60, d or 0.16))
+        ApplyTrailVisualColor(self)
     end
 
     function ctrl:SetReverse(rev)
@@ -412,42 +477,46 @@ function M.AttachHealthTrail(healthBar, opts)
         if not self._enabled then
             SleepTask(self)
         else
+            ApplyTrailVisualColor(self)
             ReanchorTrailClip(self)
         end
     end
 
     function ctrl:SyncAnchor()
+        ApplyTrailVisualColor(self)
         ReanchorTrailClip(self)
     end
 
     function ctrl:SetValue(cur, maxVal, instant)
         if not self._enabled then return end
+        ApplyTrailVisualColor(self)
+        local tuned, effDelay = ResolveTrailTune(self)
         local isSec = F.IsSecret(cur) or F.IsSecret(maxVal)
         if isSec then
             self._secretMode = true
             SleepTask(self)
             pcall(self._bar.SetMinMaxValues, self._bar, 0, maxVal)
             self._secretGen = self._secretGen + 1
+            self._secretLastCur = cur
             if instant then
-                if IMMEDIATE_ENUM then
-                    pcall(self._bar.SetValue, self._bar, cur, IMMEDIATE_ENUM)
+                self._secretDueAt = 0
+                local interp = GetInterpEnum()
+                if interp and interp.Immediate ~= nil then
+                    pcall(self._bar.SetValue, self._bar, cur, interp.Immediate)
                 else
                     pcall(self._bar.SetValue, self._bar, cur)
                 end
                 return
             end
-            local gen = self._secretGen
-            local unit = self._unit
-            C_Timer.After(self._delay or 0.16, function()
-                if not self._enabled or self._secretGen ~= gen then return end
-                local liveCur = (unit and _G.UnitHealth) and _G.UnitHealth(unit)
-                if type(liveCur) == "nil" then liveCur = cur end
-                if EASE_OUT_ENUM then
-                    pcall(self._bar.SetValue, self._bar, liveCur, EASE_OUT_ENUM)
-                else
-                    pcall(self._bar.SetValue, self._bar, liveCur)
-                end
-            end)
+            local now = GetTime()
+            local due = now + effDelay
+            if due > self._secretDueAt then
+                self._secretDueAt = due
+            end
+            if not self._secretPending then
+                self._secretPending = true
+                C_Timer.After(effDelay, self._secretCatchupFn)
+            end
             return
         end
 
@@ -471,9 +540,10 @@ function M.AttachHealthTrail(healthBar, opts)
         -- 掉血：若此前未处于掉血滞留状态，设定滞留截止时间；连击时稍微顺延避免顿挫
         local now = GetTime()
         if self._targetVal >= self._trailVal - 0.001 then
-            self._holdUntil = now + (self._delay or 0.16)
+            self._holdUntil = now + effDelay
         elseif now < self._holdUntil then
-            self._holdUntil = math_min(now + (self._delay or 0.16) * 0.65, self._holdUntil + 0.04)
+            local capMul = tuned and 0.72 or 0.65
+            self._holdUntil = math_min(now + effDelay * capMul, self._holdUntil + 0.04)
         end
         self._targetVal = val
         self._bar:SetValue(self._trailVal)
