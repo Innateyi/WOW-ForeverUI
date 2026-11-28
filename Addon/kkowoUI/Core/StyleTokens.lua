@@ -186,6 +186,97 @@ function ST.IsMasterEnabled()
     return (not db) or (db.enabled ~= false)
 end
 
+-- 动效分项元数据（统一总控与设置页使用，新增/回退一目了然）
+ST.FX_DEFAULTS = {
+    intensity       = "standard", -- "off" | "soft" | "standard"
+    smoothBars      = true,
+    fx_smoothMain   = true,
+    fx_trailTune    = true,
+    fx_hitFlash     = true,
+    fx_castTimer    = true,
+    fx_castFinish   = true,
+    fx_healPredict  = true,
+    fx_targetArrive = true,
+    fx_xpSmooth     = true,
+    fx_timerBars    = true,
+    fx_buttonPress  = true,
+    fx_auraFeel     = true,
+    fx_fadeCurve    = true,
+    fx_plateOutline = true,
+    fx_barTexture   = true,
+}
+
+ST.FX_ITEMS = {
+    { key = "fx_smoothMain",   label = "主条平滑过渡",     tip = "血条与能量条使用客户端原生平滑，脱战/换目标/死亡瞬切。" },
+    { key = "fx_trailTune",    label = "掉血拖尾调校",     tip = "调整掉血残影停顿与追赶节奏，和平滑主条配合更柔和。" },
+    { key = "fx_hitFlash",     label = "受击与治疗闪光",   tip = "大额受伤或治疗时在填充上叠一层柔和瞬闪，不改条体尺寸。" },
+    { key = "fx_castTimer",    label = "施法条客户端计时", tip = "施法条改用引擎计时，省去逐帧计算且机密值下保留样式。" },
+    { key = "fx_castFinish",   label = "施法收尾打磨",     tip = "打磨施法成功、打断、失败与引导结束时的残影收尾动画。" },
+    { key = "fx_healPredict",  label = "治疗预估与护盾",   tip = "玩家与目标血条叠加即将到账的治疗预估、吸收盾与超量标记。" },
+    { key = "fx_targetArrive", label = "换目标入场滑动",   tip = "切换目标时目标血条轻快滑入当前血量（机密值自动退回淡入）。" },
+    { key = "fx_xpSmooth",     label = "经验与声望平滑",   tip = "经验条、声望条平滑推进并在获得经验时提示浅亮增益段。" },
+    { key = "fx_timerBars",    label = "计时条客户端驱动", tip = "掷点条、武器特效条、灵魂石条改用客户端计时，空闲零轮询。" },
+    { key = "fx_buttonPress",  label = "动作条按键下沉",   tip = "按键按下时图标微沉 1 物理像素并轻快回弹，不碰受保护按钮。" },
+    { key = "fx_auraFeel",     label = "增益滑入与到期脉动", tip = "右上角 Buff 图标出现时轻柔滑入，剩余不足 5 秒时柔和脉动。" },
+    { key = "fx_fadeCurve",    label = "脱战淡隐平滑曲线", tip = "将脱战淡隐动画升级为距离缩放的 smoothstep 缓动曲线。" },
+    { key = "fx_plateOutline", label = "目标姓名板描边绘制", tip = "切换目标时当前目标姓名板细描边从左到右流畅绘出。" },
+    { key = "fx_barTexture",   label = "条体明暗与柔和火花", tip = "启用自制轻微上下明暗条体贴图与柔和前沿火花（需重启客户端）。" },
+}
+
+local SMOOTH_GATED_KEYS = {
+    fx_smoothMain = true,
+    fx_xpSmooth   = true,
+}
+
+function ST.GetFXIntensity(override)
+    if type(override) == "table" then
+        if override.forceOff then return "off" end
+        if override.intensity then return override.intensity end
+    end
+    if not ST.IsMasterEnabled() then return "off" end
+    local db = ST.GetMotionDB()
+    local val = db and db.intensity or "standard"
+    if val ~= "off" and val ~= "soft" and val ~= "standard" then
+        return "standard"
+    end
+    return val
+end
+
+function ST.GetFXScale(override)
+    local inten = ST.GetFXIntensity(override)
+    if inten == "off" then return 0 end
+    if inten == "soft" then return 0.6 end
+    return 1.0
+end
+
+function ST.IsSmoothBarsEnabled(override)
+    if type(override) == "table" then
+        if override.forceOff then return false end
+        if override.smoothBars ~= nil then return override.smoothBars == true end
+        if override.intensity == "off" then return false end
+        if override.forceAll then return true end
+    end
+    if ST.GetFXIntensity(override) == "off" then return false end
+    local db = ST.GetMotionDB()
+    return (not db) or (db.smoothBars ~= false)
+end
+
+function ST.IsFXEnabled(fxKey, override)
+    if type(override) == "table" then
+        if override.forceOff then return false end
+        if override.intensity == "off" then return false end
+        if fxKey and override[fxKey] ~= nil then return override[fxKey] == true end
+        if override.forceAll then return true end
+    end
+    if ST.GetFXIntensity() == "off" then return false end
+    local db = ST.GetMotionDB()
+    if fxKey and SMOOTH_GATED_KEYS[fxKey] and db and db.smoothBars == false then
+        return false
+    end
+    if not fxKey then return true end
+    return (not db) or (db[fxKey] ~= false)
+end
+
 function ST.GetGradientMode()
     local db = ST.GetMotionDB()
     return (db and db.gradientStyle) or "bright"

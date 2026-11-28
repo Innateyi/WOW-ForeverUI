@@ -20,17 +20,51 @@ local MOTION_SUBMODULES = {
     "keybindBoard",
 }
 
+-- 接入总开关但不随总开关停用主体功能的模块：总开关/强度变动时仅刷新其动效状态
+local FX_CONSUMER_MODULES = {
+    "rollBars",
+    "weaponProcs",
+    "xpBar",
+    "soulstoneAlert",
+    "immersiveHUD",
+}
+
 local mod = F.RegisterModule("motionFX", {
     title = "圆角与动效",
-    desc = "统一设置全局圆角半径与职业色渐变风格，关闭即恢复原样。",
+    desc = "统一设置全局圆角半径、职业色渐变风格与条形动效开关，关闭即恢复原样。",
     group = "motion",
     order = 1,
     defaults = {
-        enabled = true,
-        gradientStyle = "bright", -- "bright" = 职业色→柔白高光 | "dark" = 暗职业基调→亮职业色
-        cornerRadius = 6,         -- 全局圆角半径（0~10px）
+        enabled         = true,
+        gradientStyle   = "bright",   -- "bright" = 职业色→柔白高光 | "dark" = 暗职业基调→亮职业色
+        cornerRadius    = 6,          -- 全局圆角半径（0~10px）
+        intensity       = "standard", -- "off" | "soft" | "standard"
+        smoothBars      = true,       -- 条平滑子开关
+        fx_smoothMain   = true,
+        fx_trailTune    = true,
+        fx_hitFlash     = true,
+        fx_castTimer    = true,
+        fx_castFinish   = true,
+        fx_healPredict  = true,
+        fx_targetArrive = true,
+        fx_xpSmooth     = true,
+        fx_timerBars    = true,
+        fx_buttonPress  = true,
+        fx_auraFeel     = true,
+        fx_fadeCurve    = true,
+        fx_plateOutline = true,
+        fx_barTexture   = true,
     },
 })
+
+local function RefreshFXConsumers()
+    for _, key in ipairs(FX_CONSUMER_MODULES) do
+        local sub = F.Modules.Get(key)
+        if sub and sub._active then
+            sub:Refresh()
+        end
+    end
+end
 
 local function SyncSubModules()
     local masterOn = mod._active == true
@@ -54,6 +88,7 @@ local function SyncSubModules()
             end
         end
     end
+    RefreshFXConsumers()
 end
 
 local function RefreshAllMotion()
@@ -63,6 +98,7 @@ local function RefreshAllMotion()
             sub:Refresh()
         end
     end
+    RefreshFXConsumers()
     local tt = F.Modules.Get("tooltipStyle")
     if tt and tt._active then tt:Refresh() end
 end
@@ -199,6 +235,60 @@ function mod:BuildOptions(W, parent, y, enableSlot)
         end,
     })
     y = y - h
+
+    _, h = W:DualRow(parent, y, {
+        type = "dropdown",
+        text = "动效强度",
+        tooltip = "控制条形平滑、闪光、拖尾与入场动效强度；设为「关」后全部恢复改动前原样。",
+        values = {
+            off      = "关（恢复改动前原样）",
+            soft     = "柔和（闪光与拖尾更克制）",
+            standard = "标准（推荐默认）",
+        },
+        order = { "off", "soft", "standard" },
+        getValue = function() return db.intensity or "standard" end,
+        setValue = function(v)
+            db.intensity = v
+            RefreshAllMotion()
+        end,
+    }, {
+        type = "toggle",
+        text = "条平滑过渡",
+        tooltip = "控制血条、能量条、经验条等是否使用客户端原生平滑插值。",
+        getValue = function() return db.smoothBars ~= false end,
+        setValue = function(v)
+            db.smoothBars = v == true
+            RefreshAllMotion()
+        end,
+    })
+    y = y - h
+
+    local ST = F.StyleTokens
+    local items = ST and ST.FX_ITEMS
+    if type(items) == "table" and #items > 0 then
+        local function makeSlot(item)
+            if not item then return nil end
+            local k = item.key
+            return {
+                type = "toggle",
+                text = item.label,
+                tooltip = item.tip,
+                getValue = function() return db[k] ~= false end,
+                setValue = function(v)
+                    db[k] = v == true
+                    RefreshAllMotion()
+                end,
+            }
+        end
+        local i = 1
+        while i <= #items do
+            local leftSlot = makeSlot(items[i])
+            local rightSlot = makeSlot(items[i + 1])
+            _, h = W:DualRow(parent, y, leftSlot, rightSlot)
+            y = y - h
+            i = i + 2
+        end
+    end
 
     return y
 end
