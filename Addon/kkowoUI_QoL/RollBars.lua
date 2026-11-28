@@ -673,7 +673,7 @@ local function AcquireBar(rollID)
     bar.btnGreed  = CreateRollButton(bar, ov, "RollGreed.tga",      { 0.96, 0.78, 0.34 }, "贪婪", 2, -52)
     bar.btnNeed   = CreateRollButton(bar, ov, "RollNeed.tga",       { 0.37, 0.85, 0.64 }, "需求", 1, -76)
 
-    bar:SetScript("OnUpdate", function(self, elapsed)
+    local function LegacyRollOnUpdate(self, elapsed)
         if not self.endTime then return end
         local rem = self.endTime - GetTime()
         if rem <= 0 then
@@ -706,12 +706,102 @@ local function AcquireBar(rollID)
                 self.timeFS:SetText(sec .. "s")
             end
         end
-    end)
+    end
+    bar._legacyOnUpdate = LegacyRollOnUpdate
 
     SyncBarLayers(bar, (container and container:GetFrameStrata()) or "HIGH", ((container and container:GetFrameLevel()) or 50) + 1)
     bar:Hide()
     bars[#bars + 1] = bar
     return bar, false
+end
+
+local ROLL_TICK_KEY = "kkowoUI_RollBars_Timer"
+
+local function TickSharedRollBars(now)
+    local anyNative = false
+    local needRelayout = false
+    local minRem = 9999
+    for _, b in ipairs(bars) do
+        if b:IsShown() and b._nativeTimer and b.endTime then
+            local rem = b.endTime - now
+            if rem <= 0 then
+                CloseBar(b)
+                needRelayout = true
+            else
+                anyNative = true
+                if rem < minRem then minRem = rem end
+                -- 共享低频同步（每条每 0.5s 校准一次 GetLootRollTimeLeft，机密/0 绝不误关条，严守 K5）
+                if b.rollID ~= nil and _G.GetLootRollTimeLeft and (now - (b._lastSyncAt or 0)) >= 0.5 then
+                    b._lastSyncAt = now
+                    local ok, ms = pcall(_G.GetLootRollTimeLeft, b.rollID)
+                    local leftMs = ok and F.PlainNumber(ms, nil) or nil
+                    if leftMs and leftMs > 0 then
+                        local syncedEnd = now + leftMs / 1000
+                        if (syncedEnd - b.endTime) > 1.5 or (b.endTime - syncedEnd) > 1.5 then
+                            b.endTime = syncedEnd
+                            rem = syncedEnd - now
+                            local totalDur = b._totalDur or rem
+                            if totalDur < rem then totalDur = rem; b._totalDur = totalDur end
+                            if F.Motion and F.Motion.ArmClientTimerBar then
+                                F.Motion.ArmClientTimerBar(b.status, syncedEnd - totalDur, totalDur, false)
+                            end
+                        end
+                    end
+                end
+                if b.timeFS then
+                    local sec = math_floor(rem + 0.5)
+                    if b._lastSec ~= sec then
+                        b._lastSec = sec
+                        b.timeFS:SetText(sec .. "s")
+                    end
+                end
+            end
+        end
+    end
+    if needRelayout then
+        LayoutBars()
+    end
+    if not anyNative then
+        return false
+    end
+    if F.Motion and F.Motion.SetTextTickInterval then
+        local iv = (minRem > 60) and 1.0 or ((minRem <= 10) and 0.1 or 0.5)
+        F.Motion.SetTextTickInterval(ROLL_TICK_KEY, iv)
+    end
+    return true
+end
+
+-- 实机与预览共用的统一计时装配入口（2d：开启 fx_timerBars 走客户端 SetTimerDuration + 共享 ticker，关闭退回旧 OnUpdate）
+local function ArmRollBarTiming(bar, totalDur, remainSec)
+    local now = GetTime()
+    local dur = (type(totalDur) == "number" and totalDur > 0.05) and totalDur or 60
+    local rem = (type(remainSec) == "number" and remainSec > 0) and remainSec or dur
+    if rem > dur then dur = rem end
+    bar._totalDur = dur
+    bar.endTime = now + rem
+    bar._lastSyncAt = now
+    bar._checkAccum = 0
+    bar._lastSec = nil
+    bar.status:SetStatusBarTexture(F.Theme.GetBarTexture())
+
+    local startAt = now - (dur - rem)
+    local armed = F.Motion and F.Motion.ArmClientTimerBar and F.Motion.ArmClientTimerBar(bar.status, startAt, dur, false)
+    if armed then
+        bar._nativeTimer = true
+        bar:SetScript("OnUpdate", nil)
+        if bar.timeFS then
+            local sec = math_floor(rem + 0.5)
+            bar._lastSec = sec
+            bar.timeFS:SetText(sec .. "s")
+        end
+        local iv = (rem > 60) and 1.0 or ((rem <= 10) and 0.1 or 0.5)
+        F.Motion.RegisterTextTick(ROLL_TICK_KEY, iv, TickSharedRollBars)
+    else
+        bar._nativeTimer = false
+        bar.status:SetMinMaxValues(0, dur)
+        bar.status:SetValue(rem)
+        bar:SetScript("OnUpdate", bar._legacyOnUpdate)
+    end
 end
 
 local function EnsureContainer()
@@ -774,10 +864,15 @@ function mod:OnStartRoll(_, rollID, rollTime)
     local rt = F.PlainNumber(rollTime, 60000)
     if rt <= 0 then rt = 60000 end
     local dur = rt / 1000
-    bar.endTime = GetTime() + dur
-    bar.status:SetStatusBarTexture(F.Theme.GetBarTexture())
-    bar.status:SetMinMaxValues(0, dur)
-    bar.status:SetValue(dur)
+    local rem = dur
+    if _G.GetLootRollTimeLeft then
+        local okL, ms = pcall(_G.GetLootRollTimeLeft, rollID)
+        local leftMs = okL and F.PlainNumber(ms, nil) or nil
+        if leftMs and leftMs > 0 then
+            rem = leftMs / 1000
+        end
+    end
+    ArmRollBarTiming(bar, dur, rem)
 
     local qr, qg, qb = 0.7, 0.7, 0.7
     local getQualColor = (_G.C_Item and _G.C_Item.GetItemQualityColor) or _G.GetItemQualityColor
@@ -842,10 +937,7 @@ function mod:ShowPreview()
     bar._checkAccum = 0
     nextSeq = nextSeq + 1
     bar._seq = nextSeq
-    bar.endTime = GetTime() + 12
-    bar.status:SetStatusBarTexture(F.Theme.GetBarTexture())
-    bar.status:SetMinMaxValues(0, 12)
-    bar.status:SetValue(12)
+    ArmRollBarTiming(bar, 12, 12)
     local qr, qg, qb = 0.64, 0.21, 0.93
     local ST = F.StyleTokens
     if ST and ST.ApplyBarGradient then
@@ -905,7 +997,25 @@ end
 
 function mod:OnDisable()
     self:OnCancelRoll(nil, nil)
+    if F.Motion and F.Motion.UnregisterTextTick then
+        F.Motion.UnregisterTextTick(ROLL_TICK_KEY)
+    end
     RestoreNativeRollFrames()
+end
+
+function mod:OnRefresh()
+    local now = GetTime()
+    local anyNative = false
+    for _, b in ipairs(bars) do
+        if b:IsShown() and b.endTime then
+            local rem = math_max(0.05, b.endTime - now)
+            ArmRollBarTiming(b, b._totalDur or rem, rem)
+            if b._nativeTimer then anyNative = true end
+        end
+    end
+    if not anyNative and F.Motion and F.Motion.UnregisterTextTick then
+        F.Motion.UnregisterTextTick(ROLL_TICK_KEY)
+    end
 end
 
 function mod:OnThemeChanged()

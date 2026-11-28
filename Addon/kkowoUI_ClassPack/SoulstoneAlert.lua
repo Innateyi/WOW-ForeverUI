@@ -1796,6 +1796,8 @@ RenderAll = function()
         if state == "expired" then
             card._timeFS:SetText("已过期")
             card._timeFS:SetTextColor(COLOR_DANGER[1], COLOR_DANGER[2], COLOR_DANGER[3], 1)
+            card._nativeTimer = false
+            card._armedExp = nil
             card._bar:SetMinMaxValues(0, 1)
             card._bar:SetValue(0)
         else
@@ -1807,8 +1809,26 @@ RenderAll = function()
             else
                 card._timeFS:SetTextColor(0.95, 0.96, 0.98, 1)
             end
-            card._bar:SetMinMaxValues(0, dur)
-            card._bar:SetValue(math_min(dur, rem))
+            local wantNative = F.StyleTokens and F.StyleTokens.IsFXEnabled and F.StyleTokens.IsFXEnabled("fx_timerBars")
+            if wantNative and F.Motion and F.Motion.ArmClientTimerBar then
+                if (not card._nativeTimer) or card._armedExp ~= e.expireAt or card._armedDur ~= dur then
+                    local okArm = F.Motion.ArmClientTimerBar(card._bar, (e.expireAt or (now + rem)) - dur, dur, false)
+                    if okArm then
+                        card._nativeTimer = true
+                        card._armedExp = e.expireAt
+                        card._armedDur = dur
+                    else
+                        card._nativeTimer = false
+                        card._bar:SetMinMaxValues(0, dur)
+                        card._bar:SetValue(math_min(dur, rem))
+                    end
+                end
+            else
+                card._nativeTimer = false
+                card._armedExp = nil
+                card._bar:SetMinMaxValues(0, dur)
+                card._bar:SetValue(math_min(dur, rem))
+            end
         end
 
         if wasHidden then
@@ -2117,6 +2137,10 @@ function mod:OnDisable()
     DismissPreview()
     StopTicker()
     if container then container:Hide() end
+end
+
+function mod:OnRefresh()
+    RenderAll()
 end
 
 function mod:OnThemeChanged()

@@ -601,16 +601,42 @@ local function SetupRow(row, it)
     end
 end
 
-local function FillRow(row, it, now)
+local WP_TICK_KEY = "kkowoUI_WeaponProcs_Timer"
+
+local function UseNativeRowTimer()
+    return (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_timerBars")) == true
+        and F.Motion ~= nil and type(F.Motion.ArmClientTimerBar) == "function"
+        and _G.C_DurationUtil ~= nil and type(_G.C_DurationUtil.CreateDuration) == "function"
+end
+
+local function FillRow(row, it, now, useNative)
     local dur = (it.dur and it.dur > 0) and it.dur or 1
     local rem = (it.exp or now) - now
     if rem < 0 then rem = 0 end
-    if row._max ~= dur then
-        row._max = dur
-        row.bar:SetMinMaxValues(0, dur)
-    end
     local val = math_min(rem, dur)
-    row.bar:SetValue(val)
+    if useNative then
+        if (not row._nativeTimer) or row._armedExp ~= it.exp or row._armedDur ~= dur then
+            local okArm = F.Motion.ArmClientTimerBar(row.bar, (it.exp or now) - dur, dur, false)
+            if okArm then
+                row._nativeTimer = true
+                row._armedExp = it.exp
+                row._armedDur = dur
+                row._max = dur
+            else
+                row._nativeTimer = false
+                row.bar:SetMinMaxValues(0, dur)
+                row.bar:SetValue(val)
+            end
+        end
+    else
+        row._nativeTimer = false
+        row._armedExp = nil
+        if row._max ~= dur then
+            row._max = dur
+            row.bar:SetMinMaxValues(0, dur)
+        end
+        row.bar:SetValue(val)
+    end
     if row.spark then
         local frac = val / dur
         row.spark:SetShown(frac > 0.005 and frac < 0.995)
@@ -625,6 +651,7 @@ local function FillRow(row, it, now)
             row.time:SetText(t)
         end
     end
+    return rem
 end
 
 local function PlaceRows(pool, anchor, count, up)
@@ -1281,9 +1308,11 @@ end
 local fastEnchantLive = false
 
 local function Render()
-    if not (mod._active and layout) then return false end
+    if not (mod._active and layout) then return false, 9999 end
     local now = GetTime()
     local live = false
+    local minRem = 9999
+    local useNative = UseNativeRowTimer()
     fastEnchantLive = false
 
     -- 特效：预览 / 兼容扫描时自绘；引擎模式下由引擎绘制
@@ -1299,7 +1328,8 @@ local function Render()
             np = np + 1
             local row = AcquireRow(procRows, procAnchor, np)
             SetupRow(row, it)
-            FillRow(row, it, now)
+            local r = FillRow(row, it, now, useNative)
+            if r < minRem then minRem = r end
         end
         live = np > 0
     end
@@ -1319,12 +1349,14 @@ local function Render()
     for i, it in ipairs(visibleEnch) do
         local row = AcquireRow(enchRows, enchAnchor, i)
         SetupRow(row, it)
-        FillRow(row, it, now)
+        local r = FillRow(row, it, now, useNative)
+        if r < minRem then minRem = r end
     end
     PlaceRows(enchRows, enchAnchor, #visibleEnch, false)
     -- 附魔条显示中要刷新剩余时间；「剩余不足」模式下还要盯着门槛，其它情况靠事件唤醒
     local mode = mod:GetDB().enchantMode
-    return live or #visibleEnch > 0 or (#src > 0 and mode == "low")
+    local keep = live or #visibleEnch > 0 or (#src > 0 and mode == "low")
+    return keep, minRem
 end
 
 local function OnTick(self, elapsed)
@@ -1337,12 +1369,37 @@ local function OnTick(self, elapsed)
     if not Render() then self:SetScript("OnUpdate", nil) end
 end
 
+local function OnNativeTextTick()
+    if not (mod._active and UseNativeRowTimer()) then return false end
+    local keep, minRem = Render()
+    if not keep then return false end
+    local iv = (minRem > 60) and 1.0 or ((minRem <= 10) and 0.1 or 0.5)
+    if F.Motion and F.Motion.SetTextTickInterval then
+        F.Motion.SetTextTickInterval(WP_TICK_KEY, iv)
+    end
+    return true
+end
+
 local function Wake()
     if not driver then return end
-    if Render() then
-        driver:SetScript("OnUpdate", OnTick)
-    else
+    local keep, minRem = Render()
+    if not keep then
         driver:SetScript("OnUpdate", nil)
+        if F.Motion and F.Motion.UnregisterTextTick then
+            F.Motion.UnregisterTextTick(WP_TICK_KEY)
+        end
+        return
+    end
+    if UseNativeRowTimer() and F.Motion and F.Motion.RegisterTextTick then
+        -- 原生客户端计时：不再跑每帧 OnUpdate，仅用共享低频文字 ticker（>60s 1Hz，<=10s 10Hz）
+        driver:SetScript("OnUpdate", nil)
+        local iv = (minRem > 60) and 1.0 or ((minRem <= 10) and 0.1 or 0.5)
+        F.Motion.RegisterTextTick(WP_TICK_KEY, iv, OnNativeTextTick)
+    else
+        if F.Motion and F.Motion.UnregisterTextTick then
+            F.Motion.UnregisterTextTick(WP_TICK_KEY)
+        end
+        driver:SetScript("OnUpdate", OnTick)
     end
 end
 
@@ -1687,6 +1744,9 @@ function mod:OnDisable()
     engine.fp = nil
     engine.retryOnOOC = nil
     if driver then driver:SetScript("OnUpdate", nil) end
+    if F.Motion and F.Motion.UnregisterTextTick then
+        F.Motion.UnregisterTextTick(WP_TICK_KEY)
+    end
     HideRows(procRows)
     HideRows(enchRows)
     for k in pairs(scanItems) do scanItems[k] = nil end

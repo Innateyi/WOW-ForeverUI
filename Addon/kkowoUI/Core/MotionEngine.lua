@@ -1455,3 +1455,48 @@ function M.PlayBarArriveGlide(bar, cur, maxVal, trailCtrl, opts)
     end
     return true
 end
+
+----------------------------------------------------------------------
+--  8) ArmClientTimerBar：客户端原生计时条统一封装（2d：RollBars / WeaponProcs / SoulstoneAlert）
+--     • 使用 C_DurationUtil.CreateDuration + StatusBar:SetTimerDuration，
+--       消除每条独立 OnUpdate，开关关闭或 API 不存在时返回 false 走旧路径
+----------------------------------------------------------------------
+function M.ArmClientTimerBar(bar, startSec, durSec, isElapsed, override)
+    if not (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_timerBars", override)) then
+        return false
+    end
+    if not (bar and type(bar.SetTimerDuration) == "function") then
+        return false
+    end
+    local CU = _G.C_DurationUtil
+    local dirEnum = _G.Enum and _G.Enum.StatusBarTimerDirection
+    if not (CU and type(CU.CreateDuration) == "function" and dirEnum) then
+        return false
+    end
+    local dur = (type(durSec) == "number" and durSec > 0.01) and durSec or 0.01
+    local d = bar._kkTimerDurObj
+    if not d then
+        local okC, created = pcall(CU.CreateDuration)
+        if not (okC and created) then return false end
+        d = created
+        bar._kkTimerDurObj = d
+    end
+    if d.SetTimeFromStart then
+        local okS = pcall(d.SetTimeFromStart, d, startSec or GetTime(), dur)
+        if not okS then return false end
+    elseif d.SetTimeSpan then
+        local st = startSec or GetTime()
+        local okS = pcall(d.SetTimeSpan, d, st, st + dur)
+        if not okS then return false end
+    else
+        return false
+    end
+    local dir = isElapsed and dirEnum.ElapsedTime or dirEnum.RemainingTime
+    local imm = _G.Enum.StatusBarInterpolation and _G.Enum.StatusBarInterpolation.Immediate or nil
+    local okT = pcall(bar.SetTimerDuration, bar, d, imm, dir)
+    if not okT then return false end
+    if bar.SetToTargetValue then pcall(bar.SetToTargetValue, bar) end
+    M.DisablePixelSnap(bar)
+    if bar.GetStatusBarTexture then M.DisablePixelSnap(bar:GetStatusBarTexture()) end
+    return true
+end
