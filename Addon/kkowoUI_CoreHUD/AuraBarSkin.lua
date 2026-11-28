@@ -8,8 +8,9 @@
 local _G = _G
 local F = _G.kkowoUI
 if not F then return end
-local ipairs, math_floor, math_max, math_min, pcall, setmetatable, type =
-    ipairs, math.floor, math.max, math.min, pcall, setmetatable, type
+local ipairs, math_floor, math_max, math_min, pcall, setmetatable, tostring, type =
+    ipairs, math.floor, math.max, math.min, pcall, setmetatable, tostring, type
+local string_format = string.format
 local CreateFrame = CreateFrame
 local C_Timer = C_Timer
 local GetTime = GetTime
@@ -38,8 +39,10 @@ local origBorderAlpha = setmetatable({}, { __mode = "k" })
 local origCountStyle = setmetatable({}, { __mode = "k" })
 local origDurationStyle = setmetatable({}, { __mode = "k" })
 local hookedRoots = setmetatable({}, { __mode = "k" })
+local iconTexHooked = setmetatable({}, { __mode = "k" })
 local buttonList = {}
 local AURA_EXPIRE_TICK_KEY = "kkowoUI_AuraFeel_Expire"
+local QueueRefresh -- 前向声明
 
 local BORDER_KEYS = { "Border", "DebuffBorder", "TempEnchantBorder" }
 
@@ -279,6 +282,129 @@ local function TickExpiringAuras(now)
     return anyTimed
 end
 
+local function SafeDetachIconMask(icon, ov)
+    if ov and ov.iconMask and icon and type(icon.RemoveMaskTexture) == "function" then
+        pcall(icon.RemoveMaskTexture, icon, ov.iconMask)
+    end
+    if ov then
+        ov.maskAttached = false
+        ov.maskShapeKey = nil
+    end
+end
+
+-- 在 icon:GetParent()（即 btn）上创建并挂载 64x64 整图圆角遮罩（全弱表零污染、绝不碰 SetTextureSliceMargins），
+-- 返回 (maskOK, okAdd, numMasks, maskLoaded, iconLoaded) 供视觉兜底与诊断使用。
+local function ApplyWholeIconMaskOnParent(btn, icon, ov, rad)
+    local iconParent = (icon.GetParent and icon:GetParent()) or btn
+    if not (IsSafe(iconParent) and type(iconParent.CreateMaskTexture) == "function" and type(icon.AddMaskTexture) == "function") then
+        ov.lastOkAdd, ov.lastNumMasks, ov.lastMaskLoaded, ov.lastIconLoaded, ov.lastMaskOK = false, nil, false, nil, false
+        return false
+    end
+
+    -- 分离暴雪原生自带的 IconMask（如有），防止被置空/叠裁
+    local blizzMask = btn.IconMask
+    if blizzMask and type(icon.RemoveMaskTexture) == "function" then
+        pcall(icon.RemoveMaskTexture, icon, blizzMask)
+    end
+
+    if not ov.iconMask or ov.iconMaskParent ~= iconParent then
+        SafeDetachIconMask(icon, ov)
+        local okM, m = pcall(iconParent.CreateMaskTexture, iconParent)
+        if not (okM and m) then
+            ov.lastOkAdd, ov.lastNumMasks, ov.lastMaskLoaded, ov.lastIconLoaded, ov.lastMaskOK = false, nil, false, nil, false
+            return false
+        end
+        if m.SetBlockingLoadsRequested then
+            pcall(m.SetBlockingLoadsRequested, m, true)
+        end
+        ov.iconMask = m
+        ov.iconMaskParent = iconParent
+        ov.maskShapeKey = nil
+        ov.maskAttached = false
+    end
+
+    local m = ov.iconMask
+    local w = F.PlainNumber(icon.GetWidth and icon:GetWidth(), nil) or F.PlainNumber(btn.GetWidth and btn:GetWidth(), 30) or 30
+    local h = F.PlainNumber(icon.GetHeight and icon:GetHeight(), nil) or F.PlainNumber(btn.GetHeight and btn:GetHeight(), 30) or 30
+    if w < 8 then w = 30 end
+    if h < 8 then h = 30 end
+    local px = (ST.GetPixel and ST.GetPixel(iconParent)) or 1
+    if not px or px <= 0 then px = 1 end
+    local innerR = math_max(1, math_min(rad, math_floor(math_min(w, h) * 0.45)))
+    local shapeKey = string_format("%d:%d:%d:%.2f", innerR, math_floor(w + 0.5), math_floor(h + 0.5), px)
+
+    if ov.maskShapeKey ~= shapeKey then
+        if ov.maskAttached and type(icon.RemoveMaskTexture) == "function" then
+            pcall(icon.RemoveMaskTexture, icon, m)
+            ov.maskAttached = false
+        end
+        local usedShape = ST.SetWholeIconMask and ST.SetWholeIconMask(m, innerR, w, h, px) or nil
+        if not usedShape and ST.SetWholeMask then
+            ST.SetWholeMask(m, (innerR >= 5) and ST.TEX.PILL_MASK_6 or ST.TEX.PILL_MASK)
+        end
+        m:ClearAllPoints()
+        m:SetPoint("TOPLEFT", icon, "TOPLEFT", px, -px)
+        m:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -px, px)
+        ov.maskShapeKey = shapeKey
+    end
+
+    -- 核验遮罩纹理加载态与图标加载态（绝不对机密 IsObjectLoaded 抛错或做布尔测试）
+    local maskLoaded = true
+    if ST.TextureLoadState then
+        local stM = ST.TextureLoadState(m)
+        if stM == false then maskLoaded = false end
+    end
+    local iconLoaded = ST.TextureLoadState and ST.TextureLoadState(icon) or true
+
+    if not maskLoaded then
+        ov.lastOkAdd, ov.lastNumMasks, ov.lastMaskLoaded, ov.lastIconLoaded, ov.lastMaskOK = false, nil, false, iconLoaded, false
+        if C_Timer and C_Timer.After and not ov.maskRetryArmed then
+            ov.maskRetryArmed = true
+            C_Timer.After(0, function()
+                ov.maskRetryArmed = false
+                if mod._active and QueueRefresh then QueueRefresh() end
+            end)
+        end
+        return false
+    end
+
+    -- 轻量 hook icon:SetTexture（仅挂一次、零污染），BuffFrame 刷新换图时及时复核遮罩
+    if not iconTexHooked[icon] and type(icon.SetTexture) == "function" then
+        iconTexHooked[icon] = true
+        _G.hooksecurefunc(icon, "SetTexture", function(selfTex)
+            if not mod._active then return end
+            local par = selfTex.GetParent and selfTex:GetParent() or nil
+            local stOv = par and skinned[par] or nil
+            if not (stOv and stOv.iconMask and (stOv.lastRad or 0) > 0) then return end
+            if not stOv.texResyncArmed and C_Timer and C_Timer.After then
+                stOv.texResyncArmed = true
+                C_Timer.After(0, function()
+                    stOv.texResyncArmed = false
+                    if mod._active and IsSafe(par) and par:IsShown() then
+                        local okRe = pcall(selfTex.AddMaskTexture, selfTex, stOv.iconMask)
+                        if okRe then stOv.maskAttached = true end
+                    end
+                end)
+            end
+        end)
+    end
+
+    local okAdd = pcall(icon.AddMaskTexture, icon, m)
+    local numMasks = nil
+    if type(icon.GetNumMaskTextures) == "function" then
+        local okN, rawN = pcall(icon.GetNumMaskTextures, icon)
+        if okN then numMasks = F.PlainNumber(rawN, nil) end
+    end
+    local maskOK = (okAdd == true) and (numMasks == nil or numMasks > 0)
+    ov.maskAttached = maskOK
+    ov.lastOkAdd = okAdd == true
+    ov.lastNumMasks = numMasks
+    ov.lastMaskLoaded = maskLoaded
+    ov.lastIconLoaded = iconLoaded
+    ov.lastMaskOK = maskOK
+    return maskOK
+end
+
 local function SkinAuraButton(btn, isDebuff)
     if not IsSafe(btn) then return end
     local icon = btn.Icon or btn.icon
@@ -287,12 +413,17 @@ local function SkinAuraButton(btn, isDebuff)
     local db = mod:GetDB()
     local rad = math_max(0, math_min(10, F.PlainNumber(db.radius, ST.GetCornerRadius(5)) or 5))
 
-    -- 清除任何可能残留在外层 btn（含底部文字高度）上的旧遮罩/边框，只作用于 icon 正方形本身
+    -- 清除任何可能残留在外层 btn（含底部文字高度）上的旧 ST 遮罩/边框，只作用于 icon 正方形本身
     ST.ClearRoundedMask(btn)
 
     local ov = skinned[btn]
     if not mod._active then
         StopAuraFeel(btn, ov)
+        SafeDetachIconMask(icon, ov)
+        if ov then
+            ov.lastRad = 0
+            ov.lastMode = "disabled"
+        end
         if ov and ov.wrap then
             ST.ClearRoundedMask(ov.wrap)
             SetSquareBorder(ov, false)
@@ -352,6 +483,7 @@ local function SkinAuraButton(btn, isDebuff)
         buttonList[#buttonList + 1] = btn
     end
 
+    ov.lastRad = rad
     ov.wrap:ClearAllPoints()
     ov.wrap:SetPoint("TOPLEFT", icon, "TOPLEFT", 0, 0)
     ov.wrap:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", 0, 0)
@@ -364,15 +496,6 @@ local function SkinAuraButton(btn, isDebuff)
     end
 
     pcall(icon.SetTexCoord, icon, 0.08, 0.92, 0.08, 0.92)
-    if ov.bg then
-        local showSh = db.showShadow ~= false
-        ov.bg:SetShown(showSh)
-        if showSh and rad > 0 and ov.bgHost then
-            ST.MaskTexture(ov.bgHost, ov.bg, math_min(12, rad + 1))
-        elseif ov.bgHost then
-            ST.ClearRoundedMask(ov.bgHost)
-        end
-    end
 
     -- 静音暴雪厚重方形原生边框（含 Border / DebuffBorder / TempEnchantBorder），改由 1px 描边呈现
     for _, bk in ipairs(BORDER_KEYS) do
@@ -386,15 +509,38 @@ local function SkinAuraButton(btn, isDebuff)
         end
     end
 
-    local r, g, b, a = ResolveBorderColor(btn, isDebuff)
+    -- 仅在父框体建遮罩且实测 AddMaskTexture 生效时才绘制圆角描边；
+    -- 否则无条件退回 1px 干净直角细框与方形底衬，100% 杜绝「圆框压方图」四角外露！
+    local maskOK = false
     if rad > 0 then
+        maskOK = ApplyWholeIconMaskOnParent(btn, icon, ov, rad)
+    else
+        SafeDetachIconMask(icon, ov)
+        ov.lastOkAdd, ov.lastNumMasks, ov.lastMaskOK = false, 0, false
+    end
+
+    local effectiveRad = (rad > 0 and maskOK) and rad or 0
+    local r, g, b, a = ResolveBorderColor(btn, isDebuff)
+    if effectiveRad > 0 then
+        ov.lastMode = "rounded"
         SetSquareBorder(ov, false)
         ST.SetHostIconMode(ov.wrap, true)
-        ST.ApplyRoundedBorder(ov.wrap, rad, r, g, b, a, 4)
-        ST.MaskIcon(ov.wrap, icon, rad)
+        ST.ApplyRoundedBorder(ov.wrap, effectiveRad, r, g, b, a, 4)
     else
+        ov.lastMode = (rad > 0) and "square-fallback" or "square"
+        SafeDetachIconMask(icon, ov)
         ST.ClearRoundedMask(ov.wrap)
         SetSquareBorder(ov, true, r, g, b, a)
+    end
+
+    if ov.bg then
+        local showSh = db.showShadow ~= false
+        ov.bg:SetShown(showSh)
+        if showSh and effectiveRad > 0 and ov.bgHost then
+            ST.MaskTexture(ov.bgHost, ov.bg, math_min(12, effectiveRad + 1))
+        elseif ov.bgHost then
+            ST.ClearRoundedMask(ov.bgHost)
+        end
     end
 
     if btn.Count and btn.Count.SetFont then
@@ -435,7 +581,7 @@ local function SkinAuraButton(btn, isDebuff)
         F.Theme.ApplyFont(durFS, 10, "OUTLINE")
     end
 
-    EnsureAuraFeelAnims(btn, ov, rad)
+    EnsureAuraFeelAnims(btn, ov, effectiveRad)
 end
 
 local function VisitContainer(c, isDebuff, seen)
@@ -447,8 +593,6 @@ local function VisitContainer(c, isDebuff, seen)
         end
     end
 end
-
-local QueueRefresh -- 前向声明
 
 local function EnsureRootHooks(root)
     if not IsSafe(root) or hookedRoots[root] then return end
@@ -524,6 +668,56 @@ end
 
 function mod:OnThemeChanged()
     RefreshAllAuras()
+end
+
+-- 只读诊断（/kk auraskin）：输出 BuffFrame/DebuffFrame 按钮数、遮罩挂载与加载状态，战斗中亦可安全执行
+function mod:DumpDiagnostics()
+    local total, rounded, fallback, shown = 0, 0, 0, 0
+    local sample = nil
+    for _, btn in ipairs(buttonList) do
+        if IsSafe(btn) then
+            total = total + 1
+            local ov = skinned[btn]
+            local isSh = false
+            if btn.IsShown then
+                local okS, s = pcall(btn.IsShown, btn)
+                if okS and not F.IsSecret(s) and s == true then isSh = true end
+            end
+            if isSh then shown = shown + 1 end
+            if ov then
+                if ov.lastMode == "rounded" then rounded = rounded + 1
+                elseif ov.lastMode == "square-fallback" then fallback = fallback + 1 end
+                if (not sample) or (isSh and not sample.shown) then
+                    sample = {
+                        shown = isSh,
+                        okAdd = ov.lastOkAdd,
+                        numMasks = ov.lastNumMasks,
+                        iconLoaded = ov.lastIconLoaded,
+                        maskLoaded = ov.lastMaskLoaded,
+                        mode = ov.lastMode,
+                    }
+                end
+            end
+        end
+    end
+    local info = string_format(
+        "AuraBarSkin 诊断：总按钮=%d 可见=%d 真圆角=%d 方形降级=%d",
+        total, shown, rounded, fallback
+    )
+    if sample then
+        info = info .. string_format(
+            " | 样本: okAdd=%s numMasks=%s iconLoaded=%s maskLoaded=%s mode=%s",
+            tostring(sample.okAdd), tostring(sample.numMasks),
+            tostring(sample.iconLoaded), tostring(sample.maskLoaded), tostring(sample.mode)
+        )
+    end
+    F.Print(info)
+    return { total = total, shown = shown, rounded = rounded, fallback = fallback, sample = sample }
+end
+
+-- 供离线回归测试只读读取弱表状态（零污染暴雪按钮）
+function mod:_GetSkinState(btn)
+    return btn and skinned[btn] or nil
 end
 
 function mod:BuildOptions(W, parent, y, enableSlot)

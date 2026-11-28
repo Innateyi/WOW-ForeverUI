@@ -280,7 +280,8 @@ local function PrintHelp(showAll)
     if showAll then
         _G.print("  /kk harvest [stop|reset] — 采集官方译名与系统设置")
         _G.print("  /kk probe — 开关聊天与标记逐帧探针")
-        _G.print("  /kk markcal — 打开头顶标记校准滑块")
+        _G.print("  /kk markcal — 查看头顶标记 1:1 同步说明")
+        _G.print("  /kk auraskin — 只读排查小地图左侧 Buff/Debuff 圆角遮罩状态")
         _G.print("  /kk selftest — 运行自动化回归自检")
         _G.print("  /kk clickcheck [kk|blizz|eui] — 只读排查隐形挡点击框体（战斗中可用）")
         _G.print("  /kk fade why — 只读排查脱战淡隐各条件读数与阻挡原因（战斗中可用）")
@@ -302,6 +303,13 @@ function UI.HandleSlash(msg)
         if F._Diagnostics and F._Diagnostics.ToggleProbe then F._Diagnostics.ToggleProbe() end
     elseif cmd == "markcal" then
         if F._Diagnostics and F._Diagnostics.OpenMarkCalibrator then F._Diagnostics.OpenMarkCalibrator() end
+    elseif cmd == "auraskin" then
+        local asMod = F.Modules.Get("auraBarSkin")
+        if asMod and asMod.DumpDiagnostics then
+            asMod:DumpDiagnostics()
+        else
+            F.Print("未加载增益栏美化模块。")
+        end
     elseif cmd == "selftest" then
         if F._Diagnostics and F._Diagnostics.RunSelfTest then F._Diagnostics.RunSelfTest() end
     elseif cmd == "clickcheck" or cmd == "cc" then
