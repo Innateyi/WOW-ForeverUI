@@ -81,6 +81,7 @@ local function makeSecretMT(label)
         __mod = forbid("arithmetic (%)"),
         __pow = forbid("arithmetic (^)"),
         __unm = forbid("unary minus (-)"),
+        __len = forbid("length (#)"),
         __concat = forbid("concatenation (..)"),
         __tostring = function() return "<secret:" .. tostring(label or "value") .. ">" end,
     }
@@ -91,6 +92,7 @@ local function newSecretSentinel(label)
     _secretSentinels[s] = true
     return s
 end
+M.NewSecret = newSecretSentinel
 
 local function recordProtected(api, obj)
     if _inCombat then

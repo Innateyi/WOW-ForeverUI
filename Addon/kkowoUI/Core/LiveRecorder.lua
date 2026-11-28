@@ -329,6 +329,19 @@ local function CaptureNativeRollFrames()
     return out
 end
 
+local function RawTableLen(t)
+    return #t
+end
+
+local function SafeSecretTableLen(t)
+    if type(t) ~= "table" then return 0 end
+    if F.IsSecret(t) then return { s = true, t = "table" } end
+    local ok, n = pcall(RawTableLen, t)
+    if not ok then return { s = true, t = "table" } end
+    if F.IsSecret(n) then return { s = true, t = "number" } end
+    return n
+end
+
 local function CaptureActiveRollIDs()
     local fn = _G.GetActiveLootRollIDs
     if type(fn) ~= "function" then return { ok = false, missing = true } end
@@ -336,11 +349,13 @@ local function CaptureActiveRollIDs()
     if not ok then return { ok = false } end
     if F.IsSecret(ids) then return { ok = true, secret = true } end
     if type(ids) ~= "table" then return { ok = true, t = type(ids) } end
+    local cnt = SafeSecretTableLen(ids)
+    if type(cnt) ~= "number" then return { ok = true, secret = true } end
     local list = {}
-    for i = 1, math_min(#ids, 16) do
+    for i = 1, math_min(cnt, 16) do
         list[i] = PackValue(ids[i], false)
     end
-    return { ok = true, count = #ids, list = list }
+    return { ok = true, count = cnt, list = list }
 end
 
 local function CaptureWeaponEnchants()
@@ -446,19 +461,22 @@ local function CaptureClickCheckForMark()
         local ok, single = pcall(_G.GetMouseFocus)
         if ok and single then rawFoci = { single } end
     end
-    if rawFoci then
-        for i = 1, math_min(#rawFoci, 12) do
-            local fr = rawFoci[i]
-            if IsSafeFrame(fr) then
-                local nm = SafeFrameStr(fr, "GetName") or "<anon>"
-                local st = SafeFrameStr(fr, "GetFrameStrata") or "?"
-                local lv = SafeFrameNum(fr, "GetFrameLevel") or 0
-                local a = SafeFrameNum(fr, "GetAlpha") or 1
-                local mc = SafeFrameBool(fr, "IsMouseClickEnabled")
-                if mc == nil then mc = SafeFrameBool(fr, "IsMouseEnabled") end
-                foci[#foci + 1] = {
-                    name = nm, strata = st, level = lv, alpha = a, mouseClick = mc == true,
-                }
+    if rawFoci and not F.IsSecret(rawFoci) then
+        local fociLen = SafeSecretTableLen(rawFoci)
+        if type(fociLen) == "number" then
+            for i = 1, math_min(fociLen, 12) do
+                local fr = rawFoci[i]
+                if IsSafeFrame(fr) then
+                    local nm = SafeFrameStr(fr, "GetName") or "<anon>"
+                    local st = SafeFrameStr(fr, "GetFrameStrata") or "?"
+                    local lv = SafeFrameNum(fr, "GetFrameLevel") or 0
+                    local a = SafeFrameNum(fr, "GetAlpha") or 1
+                    local mc = SafeFrameBool(fr, "IsMouseClickEnabled")
+                    if mc == nil then mc = SafeFrameBool(fr, "IsMouseEnabled") end
+                    foci[#foci + 1] = {
+                        name = nm, strata = st, level = lv, alpha = a, mouseClick = mc == true,
+                    }
+                end
             end
         end
     end
@@ -632,9 +650,9 @@ local function OnRecordEvent(_, event, ...)
             if type(updateInfo) == "table" and not F.IsSecret(updateInfo) then
                 uSummary = {
                     isFullUpdate = PackValue(updateInfo.isFullUpdate, false),
-                    added = type(updateInfo.addedAuras) == "table" and #updateInfo.addedAuras or 0,
-                    updated = type(updateInfo.updatedAuraInstanceIDs) == "table" and #updateInfo.updatedAuraInstanceIDs or 0,
-                    removed = type(updateInfo.removedAuraInstanceIDs) == "table" and #updateInfo.removedAuraInstanceIDs or 0,
+                    added = SafeSecretTableLen(updateInfo.addedAuras),
+                    updated = SafeSecretTableLen(updateInfo.updatedAuraInstanceIDs),
+                    removed = SafeSecretTableLen(updateInfo.removedAuraInstanceIDs),
                 }
             else
                 uSummary = PackValue(updateInfo, true)

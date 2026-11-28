@@ -282,13 +282,25 @@ local function IsSafeFrame(f)
     return true
 end
 
+local function SafeObjType(obj)
+    if not (obj and obj.GetObjectType) then return nil end
+    local ok, ot = pcall(obj.GetObjectType, obj)
+    return ok and F.PlainString(ot, nil) or nil
+end
+
+local function SafeDrawLayer(reg)
+    if not (reg and reg.GetDrawLayer) then return nil end
+    local ok, layer = pcall(reg.GetDrawLayer, reg)
+    return ok and F.PlainString(layer, nil) or nil
+end
+
 local function PolishCardFontStrings(frame, depth)
     if not IsSafeFrame(frame) or (depth or 0) > 2 then return end
     if frame.GetRegions then
         local ok, regs = pcall(function() return { frame:GetRegions() } end)
         if ok and type(regs) == "table" then
             for _, reg in ipairs(regs) do
-                if reg and reg.GetObjectType and reg:GetObjectType() == "FontString" then
+                if SafeObjType(reg) == "FontString" then
                     if reg.SetShadowColor then pcall(reg.SetShadowColor, reg, 0, 0, 0, 0.92) end
                     if reg.SetShadowOffset then pcall(reg.SetShadowOffset, reg, 1, -1) end
                 end
@@ -299,7 +311,7 @@ local function PolishCardFontStrings(frame, depth)
         local ok, kids = pcall(function() return { frame:GetChildren() } end)
         if ok and type(kids) == "table" then
             for _, ch in ipairs(kids) do
-                if ch and ch.GetObjectType and ch:GetObjectType() == "Button" then
+                if SafeObjType(ch) == "Button" then
                     PolishCardFontStrings(ch, (depth or 0) + 1)
                 end
             end
@@ -392,10 +404,9 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
         if ok and type(regs) == "table" then
             for _, reg in ipairs(regs) do
                 if reg and not F.Theme.IsFrostRegion(tt, reg)
-                    and reg.GetObjectType and reg:GetObjectType() == "Texture"
+                    and SafeObjType(reg) == "Texture"
                     and not (reg.IsObjectType and reg:IsObjectType("MaskTexture")) then
-                    local okL, layer = pcall(reg.GetDrawLayer, reg)
-                    if okL and layer == "BACKGROUND" then
+                    if SafeDrawLayer(reg) == "BACKGROUND" then
                         origBg = reg
                         euiCardOrigBg[tt] = reg
                         break
@@ -427,14 +438,14 @@ local function MuteEUICardFlatChrome(tt, mode, ov)
         if ok and type(kids) == "table" then
             for _, ch in ipairs(kids) do
                 if ch and ch ~= ov and IsSafeFrame(ch)
-                    and ch.GetObjectType and ch:GetObjectType() == "Frame"
+                    and SafeObjType(ch) == "Frame"
                     and not (ch.IsMouseEnabled and ch:IsMouseEnabled())
                     and ch.GetRegions then
                     local okR, regs = pcall(function() return { ch:GetRegions() } end)
                     if okR and type(regs) == "table" and #regs == 4 then
                         local allBorderTex = true
                         for _, r in ipairs(regs) do
-                            if not (r.GetObjectType and r:GetObjectType() == "Texture") then
+                            if SafeObjType(r) ~= "Texture" then
                                 allBorderTex = false
                                 break
                             end
@@ -595,10 +606,10 @@ local function HideNativeTipChrome(tip, hide)
                 local list = mutedNativeRegs[tip]
                 if not list then list = {}; mutedNativeRegs[tip] = list end
                 for _, reg in ipairs(regs) do
-                    if reg and reg.GetObjectType and reg:GetObjectType() == "Texture"
+                    if reg and SafeObjType(reg) == "Texture"
                         and not F.Theme.IsFrostRegion(tip, reg) then
-                        local okL, layer = pcall(reg.GetDrawLayer, reg)
-                        if okL and (layer == "BACKGROUND" or layer == "BORDER") then
+                        local pLayer = SafeDrawLayer(reg)
+                        if pLayer == "BACKGROUND" or pLayer == "BORDER" then
                             if list[reg] == nil and reg.GetAlpha then
                                 local okA, a = pcall(reg.GetAlpha, reg)
                                 list[reg] = okA and F.PlainNumber(a, 1) or 1
@@ -911,7 +922,7 @@ local function SkinFriendsTTNow(mmEBS)
         local okK, kids = pcall(function() return { ftt:GetChildren() } end)
         if okK and type(kids) == "table" then
             for _, rowBtn in ipairs(kids) do
-                if rowBtn and rowBtn.GetObjectType and rowBtn:GetObjectType() == "Button" and not euiBtnHooked[rowBtn] then
+                if rowBtn and SafeObjType(rowBtn) == "Button" and not euiBtnHooked[rowBtn] then
                     euiBtnHooked[rowBtn] = true
                     rowBtn:HookScript("OnClick", function(_, mouseBtn)
                         if mouseBtn == "RightButton" then
