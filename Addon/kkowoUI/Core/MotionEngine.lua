@@ -979,3 +979,80 @@ function M.PlayStatBlink(region, duration)
     ag._s2:SetDuration(half)
     ag:Play()
 end
+
+-- 5i) 受击/治疗柔光瞬闪（ADD 混合，贴合主条填充并共用遮罩，纯 AnimationGroup 0 OnUpdate，不改尺寸）
+local hitFlashOverlays = setmetatable({}, { __mode = "k" })
+
+function M.TriggerBarHitFlash(statusBar, kind, opts)
+    if not (statusBar and statusBar.CreateTexture and statusBar.GetStatusBarTexture) then return false end
+    local override = opts and opts.override
+    if not (ST and ST.IsFXEnabled and ST.IsFXEnabled("fx_hitFlash", override)) then
+        return false
+    end
+    local fillTex = statusBar:GetStatusBarTexture()
+    if not fillTex then return false end
+
+    local state = hitFlashOverlays[statusBar]
+    if not state then
+        local tex = statusBar:CreateTexture(nil, "OVERLAY", nil, 4)
+        tex:SetTexture(ST.TEX.FLAT)
+        tex:SetBlendMode("ADD")
+        tex:SetAllPoints(fillTex)
+        tex:SetAlpha(0)
+        tex:Hide()
+
+        local ag = tex:CreateAnimationGroup()
+        local rise = ag:CreateAnimation("Alpha")
+        rise:SetOrder(1)
+        rise:SetFromAlpha(0)
+        rise:SetDuration(0.06)
+        rise:SetSmoothing("OUT")
+        local fall = ag:CreateAnimation("Alpha")
+        fall:SetOrder(2)
+        fall:SetToAlpha(0)
+        fall:SetDuration(0.22)
+        fall:SetSmoothing("OUT")
+        ag:SetScript("OnFinished", function()
+            tex:SetAlpha(0)
+            tex:Hide()
+        end)
+        ag:SetScript("OnStop", function()
+            tex:SetAlpha(0)
+            tex:Hide()
+        end)
+        state = { tex = tex, ag = ag, rise = rise, fall = fall, maskedRad = -1 }
+        hitFlashOverlays[statusBar] = state
+    else
+        state.tex:ClearAllPoints()
+        state.tex:SetAllPoints(fillTex)
+    end
+
+    -- 共享宿主圆角遮罩（每张纹理仅挂 1 个遮罩，严守怪癖 7）
+    local rad = (opts and opts.radius) or nil
+    if rad == nil then
+        local h = F.PlainNumber(statusBar.GetHeight and statusBar:GetHeight(), 16) or 16
+        rad = math_min(ST.GetCornerRadius(6), math_max(2, math.floor(h * 0.45)))
+    end
+    if rad > 0 and state.maskedRad ~= rad then
+        ST.MaskTexture(statusBar, state.tex, rad)
+        state.maskedRad = rad
+    end
+
+    local isHeal = (kind == "heal" or kind == "HEAL")
+    if isHeal then
+        state.tex:SetVertexColor(0.62, 1.00, 0.78, 1)
+    else
+        state.tex:SetVertexColor(1.00, 0.94, 0.90, 1)
+    end
+
+    local inten = ST.GetFXIntensity(override)
+    local basePeak = (inten == "soft") and 0.20 or 0.35
+    local peak = basePeak * ((opts and opts.alphaMul) or 1.0)
+    state.ag:Stop()
+    state.rise:SetToAlpha(peak)
+    state.fall:SetFromAlpha(peak)
+    state.tex:SetAlpha(0)
+    state.tex:Show()
+    state.ag:Play()
+    return true
+end

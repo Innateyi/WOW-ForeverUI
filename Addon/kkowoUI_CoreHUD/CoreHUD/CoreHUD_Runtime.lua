@@ -81,6 +81,58 @@ local function SetHUDMainBar(bar, val, mx, unit, instant, extraChanged)
     })
 end
 
+-- 大额受击与治疗柔光闪光（UNIT_COMBAT：绝不对机密数值做算术或比较）
+local hitFlashCooldowns = setmetatable({}, { __mode = "k" })
+
+local function HandleUnitCombatFlash(unit, action, flags, amount)
+    if not (mod._active and ST.IsFXEnabled("fx_hitFlash")) then return end
+    local act = F.PlainString(action, nil)
+    if act ~= "WOUND" and act ~= "HEAL" then return end
+
+    local bar = nil
+    if unit == "player" then
+        bar = CH.coreFrame and CH.coreFrame:IsShown() and CH.coreFrame._hpWing and CH.coreFrame._hpWing._bar or nil
+    elseif unit == "target" then
+        bar = CH.topTargetFrame and CH.topTargetFrame:IsShown() and CH.topTargetFrame._hpBar and CH.topTargetFrame._hpBar._bar or nil
+    elseif unit == "pet" then
+        bar = CH.petFrame and CH.petFrame:IsShown() and CH.petFrame._hpBar and CH.petFrame._hpBar._bar or nil
+    end
+    if not bar then return end
+
+    local alphaMul = 1.0
+    local plainAmt = (not F.IsSecret(amount)) and F.PlainNumber(amount, nil) or nil
+    local rawMx = _G.UnitHealthMax and _G.UnitHealthMax(unit) or nil
+    local plainMx = (not F.IsSecret(rawMx)) and F.PlainNumber(rawMx, nil) or nil
+
+    if plainAmt and plainMx and plainMx > 0 then
+        local thresh = (act == "HEAL") and 0.10 or 0.08
+        if (plainAmt / plainMx) < thresh then
+            return
+        end
+    else
+        -- 数值或血量上限为机密值：若标志字段明文可用则仅暴击触发；标志也不可读时退化为 0.35s 限流半透轻闪
+        if (not F.IsSecret(flags)) and type(flags) == "string" then
+            if not flags:find("CRITICAL", 1, true) then
+                return
+            end
+        else
+            local now = GetTime()
+            local last = hitFlashCooldowns[bar] or -10
+            if (now - last) < 0.35 then
+                return
+            end
+            hitFlashCooldowns[bar] = now
+            alphaMul = 0.5
+        end
+    end
+
+    local h = F.PlainNumber(bar.GetHeight and bar:GetHeight(), 16) or 16
+    M.TriggerBarHitFlash(bar, act, {
+        alphaMul = alphaMul,
+        radius = GetBarRadius(h),
+    })
+end
+
 local function UpdatePlayerHealth(instant)
     if CH.coreFrame and CH.coreFrame:IsShown() then
         local hp = _G.UnitHealth and _G.UnitHealth("player")
@@ -1073,6 +1125,9 @@ function mod:OnEnable()
         UpdateUpperRightClassPower()
         UpdateIdleFade(false)
     end)
+    self:RegisterUnitEvent("UNIT_COMBAT", "player", "target", function(_, _, unit, action, flags, amount)
+        HandleUnitCombatFlash(unit, action, flags, amount)
+    end)
     if not mod._numFmtHooked and EUI and type(EUI.RegisterNumberFormatCallback) == "function" then
         mod._numFmtHooked = true
         pcall(EUI.RegisterNumberFormatCallback, function()
@@ -1087,8 +1142,12 @@ function mod:OnEnable()
     -- 宠物事件走独立事件帧，避免与 player/target 的 UNIT_HEALTH 在同一模块事件帧上互相覆盖
     if not CH.petEventFrame then
         CH.petEventFrame = CreateFrame("Frame")
-        CH.petEventFrame:SetScript("OnEvent", function(_, ev)
+        CH.petEventFrame:SetScript("OnEvent", function(_, ev, unit, action, flags, amount)
             if not mod._active then return end
+            if ev == "UNIT_COMBAT" then
+                HandleUnitCombatFlash(unit, action, flags, amount)
+                return
+            end
             UpdatePetHUD(ev == "UNIT_MAXHEALTH")
         end)
     end
@@ -1096,6 +1155,7 @@ function mod:OnEnable()
     pcall(CH.petEventFrame.RegisterUnitEvent, CH.petEventFrame, "UNIT_MAXHEALTH", "pet")
     pcall(CH.petEventFrame.RegisterUnitEvent, CH.petEventFrame, "UNIT_POWER_UPDATE", "pet")
     pcall(CH.petEventFrame.RegisterUnitEvent, CH.petEventFrame, "UNIT_HAPPINESS", "pet")
+    pcall(CH.petEventFrame.RegisterUnitEvent, CH.petEventFrame, "UNIT_COMBAT", "pet")
     local QueuePetHideSync = F.Debounce(0.08, function()
         if mod._active then SyncHiddenEUIFrames() end
     end)
