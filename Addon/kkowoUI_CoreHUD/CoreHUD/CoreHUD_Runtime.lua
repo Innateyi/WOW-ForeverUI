@@ -145,6 +145,9 @@ local function UpdatePlayerHealth(instant)
             CH.coreFrame._hpWing._trail:SetEnabled(mod:GetDB().showTrail ~= false)
             CH.coreFrame._hpWing._trail:SetValue(hp, mx, instant)
         end
+        if CH.coreFrame._hpWing._healPred then
+            CH.coreFrame._hpWing._healPred:QueueUpdate("player", instant)
+        end
         local hpMode = ResolveWingTextModes()
         SetHealthText(CH.coreFrame._hpText, "player", hpMode)
     end
@@ -312,6 +315,9 @@ local function UpdateTopTargetHUD(instant)
             if CH.topTargetFrame._hpBar._trail then
                 CH.topTargetFrame._hpBar._trail:SetEnabled(db.showTrail ~= false)
                 CH.topTargetFrame._hpBar._trail:SetValue(hp, mx, instant)
+            end
+            if CH.topTargetFrame._hpBar._healPred then
+                CH.topTargetFrame._hpBar._healPred:QueueUpdate("target", instant)
             end
             local r1, g1, b1, r2, g2, b2 = ST.GetUnitGradient("target")
             ApplyCachedBarGradient(hpBar, r1, g1, b1, r2, g2, b2, 0.98, false)
@@ -955,6 +961,14 @@ local function ApplyLayoutAndTheme()
         UpdateTopTargetHUD(true)
     end
     if CH.euiTrailTarget then CH.euiTrailTarget:SetDelay(db.trailDelay or 0.16) end
+    if CH.coreFrame and CH.coreFrame._hpWing and CH.coreFrame._hpWing._healPred then
+        CH.coreFrame._hpWing._healPred:SyncLayout()
+        CH.coreFrame._hpWing._healPred:UpdateFromUnit("player", true)
+    end
+    if CH.topTargetFrame and CH.topTargetFrame._hpBar and CH.topTargetFrame._hpBar._healPred then
+        CH.topTargetFrame._hpBar._healPred:SyncLayout()
+        CH.topTargetFrame._hpBar._healPred:UpdateFromUnit("target", true)
+    end
     SyncEUISmoothing()
     SyncHiddenEUIFrames()
     SyncTopRightAuraDedupe(true)
@@ -1077,6 +1091,12 @@ function mod:OnEnable()
     BuildCoreHUD()
     BuildPetHUD()
     BuildTopTargetHUD()
+    if CH.coreFrame and CH.coreFrame._hpWing and not CH.coreFrame._hpWing._healPred then
+        CH.coreFrame._hpWing._healPred = M.AttachHealPrediction(CH.coreFrame._hpWing._bar, { reverse = true })
+    end
+    if CH.topTargetFrame and CH.topTargetFrame._hpBar and not CH.topTargetFrame._hpBar._healPred then
+        CH.topTargetFrame._hpBar._healPred = M.AttachHealPrediction(CH.topTargetFrame._hpBar._bar, { reverse = false })
+    end
     AttachEUITrails()
 
     local EUI = _G.EllesmereUI
@@ -1137,6 +1157,17 @@ function mod:OnEnable()
             HandleUnitCombatFlash(unit, action, flags, amount)
         end
     end)
+    local function OnHealPredEvent(_, _, unit)
+        if not mod._active then return end
+        if unit == "player" and CH.coreFrame and CH.coreFrame._hpWing and CH.coreFrame._hpWing._healPred then
+            CH.coreFrame._hpWing._healPred:QueueUpdate("player", false)
+        elseif unit == "target" and CH.topTargetFrame and CH.topTargetFrame._hpBar and CH.topTargetFrame._hpBar._healPred then
+            CH.topTargetFrame._hpBar._healPred:QueueUpdate("target", false)
+        end
+    end
+    self:RegisterUnitEvent("UNIT_HEAL_PREDICTION", "player", "target", OnHealPredEvent)
+    self:RegisterUnitEvent("UNIT_ABSORB_AMOUNT_CHANGED", "player", "target", OnHealPredEvent)
+    self:RegisterUnitEvent("UNIT_HEAL_ABSORB_AMOUNT_CHANGED", "player", "target", OnHealPredEvent)
     if not mod._numFmtHooked and EUI and type(EUI.RegisterNumberFormatCallback) == "function" then
         mod._numFmtHooked = true
         pcall(EUI.RegisterNumberFormatCallback, function()

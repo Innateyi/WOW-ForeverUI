@@ -1064,3 +1064,307 @@ function M.TriggerBarHitFlash(statusBar, kind, opts)
     state.ag:Play()
     return true
 end
+
+----------------------------------------------------------------------
+--  6) HealPredictionOverlay：治疗预估、吸收盾、治疗吸收与超量护盾标记（2a）
+--     • 链式 StatusBar 锚在前一根填充纹理边缘，完整支持反向填充（玩家左翼血条）
+--     • 优先使用 12.x CreateUnitHealPredictionCalculator + UnitGetDetailedHealPrediction，
+--       不存在时自动退回 UnitGetIncomingHeals / UnitGetTotalAbsorbs
+--     • 同帧多次事件经 C_Timer.After(0) 合并，不改宿主尺寸（Q12）
+----------------------------------------------------------------------
+local healPredPending = {}
+local healPredArmed = false
+
+local function FlushHealPredictions()
+    healPredArmed = false
+    for ctrl in pairs(healPredPending) do
+        healPredPending[ctrl] = nil
+        if ctrl and ctrl._pendingUnit then
+            local u = ctrl._pendingUnit
+            local inst = ctrl._pendingInstant == true
+            ctrl._pendingUnit = nil
+            ctrl._pendingInstant = false
+            ctrl:UpdateFromUnit(u, inst)
+        end
+    end
+end
+
+local function CreatePredictCalculator()
+    if type(_G.CreateUnitHealPredictionCalculator) ~= "function"
+        or type(_G.UnitGetDetailedHealPrediction) ~= "function" then
+        return nil
+    end
+    local ok, calc = pcall(_G.CreateUnitHealPredictionCalculator)
+    if not (ok and calc) then return nil end
+    local E = _G.Enum
+    if E and E.UnitMaximumHealthMode and E.UnitMaximumHealthMode.Default ~= nil and calc.SetMaximumHealthMode then
+        pcall(calc.SetMaximumHealthMode, calc, E.UnitMaximumHealthMode.Default)
+    end
+    if E and E.UnitDamageAbsorbClampMode and E.UnitDamageAbsorbClampMode.MissingHealth ~= nil and calc.SetDamageAbsorbClampMode then
+        pcall(calc.SetDamageAbsorbClampMode, calc, E.UnitDamageAbsorbClampMode.MissingHealth)
+    end
+    if E and E.UnitIncomingHealClampMode and E.UnitIncomingHealClampMode.MissingHealth ~= nil and calc.SetIncomingHealClampMode then
+        pcall(calc.SetIncomingHealClampMode, calc, E.UnitIncomingHealClampMode.MissingHealth)
+    end
+    if calc.SetIncomingHealOverflowPercent then
+        pcall(calc.SetIncomingHealOverflowPercent, calc, 1.25)
+    end
+    return calc
+end
+
+function M.AttachHealPrediction(healthBar, opts)
+    if not (healthBar and healthBar.GetStatusBarTexture) then return nil end
+    opts = opts or {}
+    local rev = opts.reverse == true
+    local hLvl = F.PlainNumber(healthBar.GetFrameLevel and healthBar:GetFrameLevel(), 10) or 10
+
+    local clip = CreateFrame("Frame", nil, healthBar)
+    clip:SetAllPoints(healthBar)
+    clip:SetClipsChildren(true)
+    clip:EnableMouse(false)
+    clip:SetFrameLevel(hLvl + (opts.levelOffset or 2))
+
+    local healBar = CreateFrame("StatusBar", nil, clip)
+    healBar:SetStatusBarTexture(ST.TEX.FLAT)
+    healBar:SetMinMaxValues(0, 1)
+    healBar:SetValue(0)
+    healBar:EnableMouse(false)
+    healBar:SetFrameLevel(clip:GetFrameLevel())
+
+    local absorbBar = CreateFrame("StatusBar", nil, clip)
+    absorbBar:SetStatusBarTexture(ST.TEX.FLAT)
+    absorbBar:SetMinMaxValues(0, 1)
+    absorbBar:SetValue(0)
+    absorbBar:EnableMouse(false)
+    absorbBar:SetFrameLevel(clip:GetFrameLevel() + 1)
+
+    local stripeTex = absorbBar:CreateTexture(nil, "ARTWORK", nil, 2)
+    stripeTex:SetTexture(ST.TEX.DIAG_STRIPES, "REPEAT", "REPEAT")
+    if stripeTex.SetHorizTile then stripeTex:SetHorizTile(true) end
+    if stripeTex.SetVertTile then stripeTex:SetVertTile(true) end
+    stripeTex:SetBlendMode("BLEND")
+    stripeTex:SetVertexColor(1, 1, 1, 0.14)
+    local absFill = absorbBar:GetStatusBarTexture()
+    if absFill then stripeTex:SetAllPoints(absFill) end
+
+    local healAbsorbBar = CreateFrame("StatusBar", nil, clip)
+    healAbsorbBar:SetStatusBarTexture(ST.TEX.FLAT)
+    healAbsorbBar:SetMinMaxValues(0, 1)
+    healAbsorbBar:SetValue(0)
+    healAbsorbBar:EnableMouse(false)
+    healAbsorbBar:SetFrameLevel(clip:GetFrameLevel() + 2)
+
+    local overMark = clip:CreateTexture(nil, "OVERLAY", nil, 4)
+    overMark:SetTexture(ST.TEX.FLAT)
+    overMark:SetVertexColor(0.92, 0.98, 1.00, 1)
+    overMark:SetAlpha(0)
+    overMark:SetWidth(3)
+
+    local ctrl = {
+        _host          = healthBar,
+        _clip          = clip,
+        _healBar       = healBar,
+        _absorbBar     = absorbBar,
+        _stripeTex     = stripeTex,
+        _healAbsorbBar = healAbsorbBar,
+        _overMark      = overMark,
+        _reverse       = rev,
+        _fxOverride    = opts.fxOverride,
+        _calc          = nil,
+        _maskedRad     = -1,
+    }
+
+    local function LayoutChain()
+        local fillTex = healthBar:GetStatusBarTexture()
+        if not fillTex then return end
+        local w = F.PlainNumber(healthBar.GetWidth and healthBar:GetWidth(), 136) or 136
+        if w < 1 then w = 136 end
+        local isRev = ctrl._reverse == true
+        local lead = isRev and "LEFT" or "RIGHT"
+        local back = isRev and "RIGHT" or "LEFT"
+
+        -- 治疗预估锚在主血条填充边缘
+        healBar:ClearAllPoints()
+        healBar:SetPoint("TOP" .. back, fillTex, "TOP" .. lead, 0, 0)
+        healBar:SetPoint("BOTTOM" .. back, fillTex, "BOTTOM" .. lead, 0, 0)
+        healBar:SetWidth(w)
+        if healBar.SetReverseFill then healBar:SetReverseFill(isRev) end
+
+        -- 吸收盾锚在治疗预估填充边缘（链式接续）
+        local hFill = healBar:GetStatusBarTexture() or fillTex
+        absorbBar:ClearAllPoints()
+        absorbBar:SetPoint("TOP" .. back, hFill, "TOP" .. lead, 0, 0)
+        absorbBar:SetPoint("BOTTOM" .. back, hFill, "BOTTOM" .. lead, 0, 0)
+        absorbBar:SetWidth(w)
+        if absorbBar.SetReverseFill then absorbBar:SetReverseFill(isRev) end
+        local aFill = absorbBar:GetStatusBarTexture()
+        if aFill then
+            stripeTex:ClearAllPoints()
+            stripeTex:SetAllPoints(aFill)
+        end
+
+        -- 反向治疗吸收段：贴在主血条当前填充内侧边缘
+        healAbsorbBar:ClearAllPoints()
+        healAbsorbBar:SetPoint("TOP" .. lead, fillTex, "TOP" .. lead, 0, 0)
+        healAbsorbBar:SetPoint("BOTTOM" .. lead, fillTex, "BOTTOM" .. lead, 0, 0)
+        healAbsorbBar:SetWidth(w)
+        if healAbsorbBar.SetReverseFill then healAbsorbBar:SetReverseFill(not isRev) end
+
+        -- 超量护盾标记：条尾 3px 细亮条
+        overMark:ClearAllPoints()
+        overMark:SetPoint("TOP" .. lead, clip, "TOP" .. lead, 0, 0)
+        overMark:SetPoint("BOTTOM" .. lead, clip, "BOTTOM" .. lead, 0, 0)
+
+        local h = F.PlainNumber(healthBar.GetHeight and healthBar:GetHeight(), 16) or 16
+        local rad = math_min(ST.GetCornerRadius(6), math_max(2, math.floor(h * 0.45)))
+        if rad > 0 and ctrl._maskedRad ~= rad then
+            if hFill then ST.MaskTexture(healthBar, hFill, rad) end
+            if aFill then ST.MaskTexture(healthBar, aFill, rad) end
+            ST.MaskTexture(healthBar, stripeTex, rad)
+            local haFill = healAbsorbBar:GetStatusBarTexture()
+            if haFill then ST.MaskTexture(healthBar, haFill, rad) end
+            ctrl._maskedRad = rad
+        end
+    end
+
+    local function ApplyColors()
+        local scale = ST.GetFXScale(ctrl._fxOverride)
+        if scale <= 0 then scale = 1 end
+        local pos = ST.COLORS.positive or { 0.34, 0.88, 0.56 }
+        healBar:SetStatusBarColor(pos[1], pos[2], pos[3], 0.42 * scale)
+        absorbBar:SetStatusBarColor(0.92, 0.96, 1.00, 0.32 * scale)
+        stripeTex:SetVertexColor(1, 1, 1, 0.14 * scale)
+        healAbsorbBar:SetStatusBarColor(0.48, 0.12, 0.24, 0.52 * scale)
+    end
+
+    function ctrl:SyncLayout()
+        LayoutChain()
+        ApplyColors()
+    end
+
+    function ctrl:SetValues(maxVal, heals, absorbs, isOver, healAbsorbs, instant)
+        if not ST.IsFXEnabled("fx_healPredict", self._fxOverride) then
+            self._clip:Hide()
+            return
+        end
+        self._clip:Show()
+        ApplyColors()
+        local barOpts = {
+            fxKey = "fx_smoothMain",
+            override = self._fxOverride,
+            instant = instant == true,
+        }
+        M.SetBarMinMax(self._healBar, 0, maxVal)
+        M.SetBarValue(self._healBar, heals or 0, barOpts)
+        M.SetBarMinMax(self._absorbBar, 0, maxVal)
+        M.SetBarValue(self._absorbBar, absorbs or 0, barOpts)
+        if type(healAbsorbs) ~= "nil" then
+            M.SetBarMinMax(self._healAbsorbBar, 0, maxVal)
+            M.SetBarValue(self._healAbsorbBar, healAbsorbs, barOpts)
+            self._healAbsorbBar:Show()
+        else
+            self._healAbsorbBar:SetValue(0)
+            self._healAbsorbBar:Hide()
+        end
+        local scale = ST.GetFXScale(self._fxOverride)
+        if type(isOver) ~= "nil" and self._overMark.SetAlphaFromBoolean then
+            local okO = pcall(self._overMark.SetAlphaFromBoolean, self._overMark, isOver, 0.88 * scale, 0)
+            if not okO then self._overMark:SetAlpha(0) end
+        elseif not F.IsSecret(isOver) and isOver == true then
+            self._overMark:SetAlpha(0.88 * scale)
+        else
+            self._overMark:SetAlpha(0)
+        end
+    end
+
+    function ctrl:UpdateFromUnit(unit, instant)
+        if not ST.IsFXEnabled("fx_healPredict", self._fxOverride) then
+            self._clip:Hide()
+            return
+        end
+        if not (unit and _G.UnitExists) then
+            self._clip:Hide()
+            return
+        end
+        local okEx, ex = pcall(_G.UnitExists, unit)
+        if not okEx or (not F.IsSecret(ex) and not ex) then
+            self._clip:Hide()
+            return
+        end
+        local mx = _G.UnitHealthMax and _G.UnitHealthMax(unit)
+        if type(mx) == "nil" then mx = 1 end
+
+        local heals, absorbs, isOver, healAbsorbs = 0, 0, nil, nil
+        if not self._calc then
+            self._calc = CreatePredictCalculator()
+        end
+        local usedCalc = false
+        if self._calc and type(_G.UnitGetDetailedHealPrediction) == "function" then
+            local okCalc = pcall(_G.UnitGetDetailedHealPrediction, unit, nil, self._calc)
+            if okCalc then
+                usedCalc = true
+                if self._calc.GetIncomingHeals then
+                    local okH, hVal = pcall(self._calc.GetIncomingHeals, self._calc)
+                    if okH and type(hVal) ~= "nil" then heals = hVal end
+                end
+                if self._calc.GetDamageAbsorbs then
+                    local okA, aVal, ov = pcall(self._calc.GetDamageAbsorbs, self._calc)
+                    if okA and type(aVal) ~= "nil" then
+                        absorbs = aVal
+                        isOver = ov
+                    end
+                end
+                if self._calc.GetHealAbsorbs then
+                    local okHA, haVal = pcall(self._calc.GetHealAbsorbs, self._calc)
+                    if okHA and type(haVal) ~= "nil" then healAbsorbs = haVal end
+                end
+            end
+        end
+        if not usedCalc then
+            if type(_G.UnitGetIncomingHeals) == "function" then
+                local okH, hVal = pcall(_G.UnitGetIncomingHeals, unit)
+                if okH and type(hVal) ~= "nil" then heals = hVal end
+            end
+            if type(_G.UnitGetTotalAbsorbs) == "function" then
+                local okA, aVal = pcall(_G.UnitGetTotalAbsorbs, unit)
+                if okA and type(aVal) ~= "nil" then absorbs = aVal end
+            end
+            if type(_G.UnitGetTotalHealAbsorbs) == "function" then
+                local okHA, haVal = pcall(_G.UnitGetTotalHealAbsorbs, unit)
+                if okHA and type(haVal) ~= "nil" then healAbsorbs = haVal end
+            end
+        end
+        self:SetValues(mx, heals, absorbs, isOver, healAbsorbs, instant)
+    end
+
+    function ctrl:QueueUpdate(unit, instant)
+        if not ST.IsFXEnabled("fx_healPredict", self._fxOverride) then
+            self._clip:Hide()
+            return
+        end
+        if instant then
+            healPredPending[self] = nil
+            self._pendingUnit = nil
+            self._pendingInstant = false
+            self:UpdateFromUnit(unit, true)
+            return
+        end
+        self._pendingUnit = unit
+        self._pendingInstant = self._pendingInstant == true
+        healPredPending[self] = true
+        if not healPredArmed then
+            healPredArmed = true
+            C_Timer.After(0, FlushHealPredictions)
+        end
+    end
+
+    if healthBar.HookScript then
+        pcall(healthBar.HookScript, healthBar, "OnSizeChanged", LayoutChain)
+    end
+    LayoutChain()
+    ApplyColors()
+    if not ST.IsFXEnabled("fx_healPredict", ctrl._fxOverride) then
+        clip:Hide()
+    end
+    return ctrl
+end
