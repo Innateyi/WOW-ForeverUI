@@ -9,8 +9,8 @@
 local _, F = ...
 
 local _G = _G
-local math_abs, math_exp, math_floor, math_max, math_min, next, pairs, pcall, setmetatable, type =
-    math.abs, math.exp, math.floor, math.max, math.min, next, pairs, pcall, setmetatable, type
+local math_abs, math_ceil, math_exp, math_floor, math_max, math_min, next, pairs, pcall, setmetatable, type =
+    math.abs, math.ceil, math.exp, math.floor, math.max, math.min, next, pairs, pcall, setmetatable, type
 local CreateFrame = CreateFrame
 local GetTime = GetTime
 local C_Timer = C_Timer
@@ -781,10 +781,13 @@ function M.AttachEdgeSpark(statusBar, opts)
 end
 
 ----------------------------------------------------------------------
---  4b) AttachBarLivingFlow：条内柔和轻流光（fx_barFlow，纯 C 端 AnimationGroup 0 OnUpdate）
+--  4b) AttachBarLivingFlow：条内双层视差持续液态流动（fx_barFlow，纯 C 端 AnimationGroup 0 OnUpdate）
 --      • clip 直接锚定于 statusBar:GetStatusBarTexture()（仅跟随填充宽度，绝不读取任何数值 -> 12.x 机密值 100% 安全）
---      • 纹理严格挂入外层 holder 圆角遮罩，绝不溢出圆角之外
---      • 注册进 M.RegisterLoopAnim，过图不冻住；关闭 fx_barFlow 或 intensity="off" 瞬间停播隐藏
+--      • 双层 C∞ 水平无缝周期纹理连续线性平移（REPEAT + Smoothing("NONE")），黄金比例周期视差叠加：
+--          - Layer 1（BLEND）：BarFlowCurrent.tga 深冷涌流波谷（亮白/明黄/浅绿条也能清晰看出液体涌动）
+--          - Layer 2（ADD）：  BarFlowLiquid.tga  交错液态丝带 + 斜向焦散高光流
+--      • 每张贴图严格挂入外层 holder 圆角遮罩（或 customMask），绝不溢出圆角之外
+--      • 双组均注册进 M.RegisterLoopAnim，过图不冻住；关闭 fx_barFlow 或 intensity="off" 瞬间停播隐藏
 ----------------------------------------------------------------------
 function M.AttachBarLivingFlow(holder, statusBar, opts)
     if not (holder and statusBar and statusBar.GetStatusBarTexture) then return nil end
@@ -796,44 +799,67 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
     local lvl = F.PlainNumber(statusBar.GetFrameLevel and statusBar:GetFrameLevel(), 10) or 10
     clip:SetFrameLevel(lvl + (opts.levelOffset or 2))
 
-    local sheen = clip:CreateTexture(nil, "OVERLAY", nil, 2)
-    sheen:SetTexture(ST.TEX.BAR_FLOW_SHEEN)
-    sheen:SetBlendMode("ADD")
-    sheen:SetVertexColor(opts.r or 1, opts.g or 1, opts.b or 1, 1)
-    sheen:SetAlpha(0)
-    M.DisablePixelSnap(sheen)
+    local mover1 = CreateFrame("Frame", nil, clip)
+    mover1:EnableMouse(false)
+    mover1:SetFrameLevel(clip:GetFrameLevel())
 
-    local ag = sheen:CreateAnimationGroup()
-    ag:SetLooping("REPEAT")
-    local tr = ag:CreateAnimation("Translation")
-    tr:SetOrder(1)
-    tr:SetSmoothing("IN_OUT")
-    local al = ag:CreateAnimation("Alpha")
-    al:SetOrder(1)
-    al:SetSmoothing("IN_OUT")
-    local rest = ag:CreateAnimation("Alpha")
-    rest:SetOrder(2)
-    rest:SetFromAlpha(0)
-    rest:SetToAlpha(0)
+    local mover2 = CreateFrame("Frame", nil, clip)
+    mover2:EnableMouse(false)
+    mover2:SetFrameLevel(clip:GetFrameLevel() + 1)
+
+    local ag1 = mover1:CreateAnimationGroup()
+    ag1:SetLooping("REPEAT")
+    local tr1 = ag1:CreateAnimation("Translation")
+    tr1:SetOrder(1)
+    tr1:SetSmoothing("NONE")
+
+    local ag2 = mover2:CreateAnimationGroup()
+    ag2:SetLooping("REPEAT")
+    local tr2 = ag2:CreateAnimation("Translation")
+    tr2:SetOrder(1)
+    tr2:SetSmoothing("NONE")
+
+    local function MakeTile(parent, sublevel, texPath, blendMode, r, g, b)
+        local t = parent:CreateTexture(nil, "OVERLAY", nil, sublevel)
+        if t.SetBlockingLoadsRequested then pcall(t.SetBlockingLoadsRequested, t, true) end
+        t:SetTexture(texPath, "CLAMP", "CLAMP")
+        t:SetBlendMode(blendMode)
+        t:SetVertexColor(r or 1, g or 1, b or 1, 1)
+        M.DisablePixelSnap(t)
+        return t
+    end
+
+    local tiles1 = { MakeTile(mover1, 1, ST.TEX.BAR_FLOW_CURRENT, "BLEND", 1, 1, 1) }
+    local tiles2 = { MakeTile(mover2, 2, ST.TEX.BAR_FLOW_LIQUID, "ADD", opts.r or 1, opts.g or 1, opts.b or 1) }
 
     local ctrl = {
-        _holder     = holder,
-        _bar        = statusBar,
-        _clip       = clip,
-        _sheen      = sheen,
-        _ag         = ag,
-        _tr         = tr,
-        _al         = al,
-        _rest       = rest,
-        _reverse    = opts.reverse == true,
-        _period     = opts.period or 6.5,
-        _sweepRatio = opts.sweepRatio or 0.42,
-        _peakStd    = opts.peakAlpha or 0.18,
-        _peakSoft   = opts.softAlpha or 0.10,
-        _fxOverride = opts.fxOverride,
-        _enabled    = opts.enabled ~= false,
-        _active     = false,
-        _maskedRad  = -1,
+        _holder        = holder,
+        _bar           = statusBar,
+        _clip          = clip,
+        _clipTarget    = opts.clipTarget,
+        _customMask    = opts.customMask,
+        _mover1        = mover1,
+        _mover2        = mover2,
+        _tiles1        = tiles1,
+        _tiles2        = tiles2,
+        _sheen         = tiles2[1], -- 兼容字段
+        _ag            = ag2,       -- 主循环组（兼容现有读取与测试）
+        _agDepth       = ag1,
+        _tr1           = tr1,
+        _tr2           = tr2,
+        _r             = opts.r or 1,
+        _g             = opts.g or 1,
+        _b             = opts.b or 1,
+        _reverse       = opts.reverse == true,
+        _period        = opts.period or 3.0,
+        _peakStd       = opts.peakAlpha or 0.30,
+        _peakSoft      = opts.softAlpha or 0.16,
+        _depthStd      = opts.depthAlpha or 0.24,
+        _depthSoft     = opts.depthSoftAlpha or 0.13,
+        _fxOverride    = opts.fxOverride,
+        _enabled       = opts.enabled ~= false,
+        _active        = false,
+        _maskedRad     = -1,
     }
 
     local function IsFlowWantPlay()
@@ -847,54 +873,100 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
         return true
     end
 
-    local function LayoutSheen(rad)
-        local fillTex = ctrl._bar:GetStatusBarTexture()
-        if fillTex then
+    local function MaskTile(tile, rad)
+        if not tile then return end
+        if ctrl._customMask then
+            if ST.AttachCustomMask then
+                ST.AttachCustomMask(ctrl._holder, tile, ctrl._customMask)
+            elseif tile.AddMaskTexture then
+                pcall(tile.AddMaskTexture, tile, ctrl._customMask)
+            end
+        elseif rad ~= nil then
+            if rad > 0 then
+                ST.MaskTexture(ctrl._holder, tile, rad)
+            elseif ST.UnmaskTexture then
+                ST.UnmaskTexture(ctrl._holder, tile)
+            end
+        end
+    end
+
+    local function SyncLayerTiles(mover, tiles, sublevel, texPath, blendMode, tr, barW, barH, tileW, period, alpha, r, g, b, rad)
+        local rev = ctrl._reverse == true
+        local needCount = math_max(2, math_ceil(barW / tileW) + 1)
+        mover:SetSize(tileW * needCount, barH)
+        mover:ClearAllPoints()
+        if rev then
+            mover:SetPoint("TOPLEFT", ctrl._bar, "TOPLEFT", 0, 0)
+            tr:SetOffset(-tileW, 0)
+        else
+            mover:SetPoint("TOPLEFT", ctrl._bar, "TOPLEFT", -tileW, 0)
+            tr:SetOffset(tileW, 0)
+        end
+        tr:SetDuration(math_max(0.45, period))
+
+        for i = 1, needCount do
+            local tile = tiles[i]
+            if not tile then
+                tile = MakeTile(mover, sublevel, texPath, blendMode, r, g, b)
+                tiles[i] = tile
+            end
+            tile:SetSize(tileW, barH)
+            tile:ClearAllPoints()
+            if i == 1 then
+                tile:SetPoint("TOPLEFT", mover, "TOPLEFT", 0, 0)
+            else
+                tile:SetPoint("TOPLEFT", tiles[i - 1], "TOPRIGHT", 0, 0)
+            end
+            if rev then
+                tile:SetTexCoord(1, 0, 0, 1)
+            else
+                tile:SetTexCoord(0, 1, 0, 1)
+            end
+            tile:SetVertexColor(r, g, b, 1)
+            tile:SetAlpha(alpha)
+            tile:Show()
+            MaskTile(tile, rad)
+        end
+        for i = needCount + 1, #tiles do
+            tiles[i]:Hide()
+        end
+    end
+
+    local function LayoutFlow(rad)
+        local target = ctrl._clipTarget or ctrl._bar:GetStatusBarTexture()
+        if target then
             ctrl._clip:ClearAllPoints()
-            ctrl._clip:SetAllPoints(fillTex)
+            ctrl._clip:SetAllPoints(target)
         end
         local w = F.PlainNumber(ctrl._bar.GetWidth and ctrl._bar:GetWidth(), 140) or 140
         local h = F.PlainNumber(ctrl._bar.GetHeight and ctrl._bar:GetHeight(), 16) or 16
-        if w < 20 then w = 140 end
+        if w < 16 then w = 140 end
         if h < 4 then h = 16 end
-        local bandW = math_max(46, math_min(110, math_floor(w * 0.44)))
-        local bandH = h + 6
-        ctrl._sheen:SetSize(bandW, bandH)
-        ctrl._sheen:ClearAllPoints()
-        local travel = w + bandW + 8
-        if ctrl._reverse then
-            ctrl._sheen:SetTexCoord(1, 0, 0, 1)
-            ctrl._sheen:SetPoint("LEFT", ctrl._bar, "RIGHT", 4, 0)
-            ctrl._tr:SetOffset(-travel, 0)
-        else
-            ctrl._sheen:SetTexCoord(0, 1, 0, 1)
-            ctrl._sheen:SetPoint("RIGHT", ctrl._bar, "LEFT", -4, 0)
-            ctrl._tr:SetOffset(travel, 0)
-        end
-        local period = math_max(1.0, ctrl._period or 6.5)
-        local sweepDur = math_max(0.75, math_min(period - 0.15, period * ctrl._sweepRatio))
-        local restDur = math_max(0.10, period - sweepDur)
-        ctrl._tr:SetDuration(sweepDur)
-        ctrl._al:SetDuration(sweepDur)
-        ctrl._rest:SetDuration(restDur)
+
+        local isSoft = ST.GetFXIntensity(ctrl._fxOverride) == "soft"
+        local peak = isSoft and ctrl._peakSoft or ctrl._peakStd
+        local depth = isSoft and ctrl._depthSoft or ctrl._depthStd
+        -- 波长随条高柔和缩放，确保不同宽/高条体都呈现出细腻流畅的液体纹理密度
+        local tileW2 = math_max(92, math_min(200, math_floor(h * 6.4 + 0.5)))
+        local tileW1 = math_floor(tileW2 * 1.32 + 0.5)
+        local p2 = math_max(0.85, ctrl._period or 3.0)
+        local p1 = p2 * 1.618
+
+        SyncLayerTiles(ctrl._mover1, ctrl._tiles1, 1, ST.TEX.BAR_FLOW_CURRENT, "BLEND",
+            ctrl._tr1, w, h, tileW1, p1, depth, 1, 1, 1, rad)
+        SyncLayerTiles(ctrl._mover2, ctrl._tiles2, 2, ST.TEX.BAR_FLOW_LIQUID, "ADD",
+            ctrl._tr2, w, h, tileW2, p2, peak, ctrl._r, ctrl._g, ctrl._b, rad)
+        ctrl._sheen = ctrl._tiles2[1]
 
         if rad ~= nil then
-            if rad > 0 then
-                ST.MaskTexture(ctrl._holder, ctrl._sheen, rad)
-            elseif ST.UnmaskTexture then
-                ST.UnmaskTexture(ctrl._holder, ctrl._sheen)
-            end
             ctrl._maskedRad = rad
         end
     end
 
     function ctrl:SyncMask(rad)
         local r = rad or 0
-        if r > 0 then
-            ST.MaskTexture(self._holder, self._sheen, r)
-        elseif ST.UnmaskTexture then
-            ST.UnmaskTexture(self._holder, self._sheen)
-        end
+        for i = 1, #self._tiles1 do MaskTile(self._tiles1[i], r) end
+        for i = 1, #self._tiles2 do MaskTile(self._tiles2[i], r) end
         self._maskedRad = r
     end
 
@@ -903,16 +975,16 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
         if not want then
             self._active = false
             if self._ag:IsPlaying() then self._ag:Stop() end
+            if self._agDepth:IsPlaying() then self._agDepth:Stop() end
             M.UnregisterLoopAnim(self._ag)
-            self._sheen:SetAlpha(0)
-            self._sheen:Hide()
+            M.UnregisterLoopAnim(self._agDepth)
+            self._mover1:Hide()
+            self._mover2:Hide()
             self._clip:Hide()
             return
         end
-        local isSoft = ST.GetFXIntensity(self._fxOverride) == "soft"
-        local peak = isSoft and self._peakSoft or self._peakStd
         local useRad = rad
-        if useRad == nil then
+        if useRad == nil and not self._customMask then
             local gRad = ST.GetCornerRadius(6)
             if gRad > 0 then
                 local h = F.PlainNumber(self._holder.GetHeight and self._holder:GetHeight(), 16) or 16
@@ -921,16 +993,15 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
                 useRad = 0
             end
         end
-        LayoutSheen(useRad)
-        self._al:SetFromAlpha(peak * 0.72)
-        self._al:SetToAlpha(peak)
+        LayoutFlow(useRad)
         self._active = true
         self._clip:Show()
-        self._sheen:Show()
+        self._mover1:Show()
+        self._mover2:Show()
+        M.RegisterLoopAnim(self._agDepth, IsFlowWantPlay)
         M.RegisterLoopAnim(self._ag, IsFlowWantPlay)
-        if not self._ag:IsPlaying() then
-            self._ag:Play()
-        end
+        if not self._agDepth:IsPlaying() then self._agDepth:Play() end
+        if not self._ag:IsPlaying() then self._ag:Play() end
     end
 
     function ctrl:SetEnabled(on, rad)
@@ -938,14 +1009,35 @@ function M.AttachBarLivingFlow(holder, statusBar, opts)
         self:Refresh(rad)
     end
 
+    function ctrl:SetReverse(rev)
+        local wantRev = rev == true
+        if self._reverse ~= wantRev then
+            self._reverse = wantRev
+            if self._active then
+                self:Refresh(self._maskedRad >= 0 and self._maskedRad or nil)
+            end
+        end
+    end
+
+    function ctrl:SetClipTarget(region)
+        self._clipTarget = region
+        if self._active then
+            local target = region or self._bar:GetStatusBarTexture()
+            if target then
+                self._clip:ClearAllPoints()
+                self._clip:SetAllPoints(target)
+            end
+        end
+    end
+
     function ctrl:SetPeriod(period)
-        self._period = math_max(1.0, period or 6.5)
+        self._period = math_max(0.85, period or 3.0)
         if self._active then self:Refresh(self._maskedRad >= 0 and self._maskedRad or nil) end
     end
 
     if statusBar.HookScript then
         pcall(statusBar.HookScript, statusBar, "OnSizeChanged", function()
-            if ctrl._active then LayoutSheen(ctrl._maskedRad >= 0 and ctrl._maskedRad or nil) end
+            if ctrl._active then LayoutFlow(ctrl._maskedRad >= 0 and ctrl._maskedRad or nil) end
         end)
     end
     ctrl:Refresh()

@@ -6,8 +6,10 @@ kkowoUI 条形立体明暗填充、条内轻流光与前沿光晕贴图生成器
   1. BarFillShaded.tga   (64x64)  — 液态玻璃立体明暗条体（顶部 15% 高光 1.00 -> 中段 0.90 -> 底部 30% 柔和阴影 0.72）
   2. BarFillSeamless.tga (64x64)  — 叠加段无缝灰阶变体（供治疗预估与护盾接续使用，两端无接缝）
   3. SparkSoft.tga       (64x64)  — 柔和二维高斯前沿光刃（紧致亮核心 + 更宽羽化外晕，四边严格归零）
-  4. BarFlowSheen.tga    (128x64) — 45° 斜向宽羽化丝绸轻流光带（供 fx_barFlow 与治疗扫光，四边严格归零）
+  4. BarFlowSheen.tga    (128x64) — 45° 斜向宽羽化丝绸轻流光带（供治疗光波扫条，四边严格归零）
   5. BarEdgeBloom.tga    (64x64)  — 柔和径向填充前沿微光 Bloom（供 AttachEdgeSpark，四边严格归零）
+  6. BarFlowLiquid.tga   (256x64) — 水平 C∞ 无缝周期液态能量流丝带（供 fx_barFlow 主流光层，ADD 混合，上下缘归零）
+  7. BarFlowCurrent.tga  (256x64) — 水平 C∞ 无缝周期液态暗涌深浅波（供 fx_barFlow 立体涌流层，BLEND 混合，上下缘归零）
 """
 import math
 import pathlib
@@ -172,6 +174,76 @@ def make_bar_edge_bloom(size: int = 64) -> np.ndarray:
     return img
 
 
+def make_bar_flow_liquid(width: int = 256, height: int = 64) -> np.ndarray:
+    """
+    水平严格 C∞ 无缝周期的液态光流丝带（256x64，供 fx_barFlow ADD 混合连续滚动）：
+      • 采用像素中心相位 theta = 2*pi*(x + 0.5)/W，确保左右无缝循环零接缝
+      • 双条交错起伏的液态丝带 + 斜向焦散高光波，视觉上呈真实液体流动而非单次扫光
+      • 上下边缘严格归零窗函数，绝无纵向硬边截断
+    """
+    theta = 2.0 * math.pi * (np.arange(width, dtype=np.float64) + 0.5) / width
+    ys = np.linspace(-1.0, 1.0, height, dtype=np.float64)
+    th, yy = np.meshgrid(theta, ys)
+
+    # 主液态光流丝带（宽柔丝绸波动 + 纵向缓慢起伏 + 沿流向明暗呼吸）
+    y1 = -0.16 + 0.24 * np.sin(th) + 0.11 * np.sin(2.0 * th + 1.05)
+    w1 = 0.38 + 0.08 * np.cos(th - 0.55)
+    mod1 = 0.42 + 0.58 * (0.5 + 0.5 * np.sin(th - 0.35))
+    ribbon1 = 0.64 * mod1 * np.exp(-(((yy - y1) / w1) ** 2))
+
+    # 次液态细流丝带（二倍频错相交织，营造丰富层次）
+    y2 = 0.20 + 0.22 * np.sin(2.0 * th + 2.35) + 0.09 * np.cos(th + 0.4)
+    w2 = 0.27 + 0.06 * np.sin(2.0 * th - 0.8)
+    mod2 = 0.36 + 0.64 * (0.5 + 0.5 * np.cos(2.0 * th + 0.8))
+    ribbon2 = 0.44 * mod2 * np.exp(-(((yy - y2) / w2) ** 2))
+
+    # 斜向焦散液波（沿流向持续推进的柔光斜纹，强化液体“往前流”的动势）
+    caustic1 = (0.5 + 0.5 * np.sin(2.0 * th - 2.4 * yy)) ** 2.6
+    caustic2 = (0.5 + 0.5 * np.sin(3.0 * th - 1.9 * yy + 1.7)) ** 3.0
+    caustics = 0.30 * caustic1 + 0.22 * caustic2
+
+    # 顶部微提亮贴合玻璃顶光
+    vert_bias = 0.84 + 0.16 * np.exp(-(((yy + 0.48) / 0.62) ** 2))
+    edge_y = np.clip((1.0 - np.abs(yy)) / 0.18, 0.0, 1.0) ** 1.6
+
+    alpha = np.clip((ribbon1 + ribbon2 + caustics) * vert_bias * edge_y, 0.0, 1.0)
+    img = np.empty((height, width, 4), dtype=np.uint8)
+    img[:, :, 0] = 255
+    img[:, :, 1] = 255
+    img[:, :, 2] = 255
+    img[:, :, 3] = np.round(alpha * 255.0).astype(np.uint8)
+    return img
+
+
+def make_bar_flow_current(width: int = 256, height: int = 64) -> np.ndarray:
+    """
+    水平严格 C∞ 无缝周期的液态深浅暗涌波（256x64，供 fx_barFlow BLEND 混合双层视差滚动）：
+      • 以深冷液态阴影波谷叠加在任意色相条体上（即便牧师亮白/盗贼明黄/猎人浅绿条也能清晰看出液体涌动）
+      • 与 BarFlowLiquid.tga 以黄金比例周期视差叠加，形成有机不重复的持续流动感
+      • 上下边缘严格归零
+    """
+    theta = 2.0 * math.pi * (np.arange(width, dtype=np.float64) + 0.5) / width
+    ys = np.linspace(-1.0, 1.0, height, dtype=np.float64)
+    th, yy = np.meshgrid(theta, ys)
+
+    # 宽阔深浅涌浪（主浪 + 斜向次浪）
+    swell1 = (0.5 + 0.5 * np.sin(th - 1.65 * yy)) ** 1.9
+    swell2 = (0.5 + 0.5 * np.sin(2.0 * th + 1.35 * yy + 1.1)) ** 2.2
+    core_band = 0.58 * swell1 + 0.42 * swell2
+
+    # 中下部略深增强液体厚重感，顶部留出清晰顶光带
+    vert_weight = 0.65 + 0.35 * (0.5 + 0.5 * yy)
+    edge_y = np.clip((1.0 - np.abs(yy)) / 0.16, 0.0, 1.0) ** 1.5
+
+    alpha = np.clip(core_band * vert_weight * edge_y, 0.0, 1.0)
+    img = np.empty((height, width, 4), dtype=np.uint8)
+    img[:, :, 0] = 10
+    img[:, :, 1] = 20
+    img[:, :, 2] = 42
+    img[:, :, 3] = np.round(alpha * 255.0).astype(np.uint8)
+    return img
+
+
 def generate_all(out_dir: pathlib.Path = OUT_DIR) -> list:
     specs = [
         ("BarFillShaded.tga", make_bar_fill_shaded(64)),
@@ -179,6 +251,8 @@ def generate_all(out_dir: pathlib.Path = OUT_DIR) -> list:
         ("SparkSoft.tga", make_spark_soft(64)),
         ("BarFlowSheen.tga", make_bar_flow_sheen(128, 64)),
         ("BarEdgeBloom.tga", make_bar_edge_bloom(64)),
+        ("BarFlowLiquid.tga", make_bar_flow_liquid(256, 64)),
+        ("BarFlowCurrent.tga", make_bar_flow_current(256, 64)),
     ]
     written = []
     for name, arr in specs:

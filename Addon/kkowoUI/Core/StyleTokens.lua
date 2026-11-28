@@ -27,6 +27,8 @@ ST.TEX = {
     BAR_FILL_SHADED   = F.MEDIA .. "Textures\\BarFillShaded.tga",
     BAR_FILL_SEAMLESS = F.MEDIA .. "Textures\\BarFillSeamless.tga",
     BAR_FLOW_SHEEN    = F.MEDIA .. "Textures\\BarFlowSheen.tga",
+    BAR_FLOW_LIQUID   = F.MEDIA .. "Textures\\BarFlowLiquid.tga",
+    BAR_FLOW_CURRENT  = F.MEDIA .. "Textures\\BarFlowCurrent.tga",
     BAR_EDGE_BLOOM    = F.MEDIA .. "Textures\\BarEdgeBloom.tga",
     SOFT_GLOW    = F.MEDIA .. "Textures\\SoftGlow.tga",
     VIGNETTE     = F.MEDIA .. "Textures\\VignetteEdge.tga",
@@ -227,7 +229,7 @@ ST.FX_ITEMS = {
     { key = "fx_fadeCurve",    label = "脱战淡隐平滑曲线", tip = "将脱战淡隐动画升级为距离缩放的 smoothstep 缓动曲线。" },
     { key = "fx_plateOutline", label = "目标姓名板描边绘制", tip = "切换目标时当前目标姓名板细描边从左到右流畅绘出。" },
     { key = "fx_barTexture",   label = "条体立体明暗与光晕", tip = "启用自制液态玻璃立体明暗条体与前沿柔和光晕（需冷重启客户端）。" },
-    { key = "fx_barFlow",      label = "条内柔和轻流光",   tip = "血条、蓝条、目标条与施法条内叠加极柔斜向丝绸流光，纯 C 端零额外占用。" },
+    { key = "fx_barFlow",      label = "条内持续液态流动", tip = "血条、蓝条、目标条、施法条、挥砍条与冷却条内叠加双层视差液态涌流，纯 C 端连续无缝滚动零额外占用。" },
 }
 
 local SMOOTH_GATED_KEYS = {
@@ -398,6 +400,28 @@ function ST.ApplyBarGradient(statusBar, r1, g1, b1, r2, g2, b2, alpha, reverse)
     else
         ST.ApplyGradient(tex, "HORIZONTAL", r1, g1, b1, a, r2, g2, b2, a)
     end
+end
+
+-- 将纯色填充升级为与施法条同源的柔和横向渐变（自动跳过机密值、透明色与纯白渐变复位色）
+function ST.ApplySoftFlatGradient(tex, r, g, b, a, reverse)
+    if not tex then return false end
+    if F.IsSecret(r) or F.IsSecret(g) or F.IsSecret(b) or F.IsSecret(a) then return false end
+    local nr = F.PlainNumber(r, nil)
+    local ng = F.PlainNumber(g, nil)
+    local nb = F.PlainNumber(b, nil)
+    local na = (a == nil) and 1 or F.PlainNumber(a, nil)
+    if not (nr and ng and nb and na) then return false end
+    if na <= 0.05 then return false end
+    if nr >= 0.995 and ng >= 0.995 and nb >= 0.995 then return false end
+    if nr <= 0.005 and ng <= 0.005 and nb <= 0.005 then return false end
+    local r1, g1, b1 = nr * 0.76, ng * 0.76, nb * 0.76
+    local r2 = math_min(1, nr * 0.80 + 0.24)
+    local g2 = math_min(1, ng * 0.80 + 0.24)
+    local b2 = math_min(1, nb * 0.80 + 0.24)
+    if reverse then
+        return ST.ApplyGradient(tex, "HORIZONTAL", r2, g2, b2, na, r1, g1, b1, na)
+    end
+    return ST.ApplyGradient(tex, "HORIZONTAL", r1, g1, b1, na, r2, g2, b2, na)
 end
 
 -- 物理 1:1 像素对齐系数与整像素吸附
