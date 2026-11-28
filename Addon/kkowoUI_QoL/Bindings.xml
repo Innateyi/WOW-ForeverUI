@@ -1,0 +1,8 @@
+<Bindings>
+    <Binding name="KKOWOUI_GROUNDPIN" header="KKOWOUI_NAV" category="ADDONS" runOnUp="true">
+        kkowoUI_GroundPin_OnKey(keystate)
+    </Binding>
+    <Binding name="KKOWOUI_GROUNDPIN_CLEAR" category="ADDONS">
+        kkowoUI_GroundPin_Clear()
+    </Binding>
+</Bindings>

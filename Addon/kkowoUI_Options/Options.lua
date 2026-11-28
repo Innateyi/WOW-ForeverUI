@@ -287,6 +287,8 @@ local function PrintHelp(showAll)
         _G.print("  /kk fade why — 只读排查脱战淡隐各条件读数与阻挡原因（战斗中可用）")
         _G.print("  /kk rec [on|off|status|clear|mark <备注>] — 单次副本实机录制器（只读·战斗中可用）")
         _G.print("  /kk motion demo — 打开脱战新旧条形动效对比演示面板")
+        _G.print("  /kk navprobe — 地面导航光柱探针（测延迟/高度/试解并写入存档）")
+        _G.print("  /kk groundpin debug on|off — 开关地面点地插旗求解日志")
         _G.print("  /kk nav / beam / friendly / hud / perf / toast / ss / wp — 模块测试命令")
     end
 end
@@ -339,6 +341,20 @@ function UI.HandleSlash(msg)
             if wa and wa.ShowBeamPreview then wa:ShowBeamPreview() end
         elseif wa and wa.DumpDiagnostics then
             wa:DumpDiagnostics()
+        end
+    elseif cmd == "navprobe" then
+        local gp = F.Modules.Get("groundPin")
+        if gp and gp.RunNavProbe then
+            gp:RunNavProbe()
+        else
+            F.Print("未加载鼠标点地插旗（GroundPin）模块。")
+        end
+    elseif cmd == "groundpin" or cmd == "gp" then
+        local gp = F.Modules.Get("groundPin")
+        if gp and gp.HandleSlash then
+            gp:HandleSlash(rest)
+        else
+            F.Print("未加载鼠标点地插旗（GroundPin）模块。")
         end
     elseif cmd == "beam" then
         local wa = F.Modules.Get("waypointAutoTrack")

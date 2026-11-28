@@ -16,6 +16,7 @@ XPBar.lua
 NodeReminder.lua
 ZoneLabels.lua
 WaypointAutoTrack.lua
+GroundPin.lua
 WorldNames.lua
 CombatAlert.lua
 RollBars.lua

@@ -59,6 +59,7 @@ local polestarFollowed = false
 local userWpQueued = false
 local polestarSyncQueued = false
 local suppressOwnPinEvent = false
+local groundSolving = false
 local polestarPinHidden = false
 local manualNavActive = false
 local ignoreNextPolestarUntil = 0
@@ -243,6 +244,7 @@ end
 local function HandleUserWaypointChanged()
     userWpQueued = false
     if not mod._active then return end
+    if groundSolving then return end
     if InCombatLockdown and InCombatLockdown() then return end
 
     local db = mod:GetDB()
@@ -327,7 +329,7 @@ local function HandleUserWaypointChanged()
 end
 
 local function QueueUserWaypointChanged()
-    if userWpQueued or not mod._active then return end
+    if groundSolving or userWpQueued or not mod._active then return end
     userWpQueued = true
     -- 延迟 1 帧调用，绝不在暴雪同步事件栈里写 C_SuperTrack 状态（避免污染）
     C_Timer.After(0, HandleUserWaypointChanged)
@@ -630,6 +632,23 @@ end
 local MINIMAP_RADIUS_OUTDOOR = { [0] = 700 / 3, 200, 500 / 3, 400 / 3, 100, 200 / 3 }
 local MINIMAP_RADIUS_INDOOR  = { [0] = 150, 120, 90, 60, 40, 25 }
 
+local function CommitManualPinInternal(mapID, tx, ty)
+    local CM = _G.C_Map
+    if not (CM and type(CM.SetUserWaypoint) == "function") then return false end
+    local pt = MakeUiMapPoint(mapID, tx, ty)
+    if not pt then return false end
+    lastManualPinIntentAt = GetTime()
+    manualPin = { map = mapID, x = tx, y = ty }
+    local okSet = pcall(CM.SetUserWaypoint, pt)
+    if okSet then
+        wpPendingRevealAnim = true
+        PlayPinPlaceSound()
+        QueueUserWaypointChanged()
+        return true
+    end
+    return false
+end
+
 local function PlacePinFromMinimapClick(minimap, button)
     if not mod._active or button ~= "LeftButton" then return end
     if mod:GetDB().shiftClickPlacePin == false then return end
@@ -702,16 +721,7 @@ local function PlacePinFromMinimapClick(minimap, button)
     local ty = py - northYards / hYards
     if tx < 0 or tx > 1 or ty < 0 or ty > 1 then return end
 
-    local pt = MakeUiMapPoint(mapID, tx, ty)
-    if not pt then return end
-    lastManualPinIntentAt = GetTime()
-    manualPin = { map = mapID, x = tx, y = ty }
-    local okSet = pcall(CM.SetUserWaypoint, pt)
-    if okSet then
-        wpPendingRevealAnim = true
-        PlayPinPlaceSound()
-        QueueUserWaypointChanged()
-    end
+    CommitManualPinInternal(mapID, tx, ty)
 end
 
 local function EnsureMinimapPinHook()
@@ -1367,7 +1377,7 @@ local function BuildBeamFrame()
 end
 
 RefreshBeam = function(forceAnim)
-    if wpPreviewActive then return end
+    if wpPreviewActive or groundSolving then return end
     if not (IsKkowoBeamDesired() and wpNavFrame) or IsObjForbidden(wpNavFrame) then return end
     local CN = _G.C_Navigation
     if not CN then return end
@@ -1678,6 +1688,7 @@ function mod:OnEnable()
     SyncKkowoBeamState(false)
 
     self:RegisterEvent("USER_WAYPOINT_UPDATED", function()
+        if groundSolving then return end
         if suppressOwnPinEvent then
             suppressOwnPinEvent = false
             return
@@ -1709,7 +1720,47 @@ function mod:OnEnable()
     end)
 end
 
+-- ---------------------------------------------------------------------------
+-- GroundPin 对接接口（求解期静音、隐藏光柱与统一手动插旗提交）
+-- ---------------------------------------------------------------------------
+function mod:SetGroundSolving(on)
+    local nextOn = on == true
+    if nextOn == groundSolving then return end
+    groundSolving = nextOn
+    if groundSolving then
+        userWpQueued = false
+        if wpMarker and not wpPreviewActive then
+            StopBeamSpawnAnims()
+            if wpMarker.rimBreatheAnim then wpMarker.rimBreatheAnim:Stop() end
+            wpMarker:Hide()
+            wpShown = false
+        end
+    else
+        if RefreshBeam then RefreshBeam(false) end
+    end
+end
+
+function mod:CommitManualPin(mapID, x, y)
+    if not self._active then return false end
+    groundSolving = false
+    return CommitManualPinInternal(mapID, x, y)
+end
+
+function mod:IsReadyForGroundPin()
+    if not self._active then return false end
+    EnsureNavigationCVar()
+    local CCV = _G.C_CVar
+    if CCV and type(CCV.GetCVar) == "function" then
+        local ok, cur = pcall(CCV.GetCVar, "showInGameNavigation")
+        if ok and F.PlainString(cur, nil) == "0" then
+            return false
+        end
+    end
+    return true
+end
+
 function mod:OnDisable()
+    groundSolving = false
     userWpQueued = false
     polestarSyncQueued = false
     if worldMapShareWaiter then worldMapShareWaiter:UnregisterAllEvents() end
